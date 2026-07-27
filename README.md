@@ -104,7 +104,7 @@ Private Const WM_GETTEXTLENGTH As Long = &HE
 ' Anything below CAPTCHA_SIZE_HINT is suspiciously small and flagged
 ' for a retry, since Google's interstitial/CAPTCHA pages tend to
 ' render tiny compared to a normal 100-result SERP.
-Private Const TOOL_VERSION As String = "2.6.0"
+Private Const TOOL_VERSION As String = "3.4"
 Private Const MIN_PDF_SIZE_BYTES As Long = 5120
 Private Const CAPTCHA_SIZE_HINT As Long = 80000
 
@@ -133,6 +133,31 @@ Private Const CAPTCHA_MAX_ATTEMPTS_RESCUE As Long = 3   ' extra tries in the res
 Private Const CAPTCHA_BACKOFF_BASE_SEC As Single = 5    ' first retry waits ~5s
 Private Const CAPTCHA_BACKOFF_MAX_SEC As Single = 45    ' backoff never grows past this
 Private Const CAPTCHA_FLAG_SUFFIX As String = "_CAPTCHA_UNRESOLVED"
+
+' Cookie warm-up: before the real headless batch, briefly open each
+' worker's Edge profile VISIBLY against a plain google.com homepage
+' (not a search) so it picks up real session cookies (NID, consent,
+' etc.) from a genuine browser context instead of showing up to the
+' headless requests with a bare, cookie-less profile. This is a
+' mitigation, not a guarantee - it stacks with the CAPTCHA backoff
+' logic above, it doesn't replace it. Flip to False to disable
+' without touching the rest of the code.
+Private Const WARM_PROFILE_COOKIES_ENABLED As Boolean = True
+Private Const WARM_COOKIE_SECONDS As Long = 8
+
+' Random inter-launch delay: after a worker finishes one search, it
+' waits a random few seconds before grabbing its next one instead of
+' firing back-to-back the instant a task completes. This staggers
+' each worker's OWN request cadence over time - it does NOT delay
+' the two workers' initial simultaneous start against each other,
+' so parallelism is unaffected. Additive to, not a replacement for,
+' the CAPTCHA backoff and cookie warm-up above. Costs roughly
+' (MAX_PARALLEL_launches_per_worker - 1) * ~6.5s average of extra
+' wall-clock time per run - real time you're trading for a less
+' bursty request pattern.
+Private Const RANDOM_LAUNCH_DELAY_ENABLED As Boolean = True
+Private Const RANDOM_LAUNCH_DELAY_MIN_SEC As Single = 3
+Private Const RANDOM_LAUNCH_DELAY_MAX_SEC As Single = 10
 
 ' Leave the drive alone if it is running out of space.
 Private Const DISK_ABORT_GB As Double = 2
@@ -303,7 +328,7 @@ Beep
 Dim nonEngResp As Long
 nonEngResp = TopMostMsgBox( _
 "Do you want to do searches for non-english names? " & vbCrLf & vbCrLf & _
-"(Choosing Yes will open browser windows visibly to allow for page translation. Choosing No will use the", _
+"(Choosing Yes will open browser windows visibly to allow for page translation. Choosing No will use the fast invisible searches.)", _
 "Non-English Searches", MB_YESNO Or MB_ICONQUESTION Or MB_TOPMOST)
 If nonEngResp = IDYES Then
 USE_HEADLESS = False
@@ -1135,6 +1160,66 @@ End If
 On Error GoTo 0
 End Sub
 
+' Launches each worker's Edge profile in a real, VISIBLE window
+' against a plain google.com homepage and lets it sit for a few
+' seconds before closing it. Any cookies Google sets come from a
+' genuine page load, so the profile carries real session history
+' into the headless batch that follows - instead of the headless
+' requests being the very first thing that profile ever says to
+' Google. Runs once per batch, automatically, no analyst action.
+Public Sub WarmEdgeProfileCookies()
+On Error Resume Next
+
+Dim edgeExe As String
+edgeExe = GetEdgePath
+If Len(edgeExe) = 0 Then Exit Sub
+If Dir(edgeExe) = "" Then Exit Sub
+
+Dim wsh As Object: Set wsh = CreateObject("WScript.Shell")
+Dim FSO As Object: Set FSO = CreateObject("Scripting.FileSystemObject")
+
+Dim w As Long, profilePath As String, cmd As String
+Dim warmed As Long: warmed = 0
+
+For w = 0 To MAX_PARALLEL - 1
+profilePath = GetWorkerProfilePath(w)
+If Not FSO.FolderExists(profilePath) Then FSO.CreateFolder profilePath
+
+' Deliberately NOT headless and NOT a search query - just a plain
+' homepage visit in a real, visible browsing context.
+cmd = """" & edgeExe & """" & _
+" --user-data-dir=""" & profilePath & """" & _
+" --no-first-run" & _
+" --no-default-browser-check" & _
+" --disable-logging --log-level=3" & _
+" --disable-sync" & _
+" --window-size=1024,768" & _
+" --window-position=" & (w * 60) & ",80" & _
+" ""https://www.google.com/"""
+
+wsh.Run cmd, 1, False   ' 1 = SW_SHOWNORMAL - a real, visible window
+warmed = warmed + 1
+Next w
+
+If warmed = 0 Then Exit Sub
+
+LogStep "COOKIE WARM: launched " & warmed & " visible Edge window(s) to pick up Google session cookies"
+Application.StatusBar = "OSINT: warming up Google session cookies..."
+
+' Give the page (and any cookie-setting redirects) time to fully
+' settle before we hand the profile back to the headless dispatcher.
+SmartWait CSng(WARM_COOKIE_SECONDS), True
+
+For w = 0 To MAX_PARALLEL - 1
+KillEdgeWorkerProcesses w
+Next w
+
+LogStep "COOKIE WARM: closed warm-up window(s) after " & WARM_COOKIE_SECONDS & "s"
+Application.StatusBar = False
+
+On Error GoTo 0
+End Sub
+
 ' Called just before the real dispatch starts. Usually the prewarm
 ' Edge processes have already exited on their own; if not, we wait
 ' a short grace period and then kill any straggler holding a lock.
@@ -1351,6 +1436,17 @@ LogStep "BATCH ALL start, n=" & n & ", maxParallel=" & MAX_PARALLEL
 ' this is a sub-50 ms no-op in the typical case.
 DrainPrewarmAndCleanup
 
+' Cookie warm-up (see WARM_PROFILE_COOKIES_ENABLED / WarmEdgeProfileCookies).
+' Logged explicitly here - greppable in osint_debug.log - so runs can be
+' correlated against the "captchaFlagged=" count logged at BATCH ALL end
+' to see whether this actually moves the needle over time.
+If WARM_PROFILE_COOKIES_ENABLED Then
+WarmEdgeProfileCookies
+LogStep "BATCH ALL: cookie warm-up RAN before main pass (WARM_PROFILE_COOKIES_ENABLED=True)"
+Else
+LogStep "BATCH ALL: cookie warm-up SKIPPED (WARM_PROFILE_COOKIES_ENABLED=False)"
+End If
+
 ' Single main pass with inline retries. A task whose PDF lands at
 ' CAPTCHA size is requeued into the same pool (with a growing
 ' backoff so we don't immediately re-trip the same block) instead
@@ -1469,8 +1565,10 @@ ReDim finalSizes(1 To n)
 ' lets us spot a lone worker holding up the whole batch at the tail.
 Dim workerBusyT() As Date
 Dim workerBusySec() As Long
+Dim workerCooldownUntil() As Date
 ReDim workerBusyT(0 To MAX_PARALLEL - 1)
 ReDim workerBusySec(0 To MAX_PARALLEL - 1)
+ReDim workerCooldownUntil(0 To MAX_PARALLEL - 1)
 Dim queueStartT As Date: queueStartT = Now
 
 Dim i As Long, a As Variant
@@ -1516,7 +1614,7 @@ somethingCompletedThisCycle = False
 ' mid-batch completion gets an instant relaunch.
 For w = 0 To MAX_PARALLEL - 1
 If bAbort Then Exit For
-If Not busy(w) Then
+If Not busy(w) And Now >= workerCooldownUntil(w) Then
 pendingFound = False
 For i = 1 To n
 If bAbort Then Exit For
@@ -1607,6 +1705,7 @@ st(i) = 0                       ' back to pending
 retriesUsed(i) = retriesUsed(i) + 1
 runningCount = runningCount - 1
 busy(wk(i)) = False
+SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 retryCount = retryCount + 1
 firstSeenT(i) = #12:00:00 AM#   ' reset bookkeeping
@@ -1649,6 +1748,7 @@ finalSizes(i) = 0
 doneCount = doneCount + 1
 runningCount = runningCount - 1
 busy(wk(i)) = False
+SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 m_captchaFlaggedCount = m_captchaFlaggedCount + 1
 
@@ -1666,6 +1766,7 @@ successCount = successCount + 1
 doneCount = doneCount + 1
 runningCount = runningCount - 1
 busy(wk(i)) = False
+SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 taskDurSec = DateDiff("s", launchT(i), Now)
 durSecArr(i) = taskDurSec
@@ -1736,6 +1837,7 @@ st(i) = 0
 retriesUsed(i) = retriesUsed(i) + 1
 runningCount = runningCount - 1
 busy(wk(i)) = False
+SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 retryCount = retryCount + 1
 firstSeenT(i) = #12:00:00 AM#
@@ -1751,6 +1853,7 @@ finalSizes(i) = 0
 doneCount = doneCount + 1
 runningCount = runningCount - 1
 busy(wk(i)) = False
+SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 If hadBackup(i) Then
 On Error Resume Next
@@ -1834,6 +1937,21 @@ Format((idleSleepMs Mod 1000) \ 100, "0") & "s"
 Exit Sub
 Fail:
 LogStep "PASS [" & passLabel & "] FAIL err=" & Err.Number & " desc=" & Err.Description
+End Sub
+
+' Sets a short random cooldown (RANDOM_LAUNCH_DELAY_MIN_SEC to
+' RANDOM_LAUNCH_DELAY_MAX_SEC) before worker w is allowed to grab
+' its next task - so each worker's own request cadence has natural
+' human-ish gaps instead of firing back-to-back the instant a task
+' completes. No-op if RANDOM_LAUNCH_DELAY_ENABLED is False.
+Private Sub SetWorkerCooldown(ByVal w As Long, ByRef workerCooldownUntil() As Date)
+On Error Resume Next
+If Not RANDOM_LAUNCH_DELAY_ENABLED Then Exit Sub
+Dim delaySec As Single
+delaySec = RANDOM_LAUNCH_DELAY_MIN_SEC + Rnd() * (RANDOM_LAUNCH_DELAY_MAX_SEC - RANDOM_LAUNCH_DELAY_MIN_SEC)
+workerCooldownUntil(w) = DateAdd("s", CDbl(delaySec), Now)
+LogStep "  WORKER w" & w & " cooldown " & Format(delaySec, "0.0") & "s before next task"
+On Error GoTo 0
 End Sub
 
 Private Function RunSearchBatchSerial(tasks As Collection, wsh As Object) As Long
