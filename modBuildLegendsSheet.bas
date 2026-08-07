@@ -346,11 +346,12 @@ Dim useH As Single, useGap As Single
 useH = BTN_HEIGHT: useGap = BTN_GAP
 If nBtn * useH + (nBtn - 1) * useGap > availH Then
 ' Too tall for the space - shrink height and gap proportionally.
-Dim scale As Single
-scale = availH / (nBtn * BTN_HEIGHT + (nBtn - 1) * BTN_GAP)
-If scale < 0.4 Then scale = 0.4   ' never collapse to nothing
-useH = BTN_HEIGHT * scale
-useGap = BTN_GAP * scale
+' NB: not named "scale" - that's a reserved word in VBA.
+Dim fitScale As Single
+fitScale = availH / (nBtn * BTN_HEIGHT + (nBtn - 1) * BTN_GAP)
+If fitScale < 0.4 Then fitScale = 0.4   ' never collapse to nothing
+useH = BTN_HEIGHT * fitScale
+useGap = BTN_GAP * fitScale
 End If
 
 ' Apply uniform size/position + font to every button in order.
