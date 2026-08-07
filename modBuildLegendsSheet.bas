@@ -206,33 +206,28 @@ ResolveEdgeExe = ""
 End Function
 
 '==================================================================
-' AddWarmUpButtonToSheet1  -  ONE-TIME. Re-lays-out the Sheet1
-' left-pane button stack so the warm-up button fits in as the last
-' one below Reset, and (per request) deletes the now-redundant
-' "Legends & Notes" tab.
+' AddWarmUpButtonToSheet1  -  ONE-TIME.
 '
-' What it does:
-'   - DUPLICATES an existing Sheet1 button (OSDD) so the new one's
-'     fill / corner style / font copy exactly, then re-captions it
-'     and points it at WarmUpWorkerProfiles.
-'   - Collects ALL the left-pane macro buttons, makes them a uniform
-'     size (slightly smaller than now), aligns them to one column,
-'     and re-stacks all of them - the 7 existing + the new one -
-'     evenly from the top. This closes the wasted empty gap that's
-'     currently between "Generate Narrative" and "Rename", which is
-'     what frees the room for the 8th button without crowding the
-'     Country Name field to the right.
-'   - Caps the stack so it can never run past the row-34 divider
-'     band (auto-shrinks height if a machine's row heights differ).
-'   - Deletes the "Legends & Notes" sheet.
+' Ensures the "Profile Warm-Up" button exists, then lays out ALL the
+' left-pane buttons uniformly inside the cell box C..E / top..row 27,
+' and deletes the "Legends & Notes" tab.
 '
-' Safe to re-run.
+' The layout is derived from the actual GRID (live Range().Left/.Top/
+' .Width), not from the buttons' current positions - so it both fits
+' everything neatly to E27 AND repairs any earlier displacement:
+' every button is re-anchored to the same box, so none can stick out
+' past column E onto/off the grey Action-Panel cells.
+'
+' Tunables below control the box edges and how tall the buttons are
+' relative to their slots. Safe to re-run.
 '==================================================================
 Sub AddWarmUpButtonToSheet1()
 Const CAPTION As String = "Profile Warm-Up"
-Const BTN_HEIGHT As Single = 26      ' uniform height (was ~29 - "brought down")
-Const BTN_GAP As Single = 14         ' uniform gap between buttons
-Const BOTTOM_MARGIN As Single = 8    ' keep this clear of the row-34 divider
+Const LEFT_COL As String = "C"       ' button block's left column
+Const RIGHT_COL As String = "E"      ' button block's right column (-> E27)
+Const BOTTOM_ROW As Long = 27        ' block bottom (the "E27" you gave)
+Const INSET As Single = 3            ' padding inside the box edges
+Const FILL_RATIO As Single = 0.72    ' button height as a fraction of its slot
 
 Dim ws As Worksheet
 On Error Resume Next
@@ -240,24 +235,22 @@ Set ws = ThisWorkbook.Sheets("Sheet1")
 On Error GoTo 0
 If ws Is Nothing Then MsgBox "Sheet1 not found.", vbCritical: Exit Sub
 
-' Drop workbook structure + sheet content protection so we can move
-' shapes and delete a sheet; both restored at the end.
 On Error Resume Next
 ThisWorkbook.Unprotect Password:=WB_PASSWORD
 ws.Unprotect Password:=WB_PASSWORD
 On Error GoTo Fail
 
-' Idempotent: clear any earlier copy first, so re-runs start clean.
+' Start clean so a re-run doesn't stack duplicates.
 On Error Resume Next
 ws.Shapes("btnWarmUp").Delete
 On Error GoTo Fail
 
-' Collect the existing left-pane macro buttons (anything with a macro
-' assigned), and grab the OSDD one as the style reference.
-Dim s As Shape, ref As Shape, oa As String
-Dim btns() As Shape, nBtn As Long
+' Collect the existing macro buttons; grab one as the style source
+' and track the topmost, which anchors the top of the block.
+Dim s As Shape, oa As String, ref As Shape
+Dim btns() As Shape, nBtn As Long, minTop As Single
 ReDim btns(1 To 50)
-nBtn = 0
+nBtn = 0: minTop = 1E+9
 For Each s In ws.Shapes
 oa = ""
 On Error Resume Next
@@ -266,7 +259,8 @@ On Error GoTo Fail
 If Len(oa) > 0 Then
 nBtn = nBtn + 1
 Set btns(nBtn) = s
-If InStr(oa, "SearchAndSavePDF_Direct") > 0 Then Set ref = s
+If s.Top < minTop Then minTop = s.Top
+If InStr(oa, "ClearForm") > 0 Then Set ref = s   ' Reset = good style source
 End If
 Next s
 
@@ -275,52 +269,39 @@ On Error Resume Next
 ws.Protect Password:=WB_PASSWORD
 ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
 On Error GoTo 0
-MsgBox "No existing macro buttons found on Sheet1 to match against.", vbExclamation
+MsgBox "No existing buttons found on Sheet1.", vbExclamation
 Exit Sub
 End If
-If ref Is Nothing Then Set ref = btns(1)   ' fallback if OSDD was renamed
+If ref Is Nothing Then Set ref = btns(1)
 
-' Uniform geometry taken from what's already there: align to the
-' reference's left edge, use the widest existing button's width so no
-' caption (e.g. "Generate Narrative") gets cramped.
-Dim uLeft As Single, uWidth As Single, i As Long
-uLeft = ref.Left
-uWidth = 0
-For i = 1 To nBtn
-If btns(i).Width > uWidth Then uWidth = btns(i).Width
-Next i
-
-' Capture the reference font so we can re-apply it after re-texting.
+' Font from the style source, so every button matches.
 Dim fSize As Single, fBold As Boolean, fName As String, fColor As Long
+On Error Resume Next
 With ref.TextFrame.Characters.Font
 fSize = .Size: fBold = .Bold: fName = .Name: fColor = .Color
 End With
+On Error GoTo Fail
 
-' Build the new button as an exact-style copy, then add it to the
-' collection so it's laid out with the rest.
+' Create the warm-up button (exact-style copy) and add to the set.
 Dim nb As Shape
 Set nb = ref.Duplicate
 nb.Name = "btnWarmUp"
+On Error Resume Next
 nb.TextFrame.Characters.Text = CAPTION
-With nb.TextFrame.Characters.Font
-.Size = fSize: .Bold = fBold: .Name = fName: .Color = fColor
-End With
+On Error GoTo Fail
 nb.OnAction = "WarmUpWorkerProfiles"
 nBtn = nBtn + 1
-Set btns(nBtn) = nb   ' new button appended -> ends up last (below Reset)
+Set btns(nBtn) = nb
 
-' Order the collection top-to-bottom by current Top (insertion sort).
-' The new button is given a large key so it always sorts LAST, i.e.
-' below Reset.
-Dim j As Long, tmp As Shape, kt As Single
+' Order top-to-bottom, forcing the warm-up button LAST.
+Dim i As Long, j As Long, tmp As Shape, kt As Single
 Dim keyTop() As Single
 ReDim keyTop(1 To nBtn)
 For i = 1 To nBtn
-If btns(i) Is nb Then keyTop(i) = 1000000! Else keyTop(i) = btns(i).Top
+If btns(i) Is nb Then keyTop(i) = 1E+9 Else keyTop(i) = btns(i).Top
 Next i
 For i = 2 To nBtn
-Set tmp = btns(i): kt = keyTop(i)
-j = i - 1
+Set tmp = btns(i): kt = keyTop(i): j = i - 1
 Do While j >= 1
 If keyTop(j) > kt Then
 Set btns(j + 1) = btns(j): keyTop(j + 1) = keyTop(j): j = j - 1
@@ -331,38 +312,29 @@ Loop
 Set btns(j + 1) = tmp: keyTop(j + 1) = kt
 Next i
 
-' Vertical envelope: from the top of the current top button down to
-' just above the row-34 divider band. Auto-shrink height if that
-' many buttons at BTN_HEIGHT+BTN_GAP wouldn't fit.
-Dim envTop As Single, envBottom As Single, availH As Single
-envTop = btns(1).Top
-envBottom = envTop + nBtn * (BTN_HEIGHT + BTN_GAP)   ' default if row 34 unknown
-On Error Resume Next
-envBottom = ws.Range("A34").Top - BOTTOM_MARGIN
-On Error GoTo Fail
-availH = envBottom - envTop
+' Box from the live grid: columns LEFT_COL..RIGHT_COL, top = current
+' topmost button, bottom = bottom of BOTTOM_ROW. All measured in real
+' points so it honours this machine's actual row heights/col widths.
+Dim boxLeft As Single, boxRight As Single, boxTop As Single, boxBot As Single
+boxLeft = ws.Range(LEFT_COL & "1").Left + INSET
+boxRight = ws.Range(RIGHT_COL & "1").Left + ws.Range(RIGHT_COL & "1").Width - INSET
+boxTop = minTop
+boxBot = ws.Range("A" & BOTTOM_ROW).Top + ws.Range("A" & BOTTOM_ROW).Height - INSET
 
-Dim useH As Single, useGap As Single
-useH = BTN_HEIGHT: useGap = BTN_GAP
-If nBtn * useH + (nBtn - 1) * useGap > availH Then
-' Too tall for the space - shrink height and gap proportionally.
-' NB: not named "scale" - that's a reserved word in VBA.
-Dim fitScale As Single
-fitScale = availH / (nBtn * BTN_HEIGHT + (nBtn - 1) * BTN_GAP)
-If fitScale < 0.4 Then fitScale = 0.4   ' never collapse to nothing
-useH = BTN_HEIGHT * fitScale
-useGap = BTN_GAP * fitScale
-End If
+Dim boxW As Single, boxH As Single, pitch As Single, btnH As Single
+boxW = boxRight - boxLeft
+boxH = boxBot - boxTop
+If boxH < nBtn * 8 Then boxH = nBtn * 8   ' guard against a silly-small box
+pitch = boxH / nBtn
+btnH = pitch * FILL_RATIO
 
-' Apply uniform size/position + font to every button in order.
-Dim yPos As Single
-yPos = envTop
+' Apply uniform geometry + font to every button, centred in its slot.
 For i = 1 To nBtn
 With btns(i)
-.Left = uLeft
-.Width = uWidth
-.Height = useH
-.Top = yPos
+.Left = boxLeft
+.Width = boxW
+.Height = btnH
+.Top = boxTop + (i - 1) * pitch + (pitch - btnH) / 2
 On Error Resume Next
 .TextFrame.Characters.Font.Size = fSize
 .TextFrame.Characters.Font.Bold = fBold
@@ -370,7 +342,6 @@ On Error Resume Next
 .TextFrame.Characters.Font.Color = fColor
 On Error GoTo Fail
 End With
-yPos = yPos + useH + useGap
 Next i
 
 ' Delete the now-redundant Legends & Notes sheet.
@@ -382,15 +353,14 @@ On Error GoTo Fail
 
 Application.CutCopyMode = False
 
-RestoreAndExit:
 On Error Resume Next
 ws.Protect Password:=WB_PASSWORD
 ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
 On Error GoTo 0
 
-MsgBox "Re-laid the Sheet1 button stack (" & nBtn & " buttons, uniform size) with " & _
-"'" & CAPTION & "' added below Reset, and removed the Legends & Notes tab.", _
-vbInformation, "Done"
+MsgBox "Laid out " & nBtn & " buttons uniformly inside " & LEFT_COL & ".." & _
+RIGHT_COL & "/row " & BOTTOM_ROW & ", added '" & CAPTION & "', and removed the " & _
+"Legends & Notes tab.", vbInformation, "Done"
 Exit Sub
 
 Fail:
