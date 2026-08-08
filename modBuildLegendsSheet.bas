@@ -237,7 +237,7 @@ Const P2_BOT As Long = 27        ' bottom grey panel: last row (grey extended to
 Const BTN_LEFT_COL As String = "C"   ' buttons centred within these columns
 Const BTN_RIGHT_COL As String = "E"
 Const PANEL_LEFT_COL As String = "B" ' grey panel's left column (for background fill)
-Const H_MARGIN As Single = 5         ' left+right margin inside the columns (centres the button)
+Const H_MARGIN As Single = 8         ' left+right margin inside the B..E panel (centres the button)
 Const FILL_RATIO As Single = 0.62    ' button height as a fraction of its vertical slot
 
 Dim ws As Worksheet
@@ -319,21 +319,25 @@ On Error GoTo Fail
 nb.OnAction = "WarmUpWorkerProfiles"
 Set ordered(8) = nb
 
-' Centred horizontal geometry: symmetric H_MARGIN inside the button
-' columns means the button is centred between them.
+' Centred horizontal geometry: symmetric H_MARGIN inside the FULL
+' grey panel (PANEL_LEFT_COL "B" .. BTN_RIGHT_COL "E") - so the
+' button is centred across the whole panel, not just C..E (which
+' left column B as extra margin and pushed the buttons right).
 Dim bLeft As Single, bWidth As Single
-bLeft = ws.Range(BTN_LEFT_COL & "1").Left + H_MARGIN
+bLeft = ws.Range(PANEL_LEFT_COL & "1").Left + H_MARGIN
 bWidth = (ws.Range(BTN_RIGHT_COL & "1").Left + ws.Range(BTN_RIGHT_COL & "1").Width) _
-- ws.Range(BTN_LEFT_COL & "1").Left - 2 * H_MARGIN
+- ws.Range(PANEL_LEFT_COL & "1").Left - 2 * H_MARGIN
 
-' Extend the bottom grey panel down to P2_BOT so all 4 group-2
-' buttons sit on grey. Copy an interior grey row's format (fill +
-' side borders) and paint it across the panel body - no colour
-' guessing, it matches exactly.
+' Clean the bottom panel: an earlier version copied a bordered row
+' down this range, which drew a horizontal line at every row (the
+' "gridlines" you saw). Clear the INTERIOR borders so it reads as a
+' single clean panel like the top one. The panel's outer edge
+' borders and its fill are left untouched.
 On Error Resume Next
-ws.Range(PANEL_LEFT_COL & (P2_TOP + 1) & ":" & BTN_RIGHT_COL & (P2_TOP + 1)).Copy
-ws.Range(PANEL_LEFT_COL & (P2_TOP + 1) & ":" & BTN_RIGHT_COL & P2_BOT).PasteSpecial Paste:=xlPasteFormats
-Application.CutCopyMode = False
+With ws.Range(PANEL_LEFT_COL & P2_TOP & ":" & BTN_RIGHT_COL & P2_BOT)
+.Borders(xlInsideHorizontal).LineStyle = xlNone
+.Borders(xlInsideVertical).LineStyle = xlNone
+End With
 On Error GoTo Fail
 
 ' Lay out the two groups: buttons 1-4 in the top panel, 5-8 in the
@@ -411,4 +415,54 @@ End With
 End If
 slot = slot + 1
 Next i
+End Sub
+
+'==================================================================
+' UnhideColumnsAfterT  -  unhides the hidden "extension" columns
+' immediately to the right of T (U, V) that you couldn't get rid of.
+'
+' The sheet is protected, which is why unhiding them was blocked -
+' this unprotects, unhides, then re-protects. It only UNHIDES; it
+' does NOT delete, because columns further right (W onward) hold
+' backend/helper data that other formulas point at - deleting would
+' shift those and break references. Once you can see U:V, if they're
+' genuinely empty spacers you want gone, tell me and I'll delete a
+' specific confirmed-empty column safely.
+'
+' UNHIDE_RANGE controls what gets unhidden - widen it if the column
+' you mean is further out than V.
+'==================================================================
+Sub UnhideColumnsAfterT()
+Const UNHIDE_RANGE As String = "U:V"
+
+Dim ws As Worksheet
+On Error Resume Next
+Set ws = ThisWorkbook.Sheets("Sheet1")
+On Error GoTo 0
+If ws Is Nothing Then MsgBox "Sheet1 not found.", vbCritical: Exit Sub
+
+On Error Resume Next
+ThisWorkbook.Unprotect Password:=WB_PASSWORD
+ws.Unprotect Password:=WB_PASSWORD
+On Error GoTo 0
+
+ws.Columns(UNHIDE_RANGE).EntireColumn.Hidden = False
+
+' Report what's now visible so you can decide about deleting.
+Dim uContent As String, vContent As String
+uContent = Trim(CStr(ws.Range("U1").Value)) & Trim(CStr(ws.Range("U19").Value))
+vContent = Trim(CStr(ws.Range("V1").Value)) & Trim(CStr(ws.Range("V19").Value))
+
+On Error Resume Next
+ws.Protect Password:=WB_PASSWORD
+ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
+On Error GoTo 0
+
+MsgBox "Unhid columns " & UNHIDE_RANGE & " (just right of T)." & vbCrLf & vbCrLf & _
+"U appears " & IIf(Len(uContent) = 0, "empty", "to contain data") & ", " & _
+"V appears " & IIf(Len(vContent) = 0, "empty", "to contain data") & "." & vbCrLf & vbCrLf & _
+"I did NOT delete anything - columns further right hold backend data " & _
+"that formulas reference. If U/V are empty and you want them deleted, " & _
+"confirm and I'll remove the specific column safely.", _
+vbInformation, "Columns Unhidden"
 End Sub
