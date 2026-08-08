@@ -230,8 +230,8 @@ Const CAPTION As String = "Profile Warm-Up"
 ' first button never lands on the dark-blue title bar.
 Const P1_TOP As Long = 6         ' top grey panel: first row (below blue header)
 Const P1_BOT As Long = 16        ' top grey panel: last row
-Const P2_TOP As Long = 18        ' bottom grey panel: first row
-Const P2_BOT As Long = 27        ' bottom grey panel: last row (grey extended to here)
+Const P2_TOP As Long = 19        ' bottom panel: first BODY row (below the blue "Add-On" header on row 18)
+Const P2_BOT As Long = 27        ' bottom panel: last row
 
 ' ---- Horizontal placement (centred) ----
 Const BTN_LEFT_COL As String = "C"   ' buttons centred within these columns
@@ -340,10 +340,19 @@ With ws.Range(PANEL_LEFT_COL & P2_TOP & ":" & BTN_RIGHT_COL & P2_BOT)
 End With
 On Error GoTo Fail
 
+' One uniform button height for ALL 8, sized to the SMALLER of the
+' two panels so every button is identical (same width already).
+Dim p1H As Single, p2H As Single, minPanelH As Single, uniBtnH As Single
+p1H = (ws.Range("A" & P1_BOT).Top + ws.Range("A" & P1_BOT).Height) - ws.Range("A" & P1_TOP).Top
+p2H = (ws.Range("A" & P2_BOT).Top + ws.Range("A" & P2_BOT).Height) - ws.Range("A" & P2_TOP).Top
+minPanelH = p1H
+If p2H < minPanelH Then minPanelH = p2H
+uniBtnH = FILL_RATIO * (minPanelH / 4)
+
 ' Lay out the two groups: buttons 1-4 in the top panel, 5-8 in the
-' bottom panel - each centred in its slot, evenly spaced.
-PlaceGroup ws, ordered, 1, 4, P1_TOP, P1_BOT, bLeft, bWidth, FILL_RATIO, fSize, fBold, fName, fColor
-PlaceGroup ws, ordered, 5, 8, P2_TOP, P2_BOT, bLeft, bWidth, FILL_RATIO, fSize, fBold, fName, fColor
+' bottom panel - all the same size, each centred in its slot.
+PlaceGroup ws, ordered, 1, 4, P1_TOP, P1_BOT, bLeft, bWidth, uniBtnH, fSize, fBold, fName, fColor
+PlaceGroup ws, ordered, 5, 8, P2_TOP, P2_BOT, bLeft, bWidth, uniBtnH, fSize, fBold, fName, fColor
 
 ' Delete the now-redundant Legends & Notes sheet.
 On Error Resume Next
@@ -377,11 +386,11 @@ End Sub
 
 ' Evenly places ordered(firstIdx..lastIdx) inside the row band
 ' topRow..botRow, each button centred in its vertical slot, at the
-' given left/width, with a uniform height derived from fillRatio.
+' given left/width and a fixed height (btnH, same for every group).
 Private Sub PlaceGroup(ByVal ws As Worksheet, ByRef ordered() As Shape, _
 ByVal firstIdx As Long, ByVal lastIdx As Long, _
 ByVal topRow As Long, ByVal botRow As Long, _
-ByVal bLeft As Single, ByVal bWidth As Single, ByVal fillRatio As Single, _
+ByVal bLeft As Single, ByVal bWidth As Single, ByVal btnH As Single, _
 ByVal fSize As Single, ByVal fBold As Boolean, ByVal fName As String, ByVal fColor As Long)
 On Error Resume Next
 
@@ -394,9 +403,8 @@ Dim count As Long
 count = lastIdx - firstIdx + 1
 If count < 1 Then Exit Sub
 
-Dim pitch As Single, btnH As Single
-pitch = boxH / count
-btnH = pitch * fillRatio
+Dim pitch As Single
+pitch = boxH / count   ' each button sits centred in its slot; height is fixed (btnH)
 
 Dim i As Long, slot As Long
 slot = 0
@@ -465,4 +473,42 @@ MsgBox "Unhid columns " & UNHIDE_RANGE & " (just right of T)." & vbCrLf & vbCrLf
 "that formulas reference. If U/V are empty and you want them deleted, " & _
 "confirm and I'll remove the specific column safely.", _
 vbInformation, "Columns Unhidden"
+End Sub
+
+'==================================================================
+' HideExtraColumnsAfterT  -  puts the backend "extension" columns
+' right of T back to hidden (their intended state).
+'
+' These aren't junk: column U carries a live country-risk XLOOKUP
+' formula the tool uses, and the rest are empty backend spacers.
+' They can't safely be deleted (deleting shifts every column right
+' of them and breaks the formulas that point at the backend), so the
+' correct tidy-up is simply to hide them again - which the sheet
+' protection was previously blocking you from doing.
+'==================================================================
+Sub HideExtraColumnsAfterT()
+Const HIDE_RANGE As String = "U:AB"
+
+Dim ws As Worksheet
+On Error Resume Next
+Set ws = ThisWorkbook.Sheets("Sheet1")
+On Error GoTo 0
+If ws Is Nothing Then MsgBox "Sheet1 not found.", vbCritical: Exit Sub
+
+On Error Resume Next
+ThisWorkbook.Unprotect Password:=WB_PASSWORD
+ws.Unprotect Password:=WB_PASSWORD
+On Error GoTo 0
+
+ws.Columns(HIDE_RANGE).EntireColumn.Hidden = True
+
+On Error Resume Next
+ws.Protect Password:=WB_PASSWORD
+ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
+On Error GoTo 0
+
+MsgBox "Hid the backend columns " & HIDE_RANGE & " again (their intended state)." & vbCrLf & _
+vbCrLf & "Note: column U holds a live country-risk lookup formula, so these " & _
+"are functional backend - they're meant to stay hidden, not deleted.", _
+vbInformation, "Backend Columns Hidden"
 End Sub
