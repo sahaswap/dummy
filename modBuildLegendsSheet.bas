@@ -223,11 +223,22 @@ End Function
 '==================================================================
 Sub AddWarmUpButtonToSheet1()
 Const CAPTION As String = "Profile Warm-Up"
-Const LEFT_COL As String = "C"       ' button block's left column
-Const RIGHT_COL As String = "E"      ' button block's right column (-> E27)
-Const BOTTOM_ROW As Long = 27        ' block bottom (the "E27" you gave)
-Const INSET As Single = 3            ' padding inside the box edges
-Const FILL_RATIO As Single = 0.72    ' button height as a fraction of its slot
+
+' ---- Two grey panels (rows), from the Action Panel layout ----
+' Group 1 buttons live in the TOP panel, group 2 in the BOTTOM panel.
+' P1_TOP starts on the first GREY row (below the blue header), so the
+' first button never lands on the dark-blue title bar.
+Const P1_TOP As Long = 6         ' top grey panel: first row (below blue header)
+Const P1_BOT As Long = 16        ' top grey panel: last row
+Const P2_TOP As Long = 18        ' bottom grey panel: first row
+Const P2_BOT As Long = 27        ' bottom grey panel: last row (grey extended to here)
+
+' ---- Horizontal placement (centred) ----
+Const BTN_LEFT_COL As String = "C"   ' buttons centred within these columns
+Const BTN_RIGHT_COL As String = "E"
+Const PANEL_LEFT_COL As String = "B" ' grey panel's left column (for background fill)
+Const H_MARGIN As Single = 5         ' left+right margin inside the columns (centres the button)
+Const FILL_RATIO As Single = 0.62    ' button height as a fraction of its vertical slot
 
 Dim ws As Worksheet
 On Error Resume Next
@@ -245,104 +256,90 @@ On Error Resume Next
 ws.Shapes("btnWarmUp").Delete
 On Error GoTo Fail
 
-' Collect the existing macro buttons; grab one as the style source
-' and track the topmost, which anchors the top of the block.
-Dim s As Shape, oa As String, ref As Shape
-Dim btns() As Shape, nBtn As Long, minTop As Single
-ReDim btns(1 To 50)
-nBtn = 0: minTop = 1E+9
+' Map each button to its INTENDED slot by the macro it runs, so the
+' order is exactly Start/Export/OSDD/Narrative | Rename/PDFMerge/
+' Reset/Warm-Up regardless of where the shapes currently sit.
+Dim keyMacro(1 To 8) As String
+keyMacro(1) = "Start_Button_Create_Folders"   ' Start
+keyMacro(2) = "Consolidated_AML_Workflow"      ' Export Trx File
+keyMacro(3) = "SearchAndSavePDF_Direct"        ' OSDD Search
+keyMacro(4) = "ExportToWord"                   ' Generate Narrative
+keyMacro(5) = "Run_Mass_Rename"                ' Rename
+keyMacro(6) = "Trigger_PAD_Merge_Flow"         ' PDF Merge
+keyMacro(7) = "ClearForm"                      ' Reset
+keyMacro(8) = "WarmUpWorkerProfiles"           ' Profile Warm-Up (created below)
+
+Dim ordered(1 To 8) As Shape
+Dim s As Shape, oa As String, k As Long, resetBtn As Shape
 For Each s In ws.Shapes
 oa = ""
 On Error Resume Next
 oa = s.OnAction
 On Error GoTo Fail
 If Len(oa) > 0 Then
-nBtn = nBtn + 1
-Set btns(nBtn) = s
-If s.Top < minTop Then minTop = s.Top
-If InStr(oa, "ClearForm") > 0 Then Set ref = s   ' Reset = good style source
+For k = 1 To 8
+If InStr(oa, keyMacro(k)) > 0 Then
+Set ordered(k) = s
+If k = 7 Then Set resetBtn = s
+Exit For
+End If
+Next k
 End If
 Next s
 
-If nBtn = 0 Then
+If resetBtn Is Nothing Then
+' fall back to any group-2 button as the style source
+If Not ordered(6) Is Nothing Then Set resetBtn = ordered(6)
+If resetBtn Is Nothing And Not ordered(5) Is Nothing Then Set resetBtn = ordered(5)
+End If
+If resetBtn Is Nothing Then
 On Error Resume Next
 ws.Protect Password:=WB_PASSWORD
 ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
 On Error GoTo 0
-MsgBox "No existing buttons found on Sheet1.", vbExclamation
+MsgBox "Couldn't find the existing bottom-group buttons to match against.", vbExclamation
 Exit Sub
 End If
-If ref Is Nothing Then Set ref = btns(1)
 
-' Font from the style source, so every button matches.
+' Font from Reset, so every button matches.
 Dim fSize As Single, fBold As Boolean, fName As String, fColor As Long
 On Error Resume Next
-With ref.TextFrame.Characters.Font
+With resetBtn.TextFrame.Characters.Font
 fSize = .Size: fBold = .Bold: fName = .Name: fColor = .Color
 End With
 On Error GoTo Fail
 
-' Create the warm-up button (exact-style copy) and add to the set.
+' Create the warm-up button (exact-style copy of Reset).
 Dim nb As Shape
-Set nb = ref.Duplicate
+Set nb = resetBtn.Duplicate
 nb.Name = "btnWarmUp"
 On Error Resume Next
 nb.TextFrame.Characters.Text = CAPTION
 On Error GoTo Fail
 nb.OnAction = "WarmUpWorkerProfiles"
-nBtn = nBtn + 1
-Set btns(nBtn) = nb
+Set ordered(8) = nb
 
-' Order top-to-bottom, forcing the warm-up button LAST.
-Dim i As Long, j As Long, tmp As Shape, kt As Single
-Dim keyTop() As Single
-ReDim keyTop(1 To nBtn)
-For i = 1 To nBtn
-If btns(i) Is nb Then keyTop(i) = 1E+9 Else keyTop(i) = btns(i).Top
-Next i
-For i = 2 To nBtn
-Set tmp = btns(i): kt = keyTop(i): j = i - 1
-Do While j >= 1
-If keyTop(j) > kt Then
-Set btns(j + 1) = btns(j): keyTop(j + 1) = keyTop(j): j = j - 1
-Else
-Exit Do
-End If
-Loop
-Set btns(j + 1) = tmp: keyTop(j + 1) = kt
-Next i
+' Centred horizontal geometry: symmetric H_MARGIN inside the button
+' columns means the button is centred between them.
+Dim bLeft As Single, bWidth As Single
+bLeft = ws.Range(BTN_LEFT_COL & "1").Left + H_MARGIN
+bWidth = (ws.Range(BTN_RIGHT_COL & "1").Left + ws.Range(BTN_RIGHT_COL & "1").Width) _
+- ws.Range(BTN_LEFT_COL & "1").Left - 2 * H_MARGIN
 
-' Box from the live grid: columns LEFT_COL..RIGHT_COL, top = current
-' topmost button, bottom = bottom of BOTTOM_ROW. All measured in real
-' points so it honours this machine's actual row heights/col widths.
-Dim boxLeft As Single, boxRight As Single, boxTop As Single, boxBot As Single
-boxLeft = ws.Range(LEFT_COL & "1").Left + INSET
-boxRight = ws.Range(RIGHT_COL & "1").Left + ws.Range(RIGHT_COL & "1").Width - INSET
-boxTop = minTop
-boxBot = ws.Range("A" & BOTTOM_ROW).Top + ws.Range("A" & BOTTOM_ROW).Height - INSET
-
-Dim boxW As Single, boxH As Single, pitch As Single, btnH As Single
-boxW = boxRight - boxLeft
-boxH = boxBot - boxTop
-If boxH < nBtn * 8 Then boxH = nBtn * 8   ' guard against a silly-small box
-pitch = boxH / nBtn
-btnH = pitch * FILL_RATIO
-
-' Apply uniform geometry + font to every button, centred in its slot.
-For i = 1 To nBtn
-With btns(i)
-.Left = boxLeft
-.Width = boxW
-.Height = btnH
-.Top = boxTop + (i - 1) * pitch + (pitch - btnH) / 2
+' Extend the bottom grey panel down to P2_BOT so all 4 group-2
+' buttons sit on grey. Copy an interior grey row's format (fill +
+' side borders) and paint it across the panel body - no colour
+' guessing, it matches exactly.
 On Error Resume Next
-.TextFrame.Characters.Font.Size = fSize
-.TextFrame.Characters.Font.Bold = fBold
-.TextFrame.Characters.Font.Name = fName
-.TextFrame.Characters.Font.Color = fColor
+ws.Range(PANEL_LEFT_COL & (P2_TOP + 1) & ":" & BTN_RIGHT_COL & (P2_TOP + 1)).Copy
+ws.Range(PANEL_LEFT_COL & (P2_TOP + 1) & ":" & BTN_RIGHT_COL & P2_BOT).PasteSpecial Paste:=xlPasteFormats
+Application.CutCopyMode = False
 On Error GoTo Fail
-End With
-Next i
+
+' Lay out the two groups: buttons 1-4 in the top panel, 5-8 in the
+' bottom panel - each centred in its slot, evenly spaced.
+PlaceGroup ws, ordered, 1, 4, P1_TOP, P1_BOT, bLeft, bWidth, FILL_RATIO, fSize, fBold, fName, fColor
+PlaceGroup ws, ordered, 5, 8, P2_TOP, P2_BOT, bLeft, bWidth, FILL_RATIO, fSize, fBold, fName, fColor
 
 ' Delete the now-redundant Legends & Notes sheet.
 On Error Resume Next
@@ -358,9 +355,10 @@ ws.Protect Password:=WB_PASSWORD
 ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
 On Error GoTo 0
 
-MsgBox "Laid out " & nBtn & " buttons uniformly inside " & LEFT_COL & ".." & _
-RIGHT_COL & "/row " & BOTTOM_ROW & ", added '" & CAPTION & "', and removed the " & _
-"Legends & Notes tab.", vbInformation, "Done"
+MsgBox "Laid out 4 + 4 buttons, centred, inside the two grey panels " & _
+"(rows " & P1_TOP & "-" & P1_BOT & " and " & P2_TOP & "-" & P2_BOT & "), " & _
+"added '" & CAPTION & "', and removed the Legends & Notes tab.", _
+vbInformation, "Done"
 Exit Sub
 
 Fail:
@@ -371,4 +369,46 @@ ThisWorkbook.Protect Password:=WB_PASSWORD, Structure:=True, Windows:=False
 On Error GoTo 0
 MsgBox "Couldn't finish the layout." & vbCrLf & "Error " & Err.Number & ": " & _
 Err.Description, vbCritical, "Failed"
+End Sub
+
+' Evenly places ordered(firstIdx..lastIdx) inside the row band
+' topRow..botRow, each button centred in its vertical slot, at the
+' given left/width, with a uniform height derived from fillRatio.
+Private Sub PlaceGroup(ByVal ws As Worksheet, ByRef ordered() As Shape, _
+ByVal firstIdx As Long, ByVal lastIdx As Long, _
+ByVal topRow As Long, ByVal botRow As Long, _
+ByVal bLeft As Single, ByVal bWidth As Single, ByVal fillRatio As Single, _
+ByVal fSize As Single, ByVal fBold As Boolean, ByVal fName As String, ByVal fColor As Long)
+On Error Resume Next
+
+Dim boxTop As Single, boxBot As Single, boxH As Single
+boxTop = ws.Range("A" & topRow).Top
+boxBot = ws.Range("A" & botRow).Top + ws.Range("A" & botRow).Height
+boxH = boxBot - boxTop
+
+Dim count As Long
+count = lastIdx - firstIdx + 1
+If count < 1 Then Exit Sub
+
+Dim pitch As Single, btnH As Single
+pitch = boxH / count
+btnH = pitch * fillRatio
+
+Dim i As Long, slot As Long
+slot = 0
+For i = firstIdx To lastIdx
+If Not ordered(i) Is Nothing Then
+With ordered(i)
+.Left = bLeft
+.Width = bWidth
+.Height = btnH
+.Top = boxTop + slot * pitch + (pitch - btnH) / 2
+.TextFrame.Characters.Font.Size = fSize
+.TextFrame.Characters.Font.Bold = fBold
+.TextFrame.Characters.Font.Name = fName
+.TextFrame.Characters.Font.Color = fColor
+End With
+End If
+slot = slot + 1
+Next i
 End Sub
