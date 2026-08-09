@@ -538,6 +538,63 @@ FSO.CopyFile localPath, analystFolder & "\" & ecmID & AUDIT_XLSX_SUFFIX, True
 On Error GoTo 0
 End Sub
 
+'------------------------------------------------------------------
+' TestAuditMirror  -  run this any time to check whether the shared
+' L1 Beta mirror is actually connected on THIS PC. It walks the same
+' steps MirrorToSharedFolder does - resolve the folder, create
+' Audit_Logs\{username}\, write a tiny test file, delete it - and
+' reports exactly which step passed or failed. (The real mirror is
+' silent; this makes it visible so you can confirm it's working.)
+'------------------------------------------------------------------
+Public Sub TestAuditMirror()
+Dim FSO As Object
+Set FSO = CreateObject("Scripting.FileSystemObject")
+
+Dim root As String, logsRoot As String, mine As String, msg As String
+root = TrackerFolder()
+msg = "Shared folder (from modConfig):" & vbCrLf & root & vbCrLf & vbCrLf
+
+' Step 1: is the shared L1 Beta folder reachable at all?
+If Not FSO.FolderExists(root) Then
+MsgBox msg & "RESULT: NOT CONNECTED." & vbCrLf & vbCrLf & _
+"That folder isn't reachable on this PC - not synced, wrong path, or " & _
+"offline. Until it exists, audit mirroring is silently skipped (local " & _
+"copies in Desktop\{ECMID}\ are unaffected).", _
+vbExclamation, "Audit Mirror Test"
+Exit Sub
+End If
+
+' Step 2: create Audit_Logs\{username}\ and write a throwaway test file.
+Dim ok As Boolean, ff As Integer, testPath As String
+On Error Resume Next
+logsRoot = root & "\Audit_Logs"
+If Not FSO.FolderExists(logsRoot) Then FSO.CreateFolder logsRoot
+mine = logsRoot & "\" & Environ$("USERNAME")
+If Not FSO.FolderExists(mine) Then FSO.CreateFolder mine
+
+testPath = mine & "\_connection_test.txt"
+Err.Clear
+ff = FreeFile
+Open testPath For Output As #ff
+Print #ff, "Audit mirror connectivity test - " & Now
+Close #ff
+ok = (Err.Number = 0) And FSO.FileExists(testPath)
+If FSO.FileExists(testPath) Then FSO.DeleteFile testPath   ' clean up
+On Error GoTo 0
+
+If FSO.FolderExists(mine) And ok Then
+MsgBox msg & "Your folder:" & vbCrLf & mine & vbCrLf & vbCrLf & _
+"RESULT: CONNECTED - the folder exists and is writable." & vbCrLf & _
+"Case audit workbooks will mirror to it as {ECMID}_Audit_Log.xlsx.", _
+vbInformation, "Audit Mirror Test"
+Else
+MsgBox msg & "RESULT: PARTIAL - the shared folder is reachable, but I " & _
+"couldn't create or write your Audit_Logs\" & Environ$("USERNAME") & "\ " & _
+"subfolder. Likely a permissions issue on the shared folder.", _
+vbExclamation, "Audit Mirror Test"
+End If
+End Sub
+
 ' Removes sheet + workbook-structure protection so this run's code
 ' can freely add/rename/delete/edit sheets. Harmless no-op on a
 ' brand-new, never-yet-protected workbook. Always called right
