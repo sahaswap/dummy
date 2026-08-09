@@ -36,6 +36,7 @@ Private Declare PtrSafe Function GetAsyncKeyState Lib "user32" (ByVal vKey As Lo
 Private Declare PtrSafe Function FindWindow Lib "user32" Alias "FindWindowA" _
 (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
 Private Declare PtrSafe Function SetForegroundWindow Lib "user32" (ByVal hwnd As LongPtr) As Long
+Private Declare PtrSafe Function GetForegroundWindow Lib "user32" () As LongPtr
 Private Declare PtrSafe Function BringWindowToTop Lib "user32" (ByVal hwnd As LongPtr) As Long
 Private Declare PtrSafe Function GetWindowThreadProcessId Lib "user32" _
 (ByVal hwnd As LongPtr, ByRef lpdwProcessId As Long) As Long
@@ -66,6 +67,7 @@ Private Declare Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As I
 Private Declare Function FindWindow Lib "user32" Alias "FindWindowA" _
 (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
 Private Declare Function SetForegroundWindow Lib "user32" (ByVal hwnd As Long) As Long
+Private Declare Function GetForegroundWindow Lib "user32" () As Long
 Private Declare Function BringWindowToTop Lib "user32" (ByVal hwnd As Long) As Long
 Private Declare Function GetWindowThreadProcessId Lib "user32" _
 (ByVal hwnd As Long, ByRef lpdwProcessId As Long) As Long
@@ -211,21 +213,29 @@ Private Const WARM_COOKIE_SECONDS As Long = 8
 ' bursty request pattern. If Fast is getting blocked too often,
 ' that's the signal to run Optimised rather than to widen Fast.
 Private Const RANDOM_LAUNCH_DELAY_ENABLED As Boolean = True
-' v3.7: Fast tightened to 2-6s (was 5-15s). Fast mode's whole job is
-' throughput - the wider window belongs to Optimised. Keeping a small
-' non-zero jitter rather than going to 0 costs ~4s average per worker
-' handoff but avoids a perfectly uniform back-to-back cadence, which
-' is the cheapest pattern for Google to spot. Set both to 0 if you
-' want launches with no gap at all.
-Private Const FAST_LAUNCH_DELAY_MIN_SEC As Single = 2
-Private Const FAST_LAUNCH_DELAY_MAX_SEC As Single = 6
-Private Const OPTIMISED_LAUNCH_DELAY_MIN_SEC As Single = 15
-Private Const OPTIMISED_LAUNCH_DELAY_MAX_SEC As Single = 35
+' v3.9: Fast is now stripped for raw speed - ZERO jitter, and all
+' the anti-CAPTCHA barricades (circuit-breaker, cookie warm-up,
+' retry backoff) are turned OFF for it (see m_protectionsOn). It
+' fires searches back-to-back with nothing in the way - fastest
+' possible, highest CAPTCHA risk. Optimised inherits what Fast used
+' to be: a modest 2-6s jitter WITH all the protections on. Use
+' Optimised when the IP is getting challenged; use Fast when it
+' isn't and you just want speed.
+Private Const FAST_LAUNCH_DELAY_MIN_SEC As Single = 0
+Private Const FAST_LAUNCH_DELAY_MAX_SEC As Single = 0
+Private Const OPTIMISED_LAUNCH_DELAY_MIN_SEC As Single = 2
+Private Const OPTIMISED_LAUNCH_DELAY_MAX_SEC As Single = 6
 
 ' Set once per run by ApplySearchMode; SetWorkerCooldown reads these
 ' instead of a fixed const pair.
 Private m_launchDelayMinSec As Single
 Private m_launchDelayMaxSec As Single
+
+' v3.9 master toggle for the anti-CAPTCHA barricades, set per mode by
+' ApplySearchMode. True (Optimised/Visible) = circuit-breaker,
+' cookie warm-up and retry backoff all active. False (Fast) = all of
+' them stripped out for maximum speed.
+Private m_protectionsOn As Boolean
 
 ' Leave the drive alone if it is running out of space.
 Private Const DISK_ABORT_GB As Double = 2
@@ -668,6 +678,72 @@ Application.StatusBar = "OSINT: Queued " & allTasks.Count & " searches - dispatc
 LogStep "SEARCH PHASE - queued " & allTasks.Count & " tasks across all entities (heaviest first)"
 actualSearchCount = RunSearchBatch(allTasks, WshShell)
 If bAbort Then GoTo AbortProcess
+
+' ---- Fast-mode auto-rescue ----
+' After a Fast run, offer to finish the CAPTCHA-blocked searches in
+' Visible mode. Ones that succeed are saved under the normal name and
+' their leftover _CAPTCHA_UNRESOLVED files are deleted automatically.
+If m_searchMode = smFast Then
+Dim fastRescue As Collection
+Set fastRescue = New Collection
+Dim rt As Long, rescTask As Variant
+For rt = 1 To allTasks.Count
+If Not TaskHasGoodResult(allTasks(rt)) Then fastRescue.Add allTasks(rt)
+Next rt
+
+If fastRescue.Count > 0 Then
+Dim rescueResp As Long
+rescueResp = TopMostMsgBox( _
+fastRescue.Count & " search(es) hit a CAPTCHA in Fast mode and were saved with a '" & _
+CAPTCHA_FLAG_SUFFIX & "' tag." & vbCrLf & vbCrLf & _
+"Re-run just those " & fastRescue.Count & " now in VISIBLE mode?" & vbCrLf & vbCrLf & _
+"Browser windows will open - keep your hands off the mouse and keyboard. Ones that " & _
+"succeed are saved under the normal name and their flagged files are deleted.", _
+"Finish Blocked Searches?", MB_YESNO Or MB_ICONQUESTION Or MB_TOPMOST)
+
+If rescueResp = IDYES Then
+USE_HEADLESS = False   ' visible/interactive path, for the rescue only
+Application.StatusBar = "OSINT: finishing " & fastRescue.Count & _
+" blocked search(es) in Visible mode..."
+LogStep "RESCUE (Fast->Visible): re-running " & fastRescue.Count & " blocked search(es) visibly"
+
+Dim rescuedOK As Long
+rescuedOK = RunSearchBatch(fastRescue, WshShell)
+If bAbort Then GoTo AbortProcess
+
+' Delete the _CAPTCHA_UNRESOLVED sidecar for each rescued task
+' that now has a real PDF under its normal name.
+Dim cleaned As Long, spRes As String, fpRes As String
+For rt = 1 To fastRescue.Count
+rescTask = fastRescue(rt)
+spRes = CStr(rescTask(1))
+On Error Resume Next
+If Dir(spRes) <> "" Then
+If FileLen(spRes) > MIN_PDF_SIZE_BYTES Then
+fpRes = FlagPathWithSuffix(spRes, CAPTCHA_FLAG_SUFFIX)
+If Dir(fpRes) <> "" Then
+Kill fpRes
+cleaned = cleaned + 1
+End If
+End If
+End If
+On Error GoTo ErrorHandler
+Next rt
+
+actualSearchCount = actualSearchCount + rescuedOK
+
+' Recount what's STILL unresolved so the summary is accurate.
+m_captchaFlaggedCount = 0
+For rt = 1 To allTasks.Count
+If Not TaskHasGoodResult(allTasks(rt)) Then _
+m_captchaFlaggedCount = m_captchaFlaggedCount + 1
+Next rt
+
+LogStep "RESCUE (Fast->Visible): " & rescuedOK & " saved, " & cleaned & _
+" flagged file(s) deleted, " & m_captchaFlaggedCount & " still unresolved"
+End If
+End If
+End If
 End If
 
 ' Elapsed time - using DateDiff instead of subtraction so a run
@@ -1267,20 +1343,24 @@ End If
 On Error GoTo 0
 End Sub
 
-' Launches each worker's Edge profile in a real, VISIBLE window
-' against a plain google.com homepage and lets it sit for a few
-' seconds before closing it. Any cookies Google sets come from a
-' genuine page load, so the profile carries real session history
-' into the headless batch that follows - instead of the headless
-' requests being the very first thing that profile ever says to
-' Google. Runs once per batch, automatically, no analyst action.
+' Warms each worker's Edge profile against a plain google.com
+' homepage so the profile picks up real session cookies (NID,
+' consent, etc.) before the headless search batch - instead of the
+' searches being the very first thing that profile says to Google.
+'
+' v3.9: runs HEADLESS (hidden) now, not in visible windows. It fires
+' a throwaway --print-to-pdf of google.com, which loads the page
+' (storing its cookies) and exits on its own - no windows pop up.
+' Trade-off: a hidden warm-up is less convincing than a real visible
+' one (it's another headless hit rather than a genuine browsing
+' context), so it seeds cookies but carries less anti-CAPTCHA weight.
 Public Sub WarmEdgeProfileCookies()
 On Error Resume Next
 
 Dim wsh As Object: Set wsh = CreateObject("WScript.Shell")
 Dim FSO As Object: Set FSO = CreateObject("Scripting.FileSystemObject")
 
-Dim w As Long, profilePath As String, cmd As String
+Dim w As Long, profilePath As String, cmd As String, warmPdf As String
 Dim browserExe As String
 Dim warmed As Long: warmed = 0
 
@@ -1292,19 +1372,25 @@ If Dir(browserExe) <> "" Then
 profilePath = GetWorkerProfilePath(w)
 If Not FSO.FolderExists(profilePath) Then FSO.CreateFolder profilePath
 
-' Deliberately NOT headless and NOT a search query - just a plain
-' homepage visit in a real, visible browsing context.
+warmPdf = Environ("TEMP") & "\osint_cookiewarm_w" & w & ".pdf"
+If Dir(warmPdf) <> "" Then Kill warmPdf
+
+' Headless visit to google.com (not a search) - loads the page,
+' stores its cookies in the profile, self-exits after the print.
 cmd = """" & browserExe & """" & _
+" --headless=new" & _
+" --disable-gpu" & _
 " --user-data-dir=""" & profilePath & """" & _
 " --no-first-run" & _
 " --no-default-browser-check" & _
 " --disable-logging --log-level=3" & _
 " --disable-sync" & _
-" --window-size=1024,768" & _
-" --window-position=" & (w * 60) & ",80" & _
+" --disable-extensions" & _
+" --mute-audio" & _
+" --print-to-pdf=""" & warmPdf & """" & _
 " ""https://www.google.com/"""
 
-wsh.Run cmd, 1, False   ' 1 = SW_SHOWNORMAL - a real, visible window
+wsh.Run cmd, 0, False   ' 0 = hidden (headless has no window anyway)
 warmed = warmed + 1
 End If
 End If
@@ -1312,18 +1398,22 @@ Next w
 
 If warmed = 0 Then Exit Sub
 
-LogStep "COOKIE WARM: launched " & warmed & " visible Edge window(s) to pick up Google session cookies"
+LogStep "COOKIE WARM: fired " & warmed & " HEADLESS (hidden) warm-up(s) to pick up Google session cookies"
 Application.StatusBar = "OSINT: warming up Google session cookies..."
 
 ' Give the page (and any cookie-setting redirects) time to fully
-' settle before we hand the profile back to the headless dispatcher.
+' settle before we hand the profile back to the search dispatcher.
 SmartWait CSng(WARM_COOKIE_SECONDS), True
 
+' Belt-and-braces: kill any straggler that didn't self-exit, and
+' drop the throwaway warm-up PDFs.
 For w = 0 To MAX_PARALLEL - 1
 KillEdgeWorkerProcesses w
+warmPdf = Environ("TEMP") & "\osint_cookiewarm_w" & w & ".pdf"
+If Dir(warmPdf) <> "" Then Kill warmPdf
 Next w
 
-LogStep "COOKIE WARM: closed warm-up window(s) after " & WARM_COOKIE_SECONDS & "s"
+LogStep "COOKIE WARM: done after " & WARM_COOKIE_SECONDS & "s (headless)"
 Application.StatusBar = False
 
 On Error GoTo 0
@@ -1428,25 +1518,31 @@ Private Sub ApplySearchMode(ByVal mode As OsintSearchMode)
 m_searchMode = mode
 Select Case mode
 Case smFast
+' Raw speed: zero jitter, every barricade off.
 USE_HEADLESS = True
 m_launchDelayMinSec = FAST_LAUNCH_DELAY_MIN_SEC
 m_launchDelayMaxSec = FAST_LAUNCH_DELAY_MAX_SEC
+m_protectionsOn = False
 Case smOptimised
+' What Fast used to be: modest jitter WITH all protections on.
 USE_HEADLESS = True
 m_launchDelayMinSec = OPTIMISED_LAUNCH_DELAY_MIN_SEC
 m_launchDelayMaxSec = OPTIMISED_LAUNCH_DELAY_MAX_SEC
+m_protectionsOn = True
 Case smVisible
 USE_HEADLESS = False
 ' Jitter doesn't apply on this path - RunSearchBatchSerial /
 ' PrintSearchToPDF_Interactive is inherently serial and already
 ' paced by real dialog choreography. Values set anyway so
 ' SetWorkerCooldown has something sane if it's ever reached.
-m_launchDelayMinSec = FAST_LAUNCH_DELAY_MIN_SEC
-m_launchDelayMaxSec = FAST_LAUNCH_DELAY_MAX_SEC
+m_launchDelayMinSec = OPTIMISED_LAUNCH_DELAY_MIN_SEC
+m_launchDelayMaxSec = OPTIMISED_LAUNCH_DELAY_MAX_SEC
+m_protectionsOn = True
 End Select
 LogStep "MODE: search mode set to " & ModeName(mode) & _
 " (USE_HEADLESS=" & USE_HEADLESS & ", jitter=" & _
-m_launchDelayMinSec & "-" & m_launchDelayMaxSec & "s)"
+m_launchDelayMinSec & "-" & m_launchDelayMaxSec & "s, protections=" & _
+m_protectionsOn & ")"
 End Sub
 
 Private Function ModeName(ByVal mode As OsintSearchMode) As String
@@ -1731,11 +1827,13 @@ DrainPrewarmAndCleanup
 ' Logged explicitly here - greppable in osint_debug.log - so runs can be
 ' correlated against the "captchaFlagged=" count logged at BATCH ALL end
 ' to see whether this actually moves the needle over time.
+' v3.9: warm-up now runs in ALL headless modes (Fast included), and
+' it's hidden/headless so no windows pop up.
 If WARM_PROFILE_COOKIES_ENABLED Then
 WarmEdgeProfileCookies
-LogStep "BATCH ALL: cookie warm-up RAN before main pass (WARM_PROFILE_COOKIES_ENABLED=True)"
+LogStep "BATCH ALL: cookie warm-up RAN before main pass"
 Else
-LogStep "BATCH ALL: cookie warm-up SKIPPED (WARM_PROFILE_COOKIES_ENABLED=False)"
+LogStep "BATCH ALL: cookie warm-up SKIPPED (disabled)"
 End If
 
 ' Single main pass with inline retries. A task whose PDF lands at
@@ -2018,9 +2116,15 @@ firstSeenT(i) = #12:00:00 AM#   ' reset bookkeeping
 lastSize(i) = 0
 stableHits(i) = 0
 
+' Fast mode (protections off) skips the backoff wait entirely and
+' relaunches immediately; Optimised/Visible use the growing backoff.
+If m_protectionsOn Then
 backoffSec = CAPTCHA_BACKOFF_BASE_SEC * (2 ^ (retriesUsed(i) - 1))
 If backoffSec > CAPTCHA_BACKOFF_MAX_SEC Then backoffSec = CAPTCHA_BACKOFF_MAX_SEC
 backoffSec = backoffSec + CSng(Rnd() * 2#)   ' jitter so tasks don't relaunch in lockstep
+Else
+backoffSec = 0
+End If
 nextLaunchT(i) = DateAdd("s", CDbl(backoffSec), Now)
 
 LogStep "  TASK retry [" & i & "/" & n & "] CAPTCHA-size " & sz & _
@@ -2259,7 +2363,7 @@ End Sub
 ' does, which is exactly the shape of being actively rate-limited.
 Private Sub RegisterCaptchaHit()
 On Error Resume Next
-If Not CAPTCHA_CIRCUIT_ENABLED Then Exit Sub
+If Not (CAPTCHA_CIRCUIT_ENABLED And m_protectionsOn) Then Exit Sub
 
 ' Roll the window forward if the last one has aged out.
 If DateDiff("s", m_captchaWindowStart, Now) > CAPTCHA_CIRCUIT_WINDOW_SEC Then
@@ -2301,7 +2405,7 @@ End Sub
 ' point is visible in the log without spamming every poll cycle.
 Private Function CircuitIsOpen() As Boolean
 On Error Resume Next
-If Not CAPTCHA_CIRCUIT_ENABLED Then Exit Function
+If Not (CAPTCHA_CIRCUIT_ENABLED And m_protectionsOn) Then Exit Function
 If m_globalPauseUntil = #12:00:00 AM# Then Exit Function
 
 If Now < m_globalPauseUntil Then
@@ -2599,9 +2703,30 @@ retryPrint = 0
 AttemptPrint:
 If bAbort Then GoTo EmergencyClose
 
-' Re-assert foreground on every attempt (including retries) -
-' cheap, and guarantees Ctrl+P never accidentally fires at Excel.
+' Re-assert foreground AND verify before Ctrl+P - the old code just
+' called ForceForeground and assumed it worked; if it didn't, Ctrl+P
+' (and the save-dialog keys after) landed on Excel. Now we confirm
+' Edge is actually the active window first, and if we can't, we
+' retry/abort instead of firing keystrokes at Excel.
+Dim pAttempt As Long, pFore As Boolean
+pFore = False
+For pAttempt = 1 To 6
 If hEdge <> 0 Then ForceForeground hEdge
+SmartWait t(0.35), True
+If hEdge <> 0 Then
+If GetForegroundWindow() = hEdge Then pFore = True: Exit For
+End If
+Next pAttempt
+
+If Not pFore Then
+retryPrint = retryPrint + 1
+If retryPrint <= 2 Then
+SmartWait t(1)
+GoTo AttemptPrint
+Else
+GoTo TriggerRetryPrompt
+End If
+End If
 
 wsh.SendKeys "^p"
 SmartWait t(3)
@@ -2877,24 +3002,56 @@ Dim hwndBrowser As Long
 #End If
 
 hwndBrowser = FindWindow("Chrome_WidgetWin_1", vbNullString)
-If hwndBrowser <> 0 Then ForceForeground hwndBrowser
-SmartWait t(0.4), True
 
+' CRITICAL SAFETY: never send Ctrl+W unless we've CONFIRMED Edge is
+' the foreground window. If no Edge window is found, or we can't
+' bring it to the foreground, we must NOT fire the keystroke - it
+' would land on Excel, and Ctrl+W in Excel closes the workbook (the
+' exact "the tool gets closed instead of the Edge tab" symptom).
+If hwndBrowser = 0 Then
+' Nothing to close, and firing keys now would hit Excel.
+LogStep "  CLOSE-TAB skipped - no Edge window found (not sending Ctrl+W at Excel)"
+Application.EnableCancelKey = xlInterrupt
+Exit Sub
+End If
+
+' Try to bring Edge forward and VERIFY it actually is, retrying a few
+' times. Only proceed to the close keystroke once it's confirmed.
+Dim attempt As Long, isFore As Boolean
+isFore = False
+For attempt = 1 To 6
+ForceForeground hwndBrowser
+SmartWait t(0.35), True
+If GetForegroundWindow() = hwndBrowser Then
+isFore = True
+Exit For
+End If
+Next attempt
+
+If Not isFore Then
+' Could not confirm Edge is active - do NOT send Ctrl+W. Leaving a
+' stray Edge tab open is harmless; closing the workbook is not.
+LogStep "  CLOSE-TAB skipped - could not confirm Edge foreground after " & _
+attempt & " tries (leaving tab open rather than risking Excel)"
+Application.EnableCancelKey = xlInterrupt
+Exit Sub
+End If
+
+' Edge confirmed foreground - safe to close the tab.
 wsh.SendKeys "{ESC}"
 SmartWait t(0.3), True
+' Re-verify immediately before the destructive keystroke.
+If GetForegroundWindow() = hwndBrowser Then
 wsh.SendKeys "^w"
 SmartWait t(0.5), True
+Else
+LogStep "  CLOSE-TAB aborted - Edge lost foreground just before Ctrl+W"
+End If
 
-' Deliberately NOT calling AppActivate Application.Caption here.
-' Doing so used to hand focus back to Excel after every single
-' search - and Windows' foreground-lock then blocks the NEXT
-' Edge window from stealing focus back on its own, leaving Excel
-' as the foreground window when the next iteration's Ctrl+P /
-' Escape / Ctrl+W keystrokes fire. Ctrl+W in Excel closes the
-' active workbook, which is exactly the "Excel gets closed
-' instead of the Chrome tab" symptom. PrintSearchToPDF_Interactive
-' now explicitly re-foregrounds Edge itself before every keystroke,
-' so Excel doesn't need to be (and must not be) activated here.
+' Deliberately NOT calling AppActivate Application.Caption here - doing
+' so hands focus back to Excel and Windows' foreground-lock then keeps
+' Excel active into the next iteration's keystrokes. Edge is
+' re-foregrounded by the verify loop above instead.
 
 Application.EnableCancelKey = xlInterrupt
 End Sub
