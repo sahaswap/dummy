@@ -1,4 +1,3 @@
-Attribute VB_Name = "modAuditLog"
 '==================================================================
 ' modAuditLog  -  centralized cross-tool audit ledger (v3.6)
 '
@@ -43,6 +42,10 @@ Private Const AUDIT_SHEET_NAME As String = "Audit_Ledger"
 Private Const AUDIT_XLSX_SUFFIX As String = "_Audit_Log.xlsx"
 Private Const REGISTER_SHEET_NAME As String = "Register"
 Private Const NARRATIVE_SHEET_NAME As String = "Narrative"
+
+' Root of the shared team folder comes from modConfig (single source
+' of truth). Case audit workbooks are mirrored under
+' Audit_Logs\{AnalystUsername}\ inside that same shared location.
 
 ' Same protection password already used elsewhere in this workbook
 ' (Module9's sheet/workbook protect calls). Every sheet in the
@@ -493,6 +496,44 @@ ghostApp.Quit
 Set ghostApp = Nothing
 End If
 End If
+
+On Error GoTo 0
+
+' File is fully saved (and closed, if we opened it) at this point -
+' safe to mirror. Runs after every touch (Register row, output
+' sheets, narrative), regardless of which one triggered this save.
+MirrorToSharedFolder GetCaseAuditXlsxPath(ecmID), ecmID
+End Sub
+
+'------------------------------------------------------------------
+' Mirrors the already-saved, already-protected case audit workbook
+' to the shared team folder, under a per-analyst subfolder keyed by
+' Windows username - the same value already captured as "Analyst" in
+' the ledger. A plain file copy of the finished local file, not a
+' second Excel-COM build - fast, and a failure here (shared path
+' unreachable, OneDrive not synced on this machine, permissions,
+' etc.) never blocks or errors out the analyst's actual work; it
+' just silently skips, same as every other non-fatal step in this
+' module.
+'------------------------------------------------------------------
+Private Sub MirrorToSharedFolder(ByVal localPath As String, ByVal ecmID As String)
+On Error Resume Next
+
+Dim FSO As Object
+Set FSO = CreateObject("Scripting.FileSystemObject")
+If Not FSO.FileExists(localPath) Then Exit Sub
+
+Dim sharedRoot As String, auditLogsRoot As String, analystFolder As String
+sharedRoot = TrackerFolder()
+If Not FSO.FolderExists(sharedRoot) Then Exit Sub   ' not reachable/synced here - skip silently
+
+auditLogsRoot = sharedRoot & "\Audit_Logs"
+If Not FSO.FolderExists(auditLogsRoot) Then FSO.CreateFolder auditLogsRoot
+
+analystFolder = auditLogsRoot & "\" & Environ("USERNAME")
+If Not FSO.FolderExists(analystFolder) Then FSO.CreateFolder analystFolder
+
+FSO.CopyFile localPath, analystFolder & "\" & ecmID & AUDIT_XLSX_SUFFIX, True
 
 On Error GoTo 0
 End Sub

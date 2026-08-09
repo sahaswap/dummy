@@ -1,4 +1,3 @@
-Attribute VB_Name = "modRFIGenerate"
 '==================================================================
 ' modRFIGenerate  -  RFI data layer + (later) orchestrator
 '
@@ -118,12 +117,8 @@ End Function
 ' ORCHESTRATOR + SAVE + TRACKER  (tasks 4 & 5)
 '==================================================================
 
-' Tracker constants - reuse the same shared workbook + version string as
-' ExportToWord so RFI runs land uniformly in the tracker.
-Private Const RFI_TRACKER_PATH As String = _
-    "\OneDrive - Community Federal Savings Bank\Mohini Srivastava's files - L1 Beta\" & _
-    "Beta 2.4_Feedbacks & Issues Encountered.xlsx"
-Private Const RFI_TRACKER_FILE As String = "Beta 2.4_Feedbacks & Issues Encountered.xlsx"
+' Tracker path/name come from modConfig (single source of truth), so
+' this RFI push lands in the same shared workbook as ExportToWord.
 Private Const RFI_TOOL_VERSION As String = "2.4.1"
 
 '------------------------------------------------------------------
@@ -247,11 +242,11 @@ Private Sub PushRFITrackerRow(ByVal ecmID As String)
     Dim expectedHeaders As Variant, hdrIdx As Integer, headersOK As Boolean
     Dim ghostApp As Object
 
-    masterPath = Environ("USERPROFILE") & RFI_TRACKER_PATH
+    masterPath = TrackerFile()
 
     wasAlreadyOpen = False
     For Each pushWb In Application.Workbooks
-        If pushWb.Name = RFI_TRACKER_FILE Then
+        If pushWb.Name = TrackerFileName() Then
             Set masterWb = pushWb
             wasAlreadyOpen = True
             Exit For

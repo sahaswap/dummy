@@ -1,4 +1,3 @@
-Attribute VB_Name = "Module9"
 Sub Consolidated_AML_Workflow()
 
 ' ==========================================
@@ -6,6 +5,11 @@ Sub Consolidated_AML_Workflow()
 ' ==========================================
 Application.EnableCancelKey = xlErrorHandler
 On Error GoTo CancelHandler
+
+' Safe default so CancelHandler can always restore Calculation even
+' if an error fires before the real capture below ever runs.
+Dim origCalc As XlCalculation
+origCalc = xlCalculationAutomatic
 
 Dim WbSource As Workbook, WsMaster As Worksheet, wsSource As Worksheet, wsHome As Worksheet
 Dim LastRowSource As Long, LastRowMaster As Long, LastCol As Long
@@ -102,6 +106,19 @@ WsMaster.Name = "ConsolidatedData"
 Else
 WsMaster.Cells.Clear
 End If
+
+' EnableEvents/Calculation were never touched here before - every
+' cell write, paste, and sheet copy below could trigger a full
+' workbook recalculation (not just this new workbook - this tool's
+' own aggregate formulas too) and fire the full event pipeline on
+' every workbook open/close. That's the single biggest reason this
+' takes as long as it does, and the long unresponsive stretch it
+' creates is very likely what causes the black-screen symptom on a
+' remote/VDI session (Windows marks Excel "Not Responding" and RDP
+' can't get a valid frame to redraw from).
+origCalc = Application.Calculation
+Application.Calculation = xlCalculationManual
+Application.EnableEvents = False
 
 Application.ScreenUpdating = False
 Application.DisplayAlerts = False
@@ -418,42 +435,15 @@ On Error GoTo CancelHandler
 ' ------------------------------------------
 ' DYNAMIC HIGHLIGHTING & BULLETPROOF DATE FIX
 ' ------------------------------------------
-Dim ptRowCell As Range
-Dim sumColIndex As Long
-
-' Activating silent bypass so the macro NEVER aborts and skips the Save command
+' Both of these used to scan cell-by-cell via COM (one round-trip
+' per cell across the whole pivot sheet, then again per row of each
+' pivot's RowRange) - now a single bulk .Value read, an in-memory
+' scan, and one Union-based write each. Same result, a fraction of
+' the COM calls.
 On Error Resume Next
-
-' 1. THE BULLETPROOF DATE FIX (Scans the entire sheet directly)
-Dim cl As Range
-For Each cl In wsPivot.UsedRange
-' Check if the cell is a date
-If IsDate(cl.Value) And Not IsEmpty(cl.Value) Then
-' Prevent the "2025" year label from turning into a date (Excel reads 2025 as the year 1905)
-If Year(CDate(cl.Value)) > 1950 Then
-cl.NumberFormat = "mm/dd/yyyy"
-End If
-End If
-Next cl
-
-' 2. Fix Pivot 3 (Middle Pivot) - Dr/Cr Highlighting
-sumColIndex = pt3.DataBodyRange.Columns(2).Column
-For Each ptRowCell In pt3.RowRange
-If Trim(UCase(ptRowCell.Value)) = "CR" Or Trim(UCase(ptRowCell.Value)) = "DR" Then
-wsPivot.Cells(ptRowCell.Row, sumColIndex).Interior.Color = RGB(255, 199, 206) ' Light Red Fill
-wsPivot.Cells(ptRowCell.Row, sumColIndex).Font.Color = RGB(156, 0, 6) ' Dark Red Text
-End If
-Next ptRowCell
-
-' 3. Fix Pivot 4 (Right Pivot) - Dr/Cr Highlighting
-sumColIndex = pt4.DataBodyRange.Columns(2).Column
-For Each ptRowCell In pt4.RowRange
-If Trim(UCase(ptRowCell.Value)) = "CR" Or Trim(UCase(ptRowCell.Value)) = "DR" Then
-wsPivot.Cells(ptRowCell.Row, sumColIndex).Interior.Color = RGB(255, 199, 206) ' Light Red Fill
-wsPivot.Cells(ptRowCell.Row, sumColIndex).Font.Color = RGB(156, 0, 6) ' Dark Red Text
-End If
-Next ptRowCell
-
+BulletproofDateFormat wsPivot
+HighlightDrCrRows pt3, wsPivot
+HighlightDrCrRows pt4, wsPivot
 On Error GoTo CancelHandler
 
 End If
@@ -521,6 +511,8 @@ tagSuffix:=fileTag
 newWb.Sheets("Raw Transactions").Activate
 
 Application.EnableCancelKey = xlInterrupt
+Application.Calculation = origCalc
+Application.EnableEvents = True
 Application.ScreenUpdating = True
 
 On Error Resume Next
@@ -537,12 +529,12 @@ Dim mRow As Long, wasAlreadyOpen As Boolean
 Dim expectedHeaders As Variant, hdrIdx As Integer, headersOK As Boolean, headerMsg As String
 Dim ghostApp As Object ' <--- Our invisible background Excel
 
-masterPath = Environ("USERPROFILE") & "\OneDrive - Community Federal Savings Bank\Mohini Srivastava's files - L1 Beta\Beta 2.4_Feedbacks & Issues Encountered.xlsx"
+masterPath = TrackerFile()
 
 ' 1. Check if the file is already open in the visible Excel window
 wasAlreadyOpen = False
 For Each pushWb In Application.Workbooks
-If pushWb.Name = "Beta 2.4_Feedbacks & Issues Encountered.xlsx" Then
+If pushWb.Name = TrackerFileName() Then
 Set masterWb = pushWb
 wasAlreadyOpen = True
 Exit For
@@ -623,6 +615,7 @@ Exit Sub
 CancelHandler:
 ' CRITICAL FIX: This ensures Excel unfreezes even if the macro crashes
 Application.EnableEvents = True
+Application.Calculation = origCalc
 Application.EnableCancelKey = xlInterrupt
 Application.ScreenUpdating = True
 Application.DisplayAlerts = True
@@ -637,6 +630,88 @@ If Err.Number = 18 Then
 MsgBox "Process Safely Cancelled.", vbInformation, "Aborted"
 ElseIf Err.Number <> 0 Then
 MsgBox "An unexpected error occurred:" & vbCrLf & Err.Description, vbCritical, "Error " & Err.Number
+End If
+End Sub
+
+' Scans a sheet's UsedRange for date-shaped values and forces
+' mm/dd/yyyy on them (guarding against Excel misreading a bare
+' 4-digit year like "2025" as the year 1905). Was a per-cell COM
+' loop; now one bulk .Value read, an in-memory scan, and one
+' Union-based NumberFormat write covering every hit at once.
+Private Sub BulletproofDateFormat(ByVal ws As Worksheet)
+On Error Resume Next
+
+Dim rUsed As Range
+Set rUsed = ws.UsedRange
+
+' Single-cell UsedRange is the one case .Value returns a scalar,
+' not a 2D array - handle it directly rather than indexing into it.
+If rUsed.Cells.Count = 1 Then
+If IsDate(rUsed.Value) And Not IsEmpty(rUsed.Value) Then
+If Year(CDate(rUsed.Value)) > 1950 Then rUsed.NumberFormat = "mm/dd/yyyy"
+End If
+Exit Sub
+End If
+
+Dim arr As Variant, r As Long, c As Long
+Dim hitRange As Range
+arr = rUsed.Value
+
+For r = 1 To UBound(arr, 1)
+For c = 1 To UBound(arr, 2)
+If IsDate(arr(r, c)) And Not IsEmpty(arr(r, c)) Then
+If Year(CDate(arr(r, c))) > 1950 Then
+If hitRange Is Nothing Then
+Set hitRange = rUsed.Cells(r, c)
+Else
+Set hitRange = Union(hitRange, rUsed.Cells(r, c))
+End If
+End If
+End If
+Next c
+Next r
+
+If Not hitRange Is Nothing Then hitRange.NumberFormat = "mm/dd/yyyy"
+End Sub
+
+' Highlights the Sum-column cell for every CR/DR row in the given
+' pivot's RowRange (light red fill, dark red text). Was a per-row
+' COM loop reading .Value and writing Interior.Color/Font.Color one
+' row at a time; now one bulk .Value read of the whole RowRange, an
+' in-memory scan, and one Union-based write for both colors.
+Private Sub HighlightDrCrRows(ByVal pt As PivotTable, ByVal ws As Worksheet)
+On Error Resume Next
+
+Dim sumColIndex As Long, baseRow As Long
+sumColIndex = pt.DataBodyRange.Columns(2).Column
+baseRow = pt.RowRange.Row
+
+Dim rowArr As Variant, rIdx As Long, cellVal As String
+Dim hitRange As Range
+rowArr = pt.RowRange.Value
+
+If IsArray(rowArr) Then
+For rIdx = 1 To UBound(rowArr, 1)
+cellVal = Trim(UCase(CStr(rowArr(rIdx, 1))))
+If cellVal = "CR" Or cellVal = "DR" Then
+If hitRange Is Nothing Then
+Set hitRange = ws.Cells(baseRow + rIdx - 1, sumColIndex)
+Else
+Set hitRange = Union(hitRange, ws.Cells(baseRow + rIdx - 1, sumColIndex))
+End If
+End If
+Next rIdx
+Else
+' Single-row RowRange - rowArr is a scalar, not a 2D array.
+cellVal = Trim(UCase(CStr(rowArr)))
+If cellVal = "CR" Or cellVal = "DR" Then
+Set hitRange = ws.Cells(baseRow, sumColIndex)
+End If
+End If
+
+If Not hitRange Is Nothing Then
+hitRange.Interior.Color = RGB(255, 199, 206)   ' Light Red Fill
+hitRange.Font.Color = RGB(156, 0, 6)           ' Dark Red Text
 End If
 End Sub
 
