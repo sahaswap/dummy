@@ -186,6 +186,19 @@ Private Const CAPTCHA_CIRCUIT_WINDOW_SEC As Long = 120   ' ...within this window
 Private Const CAPTCHA_CIRCUIT_PAUSE_SEC As Long = 180    ' ...pauses the pool this long
 Private Const CAPTCHA_CIRCUIT_MAX_TRIPS As Long = 4      ' give up after this many trips
 
+' ---- Human-in-the-loop CAPTCHA solve (v4.0) ----
+' Instead of the blind timed pause above, when a CAPTCHA is hit the
+' tool can PAUSE, open a visible Edge window on each worker's profile
+' (so the challenge shows), let the analyst click "I'm not a robot",
+' and then resume the headless searches - which now reuse the
+' exemption cookie the solve just stored in each profile. Applies to
+' ALL headless modes (Fast and Optimised). Triggers on the FIRST
+' CAPTCHA, with a cooldown so a just-solved profile gets a chance to
+' run before it can prompt again.
+Private Const CAPTCHA_HUMAN_SOLVE_ENABLED As Boolean = True
+Private Const HUMAN_SOLVE_COOLDOWN_SEC As Long = 30      ' min gap between solve prompts
+Private Const HUMAN_SOLVE_FLUSH_SEC As Long = 3          ' let Edge write cookies before we close it
+
 ' Cookie warm-up: before the real headless batch, briefly open each
 ' worker's Edge profile VISIBLY against a plain google.com homepage
 ' (not a search) so it picks up real session cookies (NID, consent,
@@ -280,6 +293,13 @@ Private m_captchaWindowStart As Date
 Private m_captchaHitsInWindow As Long
 Private m_globalPauseUntil As Date
 Private m_circuitTripCount As Long
+
+' Human-solve state (v4.0).
+'   m_humanSolvePending - a CAPTCHA hit; do the solve at the next
+'                         dispatch cycle boundary.
+'   m_lastHumanSolve    - when we last prompted, for the cooldown.
+Private m_humanSolvePending As Boolean
+Private m_lastHumanSolve As Date
 
 ' Entry point. Wire this up to your macro button.
 Sub SearchAndSavePDF_Direct()
@@ -1801,6 +1821,10 @@ m_captchaHitsInWindow = 0
 m_globalPauseUntil = #12:00:00 AM#
 m_circuitTripCount = 0
 
+' Reset human-solve state for this run.
+m_humanSolvePending = False
+m_lastHumanSolve = #12:00:00 AM#
+
 If USE_HEADLESS Then
 RunSearchBatch = RunSearchBatchParallel(tasks, wsh)
 Else
@@ -1994,6 +2018,14 @@ LogStep "PASS [" & passLabel & "] start, n=" & n & ", maxRetries=" & maxRetries
 Do
 somethingCompletedThisCycle = False
 
+' Human-solve: if a CAPTCHA flagged this, pause here, let the analyst
+' solve it in visible windows, then resume. Requeues in-flight tasks
+' (their headless Edge gets killed to free the profiles) so they
+' re-run with the freshly-solved exemption cookies.
+If m_humanSolvePending Then
+DoHumanCaptchaSolve wsh, n, st, wk, busy, runningCount
+End If
+
 ' Fill any free worker slots with pending tasks that are eligible
 ' to launch right now (a task backing off after a CAPTCHA hit
 ' won't be picked up again until its nextLaunchT has passed - it
@@ -2097,6 +2129,18 @@ If sz < CAPTCHA_SIZE_HINT Then
 ' to do with the individual task - a cluster of these means we
 ' should stop launching entirely, not just delay this one.
 RegisterCaptchaHit
+
+' Human-solve: flag that the analyst should solve a CAPTCHA. The
+' dispatch loop picks this up at the next cycle boundary. Cooldown
+' stops it re-prompting while a just-solved profile settles.
+' v4.0.1: applies to ALL headless modes now, Fast included (no
+' m_protectionsOn gate) - the analyst can solve a CAPTCHA mid-batch
+' regardless of mode.
+If CAPTCHA_HUMAN_SOLVE_ENABLED And Not m_humanSolvePending Then
+If DateDiff("s", m_lastHumanSolve, Now) > HUMAN_SOLVE_COOLDOWN_SEC Then
+m_humanSolvePending = True
+End If
+End If
 
 If retriesUsed(i) < maxRetries Then
 On Error Resume Next
@@ -2420,6 +2464,87 @@ CircuitIsOpen = False
 End If
 On Error GoTo 0
 End Function
+
+' ---- Human-in-the-loop CAPTCHA solve (v4.0) ----
+' Pauses the batch, opens one VISIBLE Edge per worker profile at a
+' Google search (so the challenge appears), lets the analyst solve
+' "I'm not a robot", then resumes the headless searches with the
+' exemption cookies the solve just stored in each profile. Called
+' from the dispatch loop; requeues any in-flight tasks so they re-run
+' cleanly afterwards.
+Private Sub DoHumanCaptchaSolve(wsh As Object, ByVal n As Long, _
+ByRef st() As Long, ByRef wk() As Long, ByRef busy() As Boolean, _
+ByRef runningCount As Long)
+On Error Resume Next
+
+m_humanSolvePending = False   ' consume the flag up front
+LogStep "HUMAN-SOLVE: CAPTCHA hit - pausing for analyst to solve"
+
+Dim w As Long, i As Long
+
+' 1. Kill the headless workers so their profiles are free for a
+' visible Edge (can't share a --user-data-dir between two processes).
+For w = 0 To MAX_PARALLEL - 1
+KillEdgeWorkerProcesses w
+Next w
+SmartWait 1, True   ' let them die + release the profile locks
+
+' 2. Requeue anything that was in flight - it was about to fail on
+' the CAPTCHA anyway; it'll re-run after the solve.
+For i = 1 To n
+If st(i) = 1 Then
+st(i) = 0
+If wk(i) >= 0 And wk(i) <= MAX_PARALLEL - 1 Then busy(wk(i)) = False
+runningCount = runningCount - 1
+End If
+Next i
+
+' 3. Open one VISIBLE Edge per worker profile at a Google search so
+' the challenge (if any) is shown for the analyst.
+Dim edgeExe As String, cmd As String, profilePath As String
+edgeExe = GetEdgePath()
+For w = 0 To MAX_PARALLEL - 1
+profilePath = GetWorkerProfilePath(w)
+cmd = """" & edgeExe & """" & _
+" --user-data-dir=""" & profilePath & """" & _
+" --no-first-run --no-default-browser-check --disable-sync" & _
+" --window-size=1000,800" & _
+" --window-position=" & (w * 90) & ",60" & _
+" ""https://www.google.com/search?q=test&num=100&hl=en"""
+wsh.Run cmd, 1, False   ' 1 = visible window
+Next w
+SmartWait 2, True   ' let the windows open
+
+' 4. Wait for the analyst. Human-paced - they solve in each window,
+' let the results load, then click OK.
+Application.StatusBar = "OSINT: solve the CAPTCHA in the browser window(s), then click OK"
+TopMostMsgBox _
+"Google is challenging the searches with a CAPTCHA." & vbCrLf & vbCrLf & _
+MAX_PARALLEL & " browser window(s) just opened. In EACH one, complete the " & _
+"'I'm not a robot' check and let the results page load - then click OK here." & vbCrLf & vbCrLf & _
+"(If a window already shows normal results with no challenge, just click OK.)", _
+"Solve CAPTCHA to Continue", MB_OK Or MB_ICONWARNING Or MB_TOPMOST
+
+' 5. Give Edge a moment to write the exemption cookie to disk BEFORE
+' we close it - a hard kill before the flush would lose the solve.
+SmartWait CSng(HUMAN_SOLVE_FLUSH_SEC), True
+
+' 6. Close the visible windows so the profiles are free for headless.
+For w = 0 To MAX_PARALLEL - 1
+KillEdgeWorkerProcesses w
+Next w
+SmartWait 1, True
+
+' 7. Reset gates so the batch resumes right away.
+m_lastHumanSolve = Now
+m_globalPauseUntil = #12:00:00 AM#
+m_captchaHitsInWindow = 0
+m_captchaWindowStart = Now
+
+LogStep "HUMAN-SOLVE: analyst confirmed - resuming (in-flight tasks requeued)"
+Application.StatusBar = "OSINT: resuming searches after CAPTCHA solve..."
+On Error GoTo 0
+End Sub
 
 Private Sub SetWorkerCooldown(ByVal w As Long, ByRef workerCooldownUntil() As Date)
 On Error Resume Next
