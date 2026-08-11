@@ -54,17 +54,11 @@ MsgBox "Action Denied: ECM ID is missing in J10.", vbCritical, "Missing ID"
 Exit Sub
 End If
 
-' --- Ask which source folder to consolidate ---
-Dim sourceFolderName As String, userCancelled As Boolean
-
-UserForm1.Show vbModal
-sourceFolderName = UserForm1.SelectedFolderName
-userCancelled = UserForm1.userCancelled
-Unload UserForm1
-
-If userCancelled Or sourceFolderName = "" Then
-Exit Sub
-End If
+' Source folder is always "Transaction Files" now - the old
+' UserForm1 picker (Transaction Files / Non Alerted / Cancel) has
+' been removed, so this runs straight through like it used to.
+Dim sourceFolderName As String
+sourceFolderName = "Transaction Files"
 
 ' Build the exact paths using the guaranteed slash
 desktopPath = CreateObject("WScript.Shell").SpecialFolders("Desktop")
@@ -473,12 +467,9 @@ Application.DisplayAlerts = True
 
 ' --- ZERO-BULLSHIT SAVE FIX ---
 Dim finalSavePath As String
+' Always the alerted Transaction Files source now.
 Dim fileTag As String
-If sourceFolderName = "Transaction Files" Then
 fileTag = "Alerted"
-Else
-fileTag = "NonAlerted"
-End If
 excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.xlsx"
 
 ' Building path with guaranteed slashes

@@ -1,9 +1,8 @@
-Attribute VB_Name = "Module8"
 Sub Start_Button_Create_Folders()
 Dim wsHome As Worksheet
 Dim ecmID As String
 Dim desktopPath As String, mainFolderPath As String
-Dim subFolderPath As String, nonAlertedFolderPath As String, lookbackFolderPath As String
+Dim subFolderPath As String
 Dim FSO As Object
 Dim userProfile As String
 
@@ -27,27 +26,16 @@ End If
 
 mainFolderPath = desktopPath & "\" & ecmID
 subFolderPath = mainFolderPath & "\Transaction Files"
-nonAlertedFolderPath = mainFolderPath & "\Non Alerted Transaction Files"
-lookbackFolderPath = mainFolderPath & "\Lookback Transaction Files"
 
 ' Safely create Main Folder if it doesn't exist
 If Not FSO.FolderExists(mainFolderPath) Then
 FSO.CreateFolder mainFolderPath
 End If
 
-' Safely create Sub Folder if it doesn't exist
+' Safely create the Transaction Files sub-folder if it doesn't exist.
+' (Non Alerted / Lookback folders are no longer created here.)
 If Not FSO.FolderExists(subFolderPath) Then
 FSO.CreateFolder subFolderPath
-End If
-
-' Safely create Non Alerted Transaction Files folder if it doesn't exist
-If Not FSO.FolderExists(nonAlertedFolderPath) Then
-FSO.CreateFolder nonAlertedFolderPath
-End If
-
-' Safely create Lookback Transaction Files folder if it doesn't exist
-If Not FSO.FolderExists(lookbackFolderPath) Then
-FSO.CreateFolder lookbackFolderPath
 End If
 
 ' Centralized audit ledger row - also seeds this case's own
@@ -59,7 +47,7 @@ counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
 eventType:="Case Folder Created", _
 outputFile:=mainFolderPath, _
 toolVersion:="n/a", _
-notes:="Transaction Files / Non Alerted Transaction Files / Lookback Transaction Files created"
+notes:="Transaction Files folder created"
 
 ' Automatically open the exact folder for the analyst
 Shell "explorer.exe """ & subFolderPath & """", vbNormalFocus

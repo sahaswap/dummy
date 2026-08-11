@@ -119,6 +119,34 @@ Private Const TOOL_VERSION As String = "3.5"
 Private Const MIN_PDF_SIZE_BYTES As Long = 5120
 Private Const CAPTCHA_SIZE_HINT As Long = 80000
 
+' Size below which we open the human-solve windows.
+'
+' NOTE (from real logs): on this environment real CAPTCHA pages come
+' in at ~45-73 KB, while valid result pages are ~148 KB+. So there's
+' a clean gap and 80 KB separates them well - a LOW value like 30 KB
+' was wrong (it missed the real 45-73 KB CAPTCHAs). Kept equal to
+' CAPTCHA_SIZE_HINT so the solve fires on any sub-80 KB page, which
+' matched observed real CAPTCHAs with no false positives in testing.
+' Lower it only if you start seeing the solve open on pages that were
+' actually valid results (check the "HUMAN-SOLVE armed: PDF NNNNB"
+' line against what the window showed).
+Private Const CAPTCHA_HARD_SIZE_HINT As Long = 80000
+
+' ---- Content-based CAPTCHA confirmation (v4.1) ----
+' Size alone can't tell a 73 KB CAPTCHA page from a 73 KB small-but-
+' valid results page. When a PDF comes back under CAPTCHA_SIZE_HINT,
+' we now do a quick headless --dump-dom of the same query and READ
+' the page: real CAPTCHA pages carry CAPTCHA markers ("unusual
+' traffic", "/sorry/", "recaptcha"...), valid pages carry results
+' markers ("result-stats", id="search"...). Only a content-confirmed
+' CAPTCHA is retried / flagged / opens the solve window; a confirmed
+' results page is accepted even if small. Safety-first: if the DOM
+' can't be read (timeout/error), we DEFAULT to treating it as a
+' CAPTCHA, so a real block is never mistaken for a clean result.
+' Flip to False to fall back to pure size-based behaviour.
+Private Const CAPTCHA_CONTENT_DETECT_ENABLED As Boolean = True
+Private Const CAPTCHA_DETECT_TIMEOUT_SEC As Single = 12
+
 Private USE_HEADLESS As Boolean
 Private Const TIMING_PROFILE As String = "FAST"         ' FAST | NORMAL | SLOW
 
@@ -2125,6 +2153,11 @@ If stableHits(i) < 1 Then GoTo ContinuePollingTask
 ' flag the file for a human instead of quietly reporting
 ' it as a good result.
 If sz < CAPTCHA_SIZE_HINT Then
+' Size says "maybe CAPTCHA" - now CONFIRM by reading the page
+' content (v4.1). Only a content-confirmed CAPTCHA proceeds to
+' retry / flag / solve; a small-but-valid results page falls
+' through to the success path below.
+If IsCaptchaContent(qry(i), pg(i), wk(i), wsh) Then
 ' Count this against the pool-wide brake before deciding what
 ' to do with the individual task - a cluster of these means we
 ' should stop launching entirely, not just delay this one.
@@ -2132,13 +2165,12 @@ RegisterCaptchaHit
 
 ' Human-solve: flag that the analyst should solve a CAPTCHA. The
 ' dispatch loop picks this up at the next cycle boundary. Cooldown
-' stops it re-prompting while a just-solved profile settles.
-' v4.0.1: applies to ALL headless modes now, Fast included (no
-' m_protectionsOn gate) - the analyst can solve a CAPTCHA mid-batch
-' regardless of mode.
+' stops it re-prompting while a just-solved profile settles. Content-
+' confirmed above, so no size sub-check is needed here.
 If CAPTCHA_HUMAN_SOLVE_ENABLED And Not m_humanSolvePending Then
 If DateDiff("s", m_lastHumanSolve, Now) > HUMAN_SOLVE_COOLDOWN_SEC Then
 m_humanSolvePending = True
+LogStep "  HUMAN-SOLVE armed (content-confirmed CAPTCHA, PDF " & sz & "B)"
 End If
 End If
 
@@ -2212,6 +2244,12 @@ LogStep "  TASK CAPTCHA-EXHAUSTED [" & i & "/" & n & "] w" & wk(i) & _
 lbl(i) & "] " & dsc(i)
 End If
 GoTo ContinuePollingTask
+Else
+' Content shows a real results page that just happens to be small -
+' accept it instead of flagging/retrying. Falls through to success.
+LogStep "  CONTENT-DETECT [" & i & "/" & n & "] small PDF " & sz & _
+"B is a VALID results page - accepting (not a CAPTCHA)"
+End If
 End If
 
 st(i) = 2
@@ -2772,6 +2810,128 @@ Exit Function
 End If
 Next p
 GetEdgePath = "msedge.exe"
+End Function
+
+' ---- Content-based CAPTCHA confirmation (v4.1) ----
+' Re-fetches the same query HEADLESS with --dump-dom (DOM to a text
+' file) and reads it to decide whether a small page is a real CAPTCHA
+' or a valid results page. Returns TRUE if it's (or is assumed to be)
+' a CAPTCHA. Only called on pages already below CAPTCHA_SIZE_HINT, so
+' it's rare - not an every-search cost.
+'
+' Safety-first: TRUE unless we can positively read a results page.
+' A read failure/timeout defaults to TRUE, so a genuine block is
+' never accepted as a clean result.
+Private Function IsCaptchaContent(ByVal query As String, ByVal pageNum As Long, _
+ByVal workerIdx As Long, wsh As Object) As Boolean
+IsCaptchaContent = True   ' safe default
+
+If Not CAPTCHA_CONTENT_DETECT_ENABLED Then Exit Function
+
+On Error GoTo Fallback
+
+Dim edgeExe As String, profilePath As String, outPath As String
+Dim baseURL As String, cmd As String, q As String
+q = Chr$(34)   ' one double-quote
+
+edgeExe = GetEdgePath()
+If Len(edgeExe) = 0 Then Exit Function
+profilePath = GetWorkerProfilePath(workerIdx)
+outPath = Environ$("TEMP") & "\osint_capdetect_w" & workerIdx & ".html"
+
+' Free this worker's profile + clear any old probe output.
+KillEdgeWorkerProcesses workerIdx
+On Error Resume Next
+If Dir(outPath) <> "" Then Kill outPath
+On Error GoTo Fallback
+
+baseURL = "https://www.google.com/search?q=" & URLEncode(query) & "&num=100&hl=en"
+If pageNum > 1 Then baseURL = baseURL & "&start=" & ((pageNum - 1) * 10)
+
+' Headless --dump-dom, stdout redirected to a file via cmd. Hidden.
+cmd = "cmd.exe /c " & q & q & edgeExe & q & _
+" --headless=new --disable-gpu" & _
+" --user-data-dir=" & q & profilePath & q & _
+" --no-first-run --no-default-browser-check --disable-extensions" & _
+" --disable-sync --dump-dom " & q & baseURL & q & _
+" > " & q & outPath & q & " 2>nul" & q
+wsh.Run cmd, 0, False   ' 0 = hidden, don't wait (we poll below)
+
+' Poll for the DOM file to be written (the redirect flushes when Edge
+' exits after dumping), bounded by CAPTCHA_DETECT_TIMEOUT_SEC.
+Dim waited As Single
+waited = 0
+Do
+SmartWait 0.4, True
+waited = waited + 0.4
+If Dir(outPath) <> "" Then
+If FileLen(outPath) > 200 Then Exit Do
+End If
+If waited >= CAPTCHA_DETECT_TIMEOUT_SEC Then Exit Do
+Loop
+
+KillEdgeWorkerProcesses workerIdx   ' clean the probe process
+
+If Dir(outPath) = "" Then
+LogStep "  CONTENT-DETECT w" & workerIdx & ": no DOM captured - assuming CAPTCHA (safe default)"
+IsCaptchaContent = True
+GoTo CleanUp
+End If
+If FileLen(outPath) < 100 Then
+LogStep "  CONTENT-DETECT w" & workerIdx & ": empty DOM - assuming CAPTCHA (safe default)"
+IsCaptchaContent = True
+GoTo CleanUp
+End If
+
+Dim html As String
+html = LCase$(ReadTextFile(outPath))
+
+Dim isCap As Boolean, isResults As Boolean
+isCap = (InStr(html, "unusual traffic") > 0) _
+Or (InStr(html, "/sorry/") > 0) _
+Or (InStr(html, "g-recaptcha") > 0) _
+Or (InStr(html, "recaptcha") > 0) _
+Or (InStr(html, "id=" & q & "recaptcha" & q) > 0) _
+Or (InStr(html, "not a robot") > 0)
+
+isResults = (InStr(html, "result-stats") > 0) _
+Or (InStr(html, "id=" & q & "search" & q) > 0) _
+Or (InStr(html, "id=" & q & "rso" & q) > 0) _
+Or (InStr(html, "id=" & q & "result-stats" & q) > 0)
+
+If isCap Then
+IsCaptchaContent = True
+LogStep "  CONTENT-DETECT w" & workerIdx & ": CAPTCHA markers found -> CAPTCHA"
+ElseIf isResults Then
+IsCaptchaContent = False
+LogStep "  CONTENT-DETECT w" & workerIdx & ": results markers found -> VALID"
+Else
+IsCaptchaContent = True
+LogStep "  CONTENT-DETECT w" & workerIdx & ": inconclusive DOM - assuming CAPTCHA (safe default)"
+End If
+
+CleanUp:
+On Error Resume Next
+If Dir(outPath) <> "" Then Kill outPath
+On Error GoTo 0
+Exit Function
+
+Fallback:
+IsCaptchaContent = True
+On Error Resume Next
+If Dir(outPath) <> "" Then Kill outPath
+On Error GoTo 0
+End Function
+
+' Reads a whole text file into a string (used for the DOM probe).
+Private Function ReadTextFile(ByVal path As String) As String
+On Error Resume Next
+Dim fso As Object, ts As Object
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set ts = fso.OpenTextFile(path, 1)   ' 1 = ForReading
+ReadTextFile = ts.ReadAll
+ts.Close
+On Error GoTo 0
 End Function
 
 
