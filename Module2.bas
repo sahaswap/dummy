@@ -144,7 +144,15 @@ Private Const CAPTCHA_HARD_SIZE_HINT As Long = 80000
 ' can't be read (timeout/error), we DEFAULT to treating it as a
 ' CAPTCHA, so a real block is never mistaken for a clean result.
 ' Flip to False to fall back to pure size-based behaviour.
-Private Const CAPTCHA_CONTENT_DETECT_ENABLED As Boolean = True
+'
+' DISABLED (Aug 2026): the --dump-dom probe launches an EXTRA headless
+' Edge process per small PDF, and every Edge launch from Excel trips the
+' VDI's "blocked by your administrator" ASR popup. Turning the probe off
+' removes those extra launches. Trade-off: without content confirmation
+' we fall back to pure size (any sub-CAPTCHA_SIZE_HINT PDF is treated as
+' a CAPTCHA), so small-but-valid results pages can be flagged / trigger
+' the human-solve window again. Tune CAPTCHA_SIZE_HINT if that gets noisy.
+Private Const CAPTCHA_CONTENT_DETECT_ENABLED As Boolean = False
 Private Const CAPTCHA_DETECT_TIMEOUT_SEC As Single = 12
 
 Private USE_HEADLESS As Boolean
@@ -179,8 +187,12 @@ Private m_searchMode As OsintSearchMode
 Private Const MAX_PARALLEL As Long = 2
 Private Const LAUNCH_STAGGER_SEC As Single = 0.3        ' breathing room between launches
 Private Const POLL_INTERVAL_SEC As Single = 0.3         ' how often we check for a finished PDF
-Private Const TASK_TIMEOUT_SEC As Long = 75             ' kill a task that is clearly stuck
-Private Const RETRY_TIMEOUT_SEC As Long = 90            ' give retries a little more rope
+' Lowered from 75/90 (Aug 2026): logs show every real search finishes
+' in 6-9s, so a task still empty at 35s is a hung CAPTCHA page, not a
+' slow-but-valid one. Catching it sooner requeues / escalates it to the
+' human-solve far quicker instead of burning 75-90s per hang.
+Private Const TASK_TIMEOUT_SEC As Long = 35             ' kill a task that is clearly stuck
+Private Const RETRY_TIMEOUT_SEC As Long = 45            ' give retries a little more rope
 Private Const RETRY_COOLDOWN_SEC As Single = 5          ' unused since v2.5.10 (inline retries)
 
 ' CAPTCHA-specific retry tuning. A CAPTCHA/interstitial page is
@@ -226,6 +238,13 @@ Private Const CAPTCHA_CIRCUIT_MAX_TRIPS As Long = 4      ' give up after this ma
 Private Const CAPTCHA_HUMAN_SOLVE_ENABLED As Boolean = True
 Private Const HUMAN_SOLVE_COOLDOWN_SEC As Long = 30      ' min gap between solve prompts
 Private Const HUMAN_SOLVE_FLUSH_SEC As Long = 3          ' let Edge write cookies before we close it
+' Don't disrupt the analyst on the FIRST CAPTCHA - a lot of them clear
+' on a plain retry (fresh Edge/cookies). Only arm the visible solve
+' window once a task has already been retried this many times and is
+' STILL blocked. In Fast mode the between-retry backoff is 0s, so with
+' 2 retries the window opens after ~2 renders (~10-15s) on a genuinely
+' stuck search, not on the first transient hit.
+Private Const HUMAN_SOLVE_RETRY_THRESHOLD As Long = 2    ' retries before opening solve tabs
 
 ' Cookie warm-up: before the real headless batch, briefly open each
 ' worker's Edge profile VISIBLY against a plain google.com homepage
@@ -759,15 +778,19 @@ Dim rescuedOK As Long
 rescuedOK = RunSearchBatch(fastRescue, WshShell)
 If bAbort Then GoTo AbortProcess
 
-' Delete the _CAPTCHA_UNRESOLVED sidecar for each rescued task
-' that now has a real PDF under its normal name.
+' Delete the _CAPTCHA_UNRESOLVED sidecar ONLY for tasks whose visible
+' re-run produced a genuinely full-size results page under the normal
+' name. The old check was > MIN_PDF_SIZE_BYTES (5 KB), so a re-run that
+' hit the SAME CAPTCHA (~71 KB) still counted as "rescued" and had its
+' flag deleted - leaving a block page sitting under a clean name. Must
+' match TaskHasGoodResult's bar: at least CAPTCHA_SIZE_HINT.
 Dim cleaned As Long, spRes As String, fpRes As String
 For rt = 1 To fastRescue.Count
 rescTask = fastRescue(rt)
 spRes = CStr(rescTask(1))
 On Error Resume Next
 If Dir(spRes) <> "" Then
-If FileLen(spRes) > MIN_PDF_SIZE_BYTES Then
+If FileLen(spRes) >= CAPTCHA_SIZE_HINT Then
 fpRes = FlagPathWithSuffix(spRes, CAPTCHA_FLAG_SUFFIX)
 If Dir(fpRes) <> "" Then
 Kill fpRes
@@ -792,6 +815,32 @@ LogStep "RESCUE (Fast->Visible): " & rescuedOK & " saved, " & cleaned & _
 End If
 End If
 End If
+End If
+
+' -------- Final CAPTCHA-size safety sweep --------
+' Guarantee, no matter what: a CAPTCHA-size PDF is never left sitting
+' under a clean name. Whatever route produced it - a content-detect
+' false-accept, a rescue that cleared the flag, anything - any expected
+' output still under CAPTCHA_SIZE_HINT gets the _CAPTCHA_UNRESOLVED
+' suffix here, so a 71 KB block page can't pass as a real result.
+If Not allTasks Is Nothing Then
+Dim swT As Long, swTask As Variant, swSave As String, swFlag As String, swept As Long
+For swT = 1 To allTasks.Count
+swTask = allTasks(swT)
+swSave = CStr(swTask(1))
+On Error Resume Next
+If Dir(swSave) <> "" Then
+If FileLen(swSave) < CAPTCHA_SIZE_HINT Then
+swFlag = FlagPathWithSuffix(swSave, CAPTCHA_FLAG_SUFFIX)
+If Dir(swFlag) <> "" Then Kill swFlag   ' replace any stale flag file
+Name swSave As swFlag
+swept = swept + 1
+End If
+End If
+On Error GoTo ErrorHandler
+Next swT
+If swept > 0 Then LogStep "SAFETY SWEEP: flagged " & swept & _
+" CAPTCHA-size file(s) that were left under a clean name"
 End If
 
 ' Elapsed time - using DateDiff instead of subtraction so a run
@@ -2165,12 +2214,17 @@ RegisterCaptchaHit
 
 ' Human-solve: flag that the analyst should solve a CAPTCHA. The
 ' dispatch loop picks this up at the next cycle boundary. Cooldown
-' stops it re-prompting while a just-solved profile settles. Content-
-' confirmed above, so no size sub-check is needed here.
-If CAPTCHA_HUMAN_SOLVE_ENABLED And Not m_humanSolvePending Then
+' stops it re-prompting while a just-solved profile settles. We only
+' arm once this task has already been retried HUMAN_SOLVE_RETRY_THRESHOLD
+' times and is STILL blocked - a first-hit CAPTCHA that clears on retry
+' never opens the disruptive visible window.
+If CAPTCHA_HUMAN_SOLVE_ENABLED And Not m_humanSolvePending _
+And retriesUsed(i) >= HUMAN_SOLVE_RETRY_THRESHOLD Then
 If DateDiff("s", m_lastHumanSolve, Now) > HUMAN_SOLVE_COOLDOWN_SEC Then
 m_humanSolvePending = True
-LogStep "  HUMAN-SOLVE armed (content-confirmed CAPTCHA, PDF " & sz & "B)"
+LogStep "  HUMAN-SOLVE armed after " & retriesUsed(i) & " retr(ies) (" & _
+IIf(CAPTCHA_CONTENT_DETECT_ENABLED, "content-confirmed", "size-based") & _
+" CAPTCHA, PDF " & sz & "B)"
 End If
 End If
 
@@ -2261,15 +2315,14 @@ busy(wk(i)) = False
 SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
 
-' Reap this worker's Edge processes now that its PDF is written
-' and final. Headless Edge usually exits on its own after
-' --print-to-pdf, but its child processes (gpu/utility/crashpad)
-' can linger; without this the success path never cleaned up and
-' orphans accumulated across the whole run. The timeout path
-' already did this - the success path was the leak. Matches only
-' msedge.exe carrying this worker's profile name, so the analyst's
-' normal Edge is never touched. The worker is now free but won't
-' be relaunched until the next launch cycle, so this is safe.
+' Reap this worker's Edge processes now that its PDF is final. A single
+' headless launch leaves ~12-23 child processes (gpu/utility/crashpad/
+' renderers) that don't all self-exit; on a 2-vCPU VDI letting those
+' pile up across a run starves the CPU and causes the "NO FILE EVER"
+' hangs. The WMI query costs ~1-2s but that's dwarfed by CAPTCHA waits,
+' so containing the leak is the right trade. Matches only msedge.exe
+' carrying this worker's profile name - the analyst's normal Edge is
+' untouched, and the worker won't relaunch until the next cycle.
 KillEdgeWorkerProcesses wk(i)
 
 taskDurSec = DateDiff("s", launchT(i), Now)

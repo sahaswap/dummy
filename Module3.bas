@@ -20,6 +20,8 @@ Dim CustName As String
 
 ' --- NEW VARIABLES FOR RFI TABLE & HEADER/FOOTER ---
 Dim isRFI As Boolean
+Dim isEscalation As Boolean
+Dim decValue As String
 Dim sec As Object
 Dim hdrRange As Object
 Dim ftrRange As Object
@@ -123,7 +125,11 @@ With wdDoc.content.ParagraphFormat
 End With
 
 ' --- NEW: RFI FORMATTING DELEGATED TO LOCAL SUBROUTINE ---
-isRFI = (UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J6").Value)) = "RFI")
+' J6 is the Decision cell (RFI / Escalation / Non-Escalation / ...).
+decValue = UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J6").Value))
+isRFI = (decValue = "RFI")
+' Escalation only - deliberately excludes "Non-Escalation".
+isEscalation = (InStr(decValue, "ESCALAT") > 0 And InStr(decValue, "NON") = 0)
 If isRFI Then
     FormatRFIDocument wdApp, wdDoc
 End If
@@ -145,6 +151,8 @@ CustName = ThisWorkbook.Sheets("Sheet1").Range("J14").Value
 
 If isRFI Then
     wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_RFI QUESTIONS.docx"
+ElseIf isEscalation Then
+    wordFileName = ecmID & "_" & AlertID & "_Escalation Narrative.docx"
 Else
     wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_Alert Write-Up.docx"
 End If
@@ -172,7 +180,8 @@ On Error GoTo 0
 modAuditLog.LogAuditEvent ecmID:=ecmID, alertID:=AlertID, _
 customerName:=CustName, _
 counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), _
-eventType:=IIf(isRFI, "RFI Questions Generated", "Alert Write-Up Generated"), _
+eventType:=IIf(isRFI, "RFI Questions Generated", _
+                IIf(isEscalation, "Escalation Narrative Generated", "Alert Write-Up Generated")), _
 outputFile:=folderPath & wordFileName, _
 toolVersion:="2.4.1", _
 detail:="Full text archived in 'Narrative' tab of " & ecmID & "_Audit_Log.xlsx", _
@@ -182,6 +191,14 @@ notes:=""
 ' - the Register row above already records every time this ran).
 modAuditLog.ArchiveNarrativeText ecmID:=ecmID, fullText:=generatedDocText, _
 docLabel:=wordFileName
+
+' --- RFI decisions also get a Pre RFI Alert Write-Up companion doc ---
+' A fill-in narrative shell (customer OSDD profile + counterparty
+' review) saved alongside the questions doc for the analyst to
+' complete from their OSDD results.
+If isRFI Then
+    GeneratePreRFIWriteUp wdApp, folderPath, ecmID, AlertID, CustName
+End If
 
 ' ==========================================
 ' 8. LIVE PUSH TO SHARED ONEDRIVE MASTER TRACKER (SHEET3) - HEADLESS GHOST MODE
@@ -586,4 +603,152 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
             End With
         End If
     End If
+End Sub
+
+' ================================================================
+' Pre RFI Alert Write-Up companion document.
+'
+' Generated only when the Decision (J6) is RFI, alongside the RFI
+' questions doc. It's a fill-in narrative shell: the "xxxxx"
+' placeholders and CP1/CP2/CP3 lines are meant to be completed by
+' the analyst from their OSDD search results. Saved as
+'   {ECM}_{AlertID}_{CustName}_Pre RFI Alert Write-Up.docx
+' in the same case folder as everything else.
+' ================================================================
+Private Sub GeneratePreRFIWriteUp(ByVal wdApp As Object, ByVal folderPath As String, _
+                                  ByVal ecmID As String, ByVal AlertID As String, _
+                                  ByVal CustName As String)
+    On Error Resume Next
+    Dim wdDoc2 As Object
+    Set wdDoc2 = wdApp.Documents.Add
+    If wdDoc2 Is Nothing Then Exit Sub
+
+    ' Sheet7 tags are embedded so the shared tag->value loop below fills
+    ' them from the sheet, exactly like the questions doc:
+    '   [Subject Name] -> customer/subject searched
+    '   [CP n]         -> that counterparty's name
+    ' The remaining xxxxx / xxxxxxx spots stay as free-text placeholders
+    ' for the analyst to complete from their OSDD results.
+    Dim body As String
+    body = "CUSTOMER PROFILE (OSDD search results)" & vbCr & _
+           "An internet search for [Subject Name] returned results with an exact match found and it is a xxxxx company specializing in xxxxxxx. The company provides xxxxxx, Website (if available)" & vbCr & _
+           "Internal records confirmed the KYC details as well (if applicable)." & vbCr & _
+           "A negative news search identified xxxxxxxxxxxxx information."
+
+    ' COUNTERPARTY REVIEW is built dynamically from Sheet1!J19:J24 - one
+    ' line per counterparty actually present, in slot order (so gaps are
+    ' handled). If no counterparties are listed, the whole section is
+    ' left out rather than showing empty CP lines.
+    Dim wsHome As Worksheet
+    Set wsHome = ThisWorkbook.Sheets("Sheet1")
+    Dim cpLines As String, rowIdx As Long, slot As Long
+    For rowIdx = 19 To 24
+        If Trim$(CStr(wsHome.Range("J" & rowIdx).Value)) <> "" Then
+            slot = rowIdx - 18                      ' J19 -> CP 1 ... J24 -> CP 6
+            If cpLines <> "" Then cpLines = cpLines & vbCr
+            cpLines = cpLines & "[CP " & slot & "] (OSDD results)"
+        End If
+    Next rowIdx
+
+    If cpLines <> "" Then
+        body = body & vbCr & vbCr & _
+               "COUNTERPARTY REVIEW" & vbCr & _
+               "The following counterparties were selected for review based on transaction volume and monetary value observed in the alerted transaction activity:" & vbCr & _
+               cpLines
+    End If
+
+    wdDoc2.content.text = body
+
+    ' Resolve embedded Sheet7 tags into their values - same Column J/K
+    ' mapping the questions doc uses, so [Subject Name]/[CP 1..3] fill in.
+    ApplySheet7Tags wdDoc2
+
+    ' Same body formatting as the main write-up: justified, 1.15 spacing.
+    With wdDoc2.content.ParagraphFormat
+        .Alignment = 3          ' wdAlignParagraphJustify
+        .LineSpacingRule = 5    ' wdLineSpaceMultiple
+        .LineSpacing = wdApp.LinesToPoints(1.15)
+        .SpaceBefore = 0
+        .SpaceAfter = 0
+    End With
+
+    ' Bold the two section headers so the shell reads like a write-up.
+    BoldHeadingInDoc wdDoc2, "CUSTOMER PROFILE (OSDD search results)"
+    BoldHeadingInDoc wdDoc2, "COUNTERPARTY REVIEW"
+
+    Dim writeUpName As String
+    writeUpName = ecmID & "_" & AlertID & "_" & CustName & "_Pre RFI Alert Write-Up.docx"
+    wdDoc2.SaveAs2 fileName:=folderPath & writeUpName, FileFormat:=12
+    If Err.Number <> 0 Then
+        MsgBox "Warning: Pre RFI Write-Up auto-save failed. Check if the file is already open.", vbExclamation
+        Err.Clear
+    End If
+
+    ' Register-tab row for the companion doc. No ArchiveNarrativeText
+    ' call here - the Narrative tab keeps the RFI questions text, and
+    ' this shell is just placeholders, so there's nothing to archive.
+    modAuditLog.LogAuditEvent ecmID:=ecmID, alertID:=AlertID, _
+        customerName:=CustName, _
+        counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), _
+        eventType:="Pre RFI Alert Write-Up Generated", _
+        outputFile:=folderPath & writeUpName, _
+        toolVersion:="2.4.1", _
+        detail:="Fill-in narrative shell generated alongside the RFI questions doc", _
+        notes:=""
+    On Error GoTo 0
+End Sub
+
+' Bolds the first occurrence of headingText in the given Word doc.
+Private Sub BoldHeadingInDoc(ByVal wdDoc2 As Object, ByVal headingText As String)
+    On Error Resume Next
+    Dim rng As Object
+    Set rng = wdDoc2.content
+    With rng.Find
+        .ClearFormatting
+        .text = headingText
+        .Forward = True
+        .Wrap = 0
+        If .Execute Then rng.Font.Bold = True
+    End With
+End Sub
+
+' Runs Sheet7's Column J (tag) -> Column K (value) replacement over the
+' given Word doc - the exact same mapping ExportToWord applies to the
+' questions doc. Kept as its own sub so the Pre RFI Write-Up resolves
+' any Sheet7 tag ([Subject Name], [CP 1], [CP 2], [CP 3], etc.) the same
+' way. Word's Find is case-insensitive, but spacing must match the sheet.
+Private Sub ApplySheet7Tags(ByVal wdTarget As Object)
+    On Error Resume Next
+    Dim ws7 As Worksheet
+    Set ws7 = ThisWorkbook.Sheets("Sheet7")
+    If ws7 Is Nothing Then Exit Sub
+
+    Dim lastRow As Long, i As Long
+    Dim tagStr As String, valStr As String, rng As Object
+    lastRow = ws7.Cells(ws7.Rows.Count, "J").End(xlUp).Row
+
+    For i = 1 To lastRow
+        tagStr = ws7.Cells(i, "J").Value
+
+        If tagStr = "[Program Description]" Then
+            valStr = ws7.Cells(i, "K").Value
+        Else
+            valStr = ws7.Cells(i, "K").text
+        End If
+
+        If tagStr <> "" And tagStr <> "[MASTER_SHELL]" And tagStr <> "Template Tag" Then
+            Set rng = wdTarget.content
+            With rng.Find
+                .ClearFormatting
+                .text = tagStr
+                .Forward = True
+                .Wrap = 0
+                Do While .Execute = True
+                    rng.text = valStr
+                    rng.Collapse Direction:=0
+                Loop
+            End With
+        End If
+    Next i
+    On Error GoTo 0
 End Sub

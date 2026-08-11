@@ -92,7 +92,7 @@ Set r.TxtSubAlert = txtSA
 
 Set txtD1 = FrameRows.Controls.Add("Forms.TextBox.1")
 txtD1.Left = 275: txtD1.Top = yPos: txtD1.Width = 125: txtD1.Height = 18
-txtD1.ControlTipText = "Lookback START date (mm.dd.yyyy)"
+txtD1.ControlTipText = "Lookback START date (mm.dd.yyyy) - double-click for calendar"
 Set r.TxtDateStart = txtD1
 
 Set txtD2 = FrameRows.Controls.Add("Forms.TextBox.1")

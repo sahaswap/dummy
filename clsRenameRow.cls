@@ -72,6 +72,34 @@ Public Sub BuildXlTypeList()
     ApplyXlTypeVisibility
 End Sub
 
+' When a complete start date (mm.dd.yyyy) is entered, pre-populate the
+' end date with the last day of the month one year later - e.g.
+' 06.01.2025 -> 06.30.2026. Parsed by hand (Split on ".") so it doesn't
+' depend on the machine's locale reading dotted dates. The analyst can
+' still overwrite the end afterwards; it only re-derives if they edit
+' the start again.
+Private Sub AutoFillLookbackEnd()
+    If TxtDateStart Is Nothing Or TxtDateEnd Is Nothing Then Exit Sub
+
+    Dim parts() As String
+    parts = Split(Trim(TxtDateStart.text), ".")
+    If UBound(parts) <> 2 Then Exit Sub
+    If Not (IsNumeric(parts(0)) And IsNumeric(parts(1)) And IsNumeric(parts(2))) Then Exit Sub
+
+    Dim mm As Integer, dd As Integer, yyyy As Integer
+    mm = CInt(parts(0)): dd = CInt(parts(1)): yyyy = CInt(parts(2))
+    If yyyy < 1900 Or mm < 1 Or mm > 12 Or dd < 1 Or dd > 31 Then Exit Sub
+
+    On Error GoTo done
+    Dim startDate As Date, oneYr As Date, endDate As Date
+    startDate = DateSerial(yyyy, mm, dd)
+    oneYr = DateAdd("yyyy", 1, startDate)
+    ' Day 0 of the following month = last day of oneYr's month.
+    endDate = DateSerial(Year(oneYr), Month(oneYr) + 1, 0)
+    TxtDateEnd.text = Format$(endDate, "mm.dd.yyyy")
+done:
+End Sub
+
 ' Sub-Alert box only for Alerted, the two date boxes only for Lookback.
 ' Non Alerted and Galileo are fixed names - they need no extra input.
 Private Sub ApplyXlTypeVisibility()
@@ -278,7 +306,20 @@ Private Sub CboXlType_Change()
 End Sub
 
 Private Sub TxtDateStart_Change()
+    AutoFillLookbackEnd
     RecalcPreview
+End Sub
+
+' Double-click the start field to pick from the pop-up calendar. Setting
+' the text fires TxtDateStart_Change, which auto-fills the end date and
+' refreshes the preview. Guarded so that if frmCalendar isn't installed,
+' the field just stays a normal typed textbox.
+Private Sub TxtDateStart_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    On Error Resume Next
+    Dim d As Date
+    If frmCalendar.PickDate(TxtDateStart.text, d) Then
+        TxtDateStart.text = Format$(d, "mm.dd.yyyy")
+    End If
 End Sub
 
 Private Sub TxtDateEnd_Change()
