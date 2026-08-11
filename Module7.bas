@@ -42,7 +42,10 @@ If fd.Show = -1 Then
             xlType = InputBox("Renaming: " & fileName & vbNewLine & vbNewLine & _
                               "What type of transaction file?" & vbNewLine & _
                               "1: Alerted Transactions" & vbNewLine & _
-                              "2: Lookback Transactions", "Excel Rename")
+                              "2: Lookback Transactions" & vbNewLine & _
+                              "3: Non Alerted Transactions" & vbNewLine & _
+                              "4: Galileo Transaction" & vbNewLine & _
+                              "5: CTS Report (keep file name)", "Excel Rename")
             If StrPtr(xlType) = 0 Then GoTo CancelHandler    ' Cancel
             If Trim(xlType) = "" Then GoTo NextFile           ' blank -> skip this file
 
@@ -57,6 +60,22 @@ If fd.Show = -1 Then
                     Else
                         newName = ECM & "_" & sheetAlertID & "_Alerted Transactions"
                     End If
+
+                Case "3"   ' Non Alerted Transactions - fixed name
+                    newName = ECM & "_" & sheetAlertID & "_Non Alerted Transactions"
+
+                Case "4"   ' Galileo Transaction - fixed name (moved here from PDF categories)
+                    newName = ECM & "_" & sheetAlertID & "_Galileo Transaction"
+
+                Case "5"   ' CTS Report - keep the file's own static name, just prefix it
+                    Dim ctsBase As String
+                    If Len(ext) > 0 And Len(fileName) >= Len(ext) And _
+                       LCase(Right(fileName, Len(ext))) = LCase(ext) Then
+                        ctsBase = Left(fileName, Len(fileName) - Len(ext))
+                    Else
+                        ctsBase = fileName
+                    End If
+                    newName = ECM & "_" & sheetAlertID & "_CTS Report_" & ctsBase
 
                 Case "2"   ' Lookback Transactions (new) - date range in the name
                     Dim lbStart As String, lbEnd As String
@@ -113,13 +132,13 @@ If fd.Show = -1 Then
                                   "4: Website" & vbNewLine & _
                                   "5: Google Translate" & vbNewLine & _
                                   "6: Customer Name + SSN" & vbNewLine & _
-                                  "7: Sigma" & vbNewLine & _
+                                  "7: CTS Report_Customer KYC" & vbNewLine & _
                                   "8: Alert Write Up" & vbNewLine & _
-                                  "9: Galileo Transaction", "Step 2: Customer Category")
-                                  
+                                  "9: Galileo Profile", "Step 2: Customer Category")
+
                 If StrPtr(custChoice) = 0 Then GoTo CancelHandler
                 If custChoice = "" Then GoTo NextFile
-                
+
                 Select Case custChoice
                     Case "1": docType = "External Search 1"
                     Case "2": docType = "External Search 2"
@@ -127,9 +146,9 @@ If fd.Show = -1 Then
                     Case "4": docType = "Website"
                     Case "5": docType = "Google Translate"
                     Case "6": docType = "Customer Name + SSN"
-                    Case "7": docType = "Sigma"
+                    Case "7": docType = "CTS Report_Customer KYC"
                     Case "8": docType = "Alert Write Up"
-                    Case "9": docType = "Galileo Transaction"
+                    Case "9": docType = "Galileo Profile"
                     Case Else: GoTo NextFile
                 End Select
 
@@ -168,7 +187,10 @@ If fd.Show = -1 Then
             End If
 
             ' Build the final file name
-            If docType <> "" Then
+            If docType = "CTS Report_Customer KYC" Then
+                ' Standalone label - no entity identifier in the name.
+                newName = ECM & "_" & sheetAlertID & "_" & docType
+            ElseIf docType <> "" Then
                 newName = ECM & "_" & sheetAlertID & "_" & identifier & "_" & docType
             Else
                 newName = ECM & "_" & sheetAlertID & "_" & identifier

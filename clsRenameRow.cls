@@ -39,28 +39,46 @@ Public CustName As String
 ' Kept Private instead, set via SetCPNames() from the launcher.
 Private m_CPNames(1 To 6) As String
 
-Private Const CUSTOMER_CATS As String = "External Search 1|External Search 2|External Search 3|Website|Google Translate|Customer Name + SSN|Sigma|Alert Write Up|Galileo Transaction"
+' Galileo moved to the Excel type dropdown (it's a spreadsheet, not a
+' PDF), and Sigma replaced by the CTS Report / Customer KYC label.
+Private Const CUSTOMER_CATS As String = "External Search 1|External Search 2|External Search 3|Website|Google Translate|Customer Name + SSN|CTS Report_Customer KYC|Alert Write Up|Galileo Profile"
 Private Const CP_CATS As String = "External Search 1|External Search 2|External Search 3|Website|Google Translate"
+
+' This customer category is a standalone document label - it
+' deliberately drops the entity identifier from the final file name,
+' producing ECM_AlertID_CTS Report_Customer KYC.
+Private Const CAT_CTS_KYC As String = "CTS Report_Customer KYC"
 
 ' Excel type-dropdown options.
 Private Const XL_ALERTED As String = "Alerted Transactions"
+Private Const XL_NONALERTED As String = "Non Alerted Transactions"
 Private Const XL_LOOKBACK As String = "Lookback Transactions"
+Private Const XL_GALILEO As String = "Galileo Transaction"
+' Keeps the xlsx's own (static, system-generated) name and just
+' prepends "ECM_AlertID_CTS Report_" in front of it, producing
+' ECM_AlertID_CTS Report_<original name>. Label is picker-only text.
+Private Const XL_CTS_KEEP As String = "CTS Report (keep file name)"
 
 ' --- Called once by UserForm2 after the Excel-row controls are made:
 '     fills the type dropdown, defaults to Alerted, sets field visibility.
 Public Sub BuildXlTypeList()
     CboXlType.Clear
     CboXlType.AddItem XL_ALERTED
+    CboXlType.AddItem XL_NONALERTED
     CboXlType.AddItem XL_LOOKBACK
+    CboXlType.AddItem XL_GALILEO
+    CboXlType.AddItem XL_CTS_KEEP
     CboXlType.ListIndex = 0            ' default: Alerted
     ApplyXlTypeVisibility
 End Sub
 
-' Shows the Sub-Alert box for Alerted, the two date boxes for Lookback.
+' Sub-Alert box only for Alerted, the two date boxes only for Lookback.
+' Non Alerted and Galileo are fixed names - they need no extra input.
 Private Sub ApplyXlTypeVisibility()
-    Dim isLookback As Boolean
+    Dim isLookback As Boolean, isAlerted As Boolean
     isLookback = (CboXlType.Value = XL_LOOKBACK)
-    If Not TxtSubAlert Is Nothing Then TxtSubAlert.Visible = Not isLookback
+    isAlerted = (CboXlType.Value = XL_ALERTED)
+    If Not TxtSubAlert Is Nothing Then TxtSubAlert.Visible = isAlerted
     If Not TxtDateStart Is Nothing Then TxtDateStart.Visible = isLookback
     If Not TxtDateEnd Is Nothing Then TxtDateEnd.Visible = isLookback
 End Sub
@@ -123,12 +141,28 @@ Private Function EntityIdentifier() As String
     End If
 End Function
 
+' --- The file's own name minus path and extension (for prefix-style
+'     renames that keep the original static name). ---
+Private Function OriginalBaseName() As String
+    Dim fn As String
+    fn = Mid$(FilePath, InStrRev(FilePath, "\") + 1)   ' name + extension
+    If Len(FileExt) > 0 And Len(fn) >= Len(FileExt) Then
+        If LCase$(Right$(fn, Len(FileExt))) = LCase$(FileExt) Then
+            fn = Left$(fn, Len(fn) - Len(FileExt))
+        End If
+    End If
+    OriginalBaseName = fn
+End Function
+
 ' --- Returns the final cleaned target file name (with extension), or "" if not ready ---
 Public Function ComputeNewName() As String
     Dim newName As String
 
     If IsExcelType Then
-        If Not CboXlType Is Nothing And CboXlType.Value = XL_LOOKBACK Then
+        Dim xlt As String
+        If Not CboXlType Is Nothing Then xlt = CboXlType.Value
+
+        If xlt = XL_LOOKBACK Then
             ' Lookback - need both dates before the name is valid.
             Dim ds As String, de As String
             ds = Trim(TxtDateStart.text)
@@ -139,6 +173,13 @@ Public Function ComputeNewName() As String
             End If
             newName = ECM & "_" & AlertID & "_Lookback Transactions (" & _
                       FormatLookbackDate(ds) & " to " & FormatLookbackDate(de) & ")"
+        ElseIf xlt = XL_NONALERTED Then
+            newName = ECM & "_" & AlertID & "_Non Alerted Transactions"
+        ElseIf xlt = XL_GALILEO Then
+            newName = ECM & "_" & AlertID & "_Galileo Transaction"
+        ElseIf xlt = XL_CTS_KEEP Then
+            ' Keep the file's own static name, just prepend the prefix.
+            newName = ECM & "_" & AlertID & "_CTS Report_" & OriginalBaseName()
         Else
             ' Alerted (default) - Sub-Alert ID optional.
             Dim subAlert As String: subAlert = Trim(TxtSubAlert.text)
@@ -153,7 +194,12 @@ Public Function ComputeNewName() As String
             ComputeNewName = ""
             Exit Function
         End If
-        newName = ECM & "_" & AlertID & "_" & EntityIdentifier() & "_" & CboCategory.Value
+        If CboCategory.Value = CAT_CTS_KYC Then
+            ' Standalone label - no entity identifier in the file name.
+            newName = ECM & "_" & AlertID & "_" & CboCategory.Value
+        Else
+            newName = ECM & "_" & AlertID & "_" & EntityIdentifier() & "_" & CboCategory.Value
+        End If
     End If
 
     ComputeNewName = cleanFileName(newName) & FileExt

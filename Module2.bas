@@ -2260,6 +2260,18 @@ runningCount = runningCount - 1
 busy(wk(i)) = False
 SetWorkerCooldown wk(i), workerCooldownUntil
 somethingCompletedThisCycle = True
+
+' Reap this worker's Edge processes now that its PDF is written
+' and final. Headless Edge usually exits on its own after
+' --print-to-pdf, but its child processes (gpu/utility/crashpad)
+' can linger; without this the success path never cleaned up and
+' orphans accumulated across the whole run. The timeout path
+' already did this - the success path was the leak. Matches only
+' msedge.exe carrying this worker's profile name, so the analyst's
+' normal Edge is never touched. The worker is now free but won't
+' be relaunched until the next launch cycle, so this is safe.
+KillEdgeWorkerProcesses wk(i)
+
 taskDurSec = DateDiff("s", launchT(i), Now)
 durSecArr(i) = taskDurSec
 workerBusySec(wk(i)) = workerBusySec(wk(i)) + _
@@ -2421,6 +2433,9 @@ Dim utilPct As Long
 If passWallSec > 0 Then utilPct = (workerBusySec(w) * 100) \ passWallSec
 LogStep "  UTIL w" & w & " busy=" & workerBusySec(w) & "s/" & passWallSec & _
 "s = " & utilPct & "%"
+' Final safety sweep: guarantee no worker Edge process survives the
+' end of this pass, even if one slipped past the per-task reap above.
+KillEdgeWorkerProcesses w
 Next w
 LogStep "  DISP [" & passLabel & "] launches=" & launchCount & _
 " inlineRetries=" & retryCount & _
