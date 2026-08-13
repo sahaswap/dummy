@@ -83,11 +83,19 @@ If wdApp Is Nothing Then
 End If
 On Error GoTo 0
 
-wdApp.Visible = True
-' Freeze Word's screen while both documents are built - tag replacement,
-' the question table and the Pre-RFI companion all render much faster
-' with redraw off. Re-enabled right before the completion message.
+' Build with the Word window HIDDEN and redraw / spell-check /
+' grammar-check / background repagination all OFF. Those background
+' passes are what made a large RFI take ~a minute and flash a blank Word
+' window while it churned. Everything is restored and the finished
+' document is revealed at the very end (see the completion block).
+Dim prevSpell As Boolean, prevGram As Boolean, prevPag As Boolean
 On Error Resume Next
+prevSpell = wdApp.Options.CheckSpellingAsYouType
+prevGram = wdApp.Options.CheckGrammarAsYouType
+prevPag = wdApp.Options.Pagination
+wdApp.Options.CheckSpellingAsYouType = False
+wdApp.Options.CheckGrammarAsYouType = False
+wdApp.Options.Pagination = False
 wdApp.ScreenUpdating = False
 On Error GoTo 0
 Set wdDoc = wdApp.Documents.Add
@@ -218,9 +226,15 @@ Application.OnTime Now + TimeSerial(0, 0, 1), "PushRFITracker_Deferred"
 On Error GoTo 0
 ' ==========================================
 
-' Re-enable Word redraw now that both documents are built.
+' Restore Word's state and reveal the finished document(s) - fully
+' built, so the analyst never sees the blank "still building" window.
 On Error Resume Next
+wdApp.Options.CheckSpellingAsYouType = prevSpell
+wdApp.Options.CheckGrammarAsYouType = prevGram
+wdApp.Options.Pagination = prevPag
 wdApp.ScreenUpdating = True
+wdApp.Visible = True
+wdApp.Activate
 On Error GoTo 0
 
 MsgBox "Export Complete! File saved to: " & folderPath, vbInformation
@@ -356,25 +370,23 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     Loop
     
     ' 3. Insert and Format Title centered and underlined at top.
-    '    The Common format has no title banner (it starts at "To:"), so
-    '    the title is inserted only for the other templates.
-    If Not isCommonTpl Then
-        If InStr(wdDoc.content.text, "Request for Information (RFI)") <> 1 Then
-            Set titleRng = wdDoc.Range(0, 0)
-            titleRng.text = "Request for Information (RFI)" & vbCrLf
-        Else
-            Set titleRng = wdDoc.Paragraphs(1).Range
-        End If
-        titleRng.ParagraphFormat.Alignment = 1 ' Center
-        titleRng.ParagraphFormat.SpaceBefore = 0
-        titleRng.ParagraphFormat.SpaceAfter = 12
-        titleRng.ParagraphFormat.LineSpacingRule = 0 ' Single spacing
-        titleRng.Font.Name = "Arial"
-        titleRng.Font.Size = 11
-        titleRng.Font.bold = True
-        titleRng.Font.Underline = 1 ' Underline
-        titleRng.Font.Color = RGB(0, 0, 0)
+    '    Applies to all templates (Common included): the letter opens with
+    '    the "Request for Information (RFI)" banner, then To / Cc / Subject.
+    If InStr(wdDoc.content.text, "Request for Information (RFI)") <> 1 Then
+        Set titleRng = wdDoc.Range(0, 0)
+        titleRng.text = "Request for Information (RFI)" & vbCrLf
+    Else
+        Set titleRng = wdDoc.Paragraphs(1).Range
     End If
+    titleRng.ParagraphFormat.Alignment = 1 ' Center
+    titleRng.ParagraphFormat.SpaceBefore = 0
+    titleRng.ParagraphFormat.SpaceAfter = 12
+    titleRng.ParagraphFormat.LineSpacingRule = 0 ' Single spacing
+    titleRng.Font.Name = "Arial"
+    titleRng.Font.Size = 11
+    titleRng.Font.bold = True
+    titleRng.Font.Underline = 1 ' Underline
+    titleRng.Font.Color = RGB(0, 0, 0)
     
     ' 4. Clean up mail routing keywords
     Set bodyRng = wdDoc.content
@@ -559,6 +571,16 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
             End With
         End If
     End If
+
+    ' Leave the cursor at the very top so the letter opens showing
+    ' To / Cc / Subject, not scrolled down to wherever building ended
+    ' (that scroll position is why the Common doc "started" at Good
+    ' Morning with the top lines out of view).
+    On Error Resume Next
+    wdDoc.Activate
+    wdApp.Selection.HomeKey Unit:=6      ' wdStory - top of document
+    wdApp.ActiveWindow.ScrollIntoView wdDoc.Range(0, 0), True
+    On Error GoTo 0
 End Sub
 
 ' ================================================================
