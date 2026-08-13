@@ -43,8 +43,10 @@ Sub SetupCountryIsoDropdowns()
     If Err.Number <> 0 Then report = report & "- grey fill: " & Err.Description & vbCrLf
 
     ' 2. Drop the old XLOOKUP formulas (these cells become inputs).
+    '    Clear the FULL merged range for L27 - clearing just the top-left
+    '    of a merged cell raises "cannot change part of a merged cell".
     Err.Clear
-    ws.Range("L27").ClearContents
+    ws.Range("L27:N27").ClearContents
     ws.Range("O27").ClearContents
     If Err.Number <> 0 Then report = report & "- clear formulas: " & Err.Description & vbCrLf
 
