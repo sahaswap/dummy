@@ -1,22 +1,21 @@
 Option Explicit
 
 ' ================================================================
-' modSetupCountryIsoDropdowns - ONE-TIME dashboard setup.
+' modSetupCountryIsoDropdowns - ONE-TIME dashboard setup (re-runnable).
 '
-' Turns ISO Code 2 (L27, merged L27:N27) and ISO Code 3 (O27) into
-' searchable list-dropdowns, matching the Country Name (G27) dropdown:
-'   - ISO Code 2 list  <- P36:P289
-'   - ISO Code 3 list  <- Q36:Q289
-' Their old XLOOKUP formulas are cleared (they become input cells) and
-' unlocked so they're editable under sheet protection. The Country<->ISO
-' two-way sync in Sheet3's Worksheet_Change keeps all three in step.
+' Makes ISO Code 2 (L27, merged L27:N27) and ISO Code 3 (O27) behave
+' exactly like the Country Name cell (G27):
+'   - same GREY fill (copied from G27, so it always matches)
+'   - UNLOCKED, so you can type in them under sheet protection
+'   - list dropdown: ISO2 <- P36:P289, ISO3 <- Q36:Q289
+'   - old XLOOKUP formulas cleared (they become input cells)
 '
-' Risk Score (P27), PDF Risk Class (R27) and Excel Risk Class (T27) keep
-' their formulas off G27 - untouched here.
+' Risk Score (P27) / Risk Classes (R27,T27) keep their formulas off G27.
 '
-' Run SetupCountryIsoDropdowns once, then this module can be deleted.
-' NOTE: needs the updated Sheet3 code-behind in place for the dropdowns
-' to actually drive each other.
+' Each step is guarded, so one hiccup can't abort the rest - if anything
+' goes wrong it's listed at the end instead of a blank "failed". Safe to
+' run more than once. Needs the updated Sheet3 code-behind for the
+' three fields to drive each other. Delete this module when done.
 ' ================================================================
 Sub SetupCountryIsoDropdowns()
     Dim ws As Worksheet
@@ -28,38 +27,57 @@ Sub SetupCountryIsoDropdowns()
         Exit Sub
     End If
 
+    Dim report As String
     Application.EnableEvents = False
-    On Error GoTo CleanFail
-    ThisWorkbook.Unprotect Password:="p7ss"
-    ws.Unprotect Password:="p7ss"
+    On Error Resume Next
 
-    ' ISO Code 2 -> list of column P ; ISO Code 3 -> list of column Q.
-    SetListValidation ws.Range("L27"), "=$P$36:$P$289"
-    SetListValidation ws.Range("O27"), "=$Q$36:$Q$289"
+    Err.Clear: ThisWorkbook.Unprotect Password:="p7ss"
+    Err.Clear: ws.Unprotect Password:="p7ss"
+    If Err.Number <> 0 Then report = report & "- unprotect sheet: " & Err.Description & vbCrLf
 
-    ' They were XLOOKUP formulas; make them editable input cells instead.
+    ' 1. Match Country Name's grey (resolved RGB, so it's an exact match).
+    Err.Clear
+    Dim grey As Long: grey = ws.Range("G27").Interior.Color
+    ws.Range("L27").Interior.Color = grey
+    ws.Range("O27").Interior.Color = grey
+    If Err.Number <> 0 Then report = report & "- grey fill: " & Err.Description & vbCrLf
+
+    ' 2. Drop the old XLOOKUP formulas (these cells become inputs).
+    Err.Clear
     ws.Range("L27").ClearContents
     ws.Range("O27").ClearContents
-    ws.Range("L27:N27").Locked = False    ' merged ISO2 cell
-    ws.Range("O27").Locked = False        ' ISO3 cell
+    If Err.Number <> 0 Then report = report & "- clear formulas: " & Err.Description & vbCrLf
 
-    ws.Protect Password:="p7ss"
-    ThisWorkbook.Protect Password:="p7ss", Structure:=True
-    Application.EnableEvents = True
+    ' 3. Unlock so they're typeable under protection.
+    Err.Clear
+    ws.Range("L27:N27").Locked = False
+    ws.Range("O27").Locked = False
+    If Err.Number <> 0 Then report = report & "- unlock: " & Err.Description & vbCrLf
 
-    MsgBox "ISO Code 2 (L27) and ISO Code 3 (O27) are now dropdowns." & vbCrLf & vbCrLf & _
-           "Pick a Country, an ISO2 or an ISO3 - the other two fill in, " & _
-           "and Risk Score / Risk Classes follow automatically.", _
-           vbInformation, "Setup Complete"
-    Exit Sub
+    ' 4. List dropdowns, configured the same way as G27's.
+    Err.Clear: SetListValidation ws.Range("L27:N27"), "=$P$36:$P$289"
+    If Err.Number <> 0 Then report = report & "- ISO2 dropdown: " & Err.Description & vbCrLf
+    Err.Clear: SetListValidation ws.Range("O27"), "=$Q$36:$Q$289"
+    If Err.Number <> 0 Then report = report & "- ISO3 dropdown: " & Err.Description & vbCrLf
 
-CleanFail:
-    Application.EnableEvents = True
-    On Error Resume Next
-    ws.Protect Password:="p7ss"
-    ThisWorkbook.Protect Password:="p7ss", Structure:=True
+    ' 5. Re-protect (ignore "already protected" quirks).
+    Err.Clear: ws.Protect Password:="p7ss"
+    Err.Clear: ThisWorkbook.Protect Password:="p7ss", Structure:=True
+
     On Error GoTo 0
-    MsgBox "Setup failed: " & Err.Description, vbCritical
+    Application.EnableEvents = True
+
+    If report = "" Then
+        MsgBox "Done." & vbCrLf & vbCrLf & _
+               "ISO Code 2 (L27) and ISO Code 3 (O27) are now grey, unlocked " & _
+               "dropdown cells - type in them or pick from the list, and all " & _
+               "three fields (Country / ISO2 / ISO3) sync together.", _
+               vbInformation, "Setup Complete"
+    Else
+        MsgBox "Setup finished, but these steps reported an issue:" & vbCrLf & vbCrLf & _
+               report & vbCrLf & "Tell me which line above and I'll fix it precisely.", _
+               vbExclamation, "Setup Report"
+    End If
 End Sub
 
 Private Sub SetListValidation(ByVal target As Range, ByVal src As String)
