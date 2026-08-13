@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module3"
 Sub ExportToWord()
 Dim wdApp As Object
 Dim wdDoc As Object
@@ -50,7 +51,7 @@ Set ws = ThisWorkbook.Sheets("Sheet7")
 ecmID = ThisWorkbook.Sheets("Sheet1").Range("J10").Value
 AlertID = ThisWorkbook.Sheets("Sheet1").Range("J11").Value
 
-lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
+lastRow = ws.Cells(ws.Rows.count, "J").End(xlUp).row
 
 ' 2. Hunt for [MASTER_SHELL] in Column J
 shellRow = 0
@@ -83,6 +84,12 @@ End If
 On Error GoTo 0
 
 wdApp.Visible = True
+' Freeze Word's screen while both documents are built - tag replacement,
+' the question table and the Pre-RFI companion all render much faster
+' with redraw off. Re-enabled right before the completion message.
+On Error Resume Next
+wdApp.ScreenUpdating = False
+On Error GoTo 0
 Set wdDoc = wdApp.Documents.Add
 
 ' 5. Paste the template into Word
@@ -177,7 +184,7 @@ On Error GoTo 0
 ' Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx. Detail here is just a
 ' pointer - the full text goes into that workbook's own Narrative
 ' tab via ArchiveNarrativeText below, not duplicated into this cell.
-modAuditLog.LogAuditEvent ecmID:=ecmID, alertID:=AlertID, _
+modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
 customerName:=CustName, _
 counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), _
 eventType:=IIf(isRFI, "RFI Questions Generated", _
@@ -201,91 +208,20 @@ If isRFI Then
 End If
 
 ' ==========================================
-' 8. LIVE PUSH TO SHARED ONEDRIVE MASTER TRACKER (SHEET3) - HEADLESS GHOST MODE
+' 8. UPDATE SHARED MASTER TRACKER (SHEET3) - DEFERRED
+'    Scheduled to run ~1s later in the background (modTrackerPush) so the
+'    analyst gets their documents immediately instead of waiting on the
+'    slow ghost-Excel / OneDrive write. The row still gets written.
 ' ==========================================
-Dim masterPath As String, masterWb As Workbook, masterWs As Worksheet, pushWb As Workbook
-Dim mRow As Long, wasAlreadyOpen As Boolean
-Dim expectedHeaders As Variant, hdrIdx As Integer, headersOK As Boolean, headerMsg As String
-Dim ghostApp As Object
-
-masterPath = TrackerFile()
-
-' Check if the file is already open in the visible Excel window
-wasAlreadyOpen = False
-For Each pushWb In Application.Workbooks
-If pushWb.Name = TrackerFileName() Then
-Set masterWb = pushWb
-wasAlreadyOpen = True
-Exit For
-End If
-Next pushWb
-
-' Open silently in the background
-If masterWb Is Nothing Then
-Set ghostApp = CreateObject("Excel.Application")
-ghostApp.Visible = False
-ghostApp.DisplayAlerts = False
-ghostApp.EnableEvents = False
-
 On Error Resume Next
-Set masterWb = ghostApp.Workbooks.Open(fileName:=masterPath, UpdateLinks:=False)
+Application.OnTime Now + TimeSerial(0, 0, 1), "PushRFITracker_Deferred"
 On Error GoTo 0
-End If
-
-' Process Data on SHEET3
-If Not masterWb Is Nothing Then
-If Not masterWb.ReadOnly Then
-On Error Resume Next
-Set masterWs = masterWb.Sheets("Sheet3") ' <--- TARGETING SHEET 3
-On Error GoTo 0
-
-    If Not masterWs Is Nothing Then
-        expectedHeaders = Array("Date & Time", "Analyst ID", "ECM Case ID", "Tool Version")
-        headersOK = True
-        headerMsg = ""
-        
-        For hdrIdx = LBound(expectedHeaders) To UBound(expectedHeaders)
-            If masterWs.Cells(1, hdrIdx + 1).Value <> expectedHeaders(hdrIdx) Then
-                headersOK = False
-                headerMsg = headerMsg & "- Col " & Split(masterWs.Cells(1, hdrIdx + 1).Address, "$")(1) & " expected '" & expectedHeaders(hdrIdx) & "' but found '" & masterWs.Cells(1, hdrIdx + 1).Value & "'" & vbCrLf
-            End If
-        Next hdrIdx
-        
-        If headersOK Then
-            mRow = masterWs.Cells(masterWs.Rows.Count, "A").End(xlUp).Row + 1
-            
-            masterWs.Cells(mRow, 1).Value = Now
-            masterWs.Cells(mRow, 2).Value = Environ("USERNAME")
-            masterWs.Cells(mRow, 3).Value = ecmID
-            masterWs.Cells(mRow, 4).Value = "2.4.1"
-            
-            If wasAlreadyOpen Then
-                masterWb.Save
-            Else
-                masterWb.Close SaveChanges:=True
-            End If
-            
-        Else
-            MsgBox "DIAGNOSTIC WARNING! HEADER MISMATCH ON SHEET3" & vbCrLf & vbCrLf & _
-                   "The master tracker headers on Sheet3 have been altered:" & vbCrLf & vbCrLf & _
-                   headerMsg & vbCrLf & _
-                   "Tracker data was NOT saved. Please notify the team lead.", vbCritical, "Diagnostic Failed"
-            
-            If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
-        End If
-    End If
-Else
-    ' File is locked by another user
-    If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
-End If
-End If
-
-' Destroy the ghost app
-If Not ghostApp Is Nothing Then
-ghostApp.Quit
-Set ghostApp = Nothing
-End If
 ' ==========================================
+
+' Re-enable Word redraw now that both documents are built.
+On Error Resume Next
+wdApp.ScreenUpdating = True
+On Error GoTo 0
 
 MsgBox "Export Complete! File saved to: " & folderPath, vbInformation
 
@@ -325,6 +261,11 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     Dim r As Object
     Dim firstChar As String
     
+    ' The Common template omits the page header + footer that Wise /
+    ' Airwallex carry. Everything else is formatted identically.
+    Dim isCommonTpl As Boolean
+    isCommonTpl = (UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J7").Value)) = "COMMON")
+
     ' 0. Set Page Margins to 1.0 Inch (72 points)
     With wdDoc.PageSetup
         .TopMargin = 72
@@ -344,7 +285,8 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     wdDoc.content.Font.Size = 11
     wdDoc.content.Font.Color = RGB(0, 0, 0)
     
-    ' 1. Set page header and footer
+    ' 1. Set page header and footer (skipped entirely for the Common template)
+    If Not isCommonTpl Then
     For Each sec In wdDoc.Sections
         ' Right-aligned header
         Set hdrRange = sec.Headers(1).Range
@@ -380,7 +322,8 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
         Set ftrRange = sec.Footers(1).Range
         ftrRange.InsertBefore "Page "
     Next sec
-    
+    End If
+
     ' 2. Strip compliance header from document body (including surrounding whitespace/tabs)
     Set bodyRng = wdDoc.content
     With bodyRng.Find
@@ -430,14 +373,14 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     End With
     
     ' 5. Convert text bullets to native Word bullet points
-    For pIdx = wdDoc.Paragraphs.Count To 1 Step -1
+    For pIdx = wdDoc.Paragraphs.count To 1 Step -1
         Set p = wdDoc.Paragraphs(pIdx)
         pText = Trim(p.Range.text)
         If Len(pText) > 0 Then
             firstChar = Left(pText, 1)
             If firstChar = ChrW(8226) Or firstChar = Chr(149) Then
                 Set r = p.Range
-                Do While r.Characters.Count > 0
+                Do While r.Characters.count > 0
                     firstChar = r.Characters(1).text
                     If firstChar = ChrW(8226) Or firstChar = Chr(149) Or firstChar = " " Or firstChar = vbTab Then
                         r.Characters(1).Delete
@@ -687,7 +630,7 @@ Private Sub GeneratePreRFIWriteUp(ByVal wdApp As Object, ByVal folderPath As Str
     ' Register-tab row for the companion doc. No ArchiveNarrativeText
     ' call here - the Narrative tab keeps the RFI questions text, and
     ' this shell is just placeholders, so there's nothing to archive.
-    modAuditLog.LogAuditEvent ecmID:=ecmID, alertID:=AlertID, _
+    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
         customerName:=CustName, _
         counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), _
         eventType:="Pre RFI Alert Write-Up Generated", _
@@ -708,7 +651,7 @@ Private Sub BoldHeadingInDoc(ByVal wdDoc2 As Object, ByVal headingText As String
         .text = headingText
         .Forward = True
         .Wrap = 0
-        If .Execute Then rng.Font.Bold = True
+        If .Execute Then rng.Font.bold = True
     End With
 End Sub
 
@@ -725,7 +668,7 @@ Private Sub ApplySheet7Tags(ByVal wdTarget As Object)
 
     Dim lastRow As Long, i As Long
     Dim tagStr As String, valStr As String, rng As Object
-    lastRow = ws7.Cells(ws7.Rows.Count, "J").End(xlUp).Row
+    lastRow = ws7.Cells(ws7.Rows.count, "J").End(xlUp).row
 
     For i = 1 To lastRow
         tagStr = ws7.Cells(i, "J").Value
@@ -752,3 +695,4 @@ Private Sub ApplySheet7Tags(ByVal wdTarget As Object)
     Next i
     On Error GoTo 0
 End Sub
+

@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module9"
 Sub Consolidated_AML_Workflow()
 
 ' ==========================================
@@ -95,7 +96,7 @@ Set WsMaster = ActiveWorkbook.Sheets("ConsolidatedData")
 On Error GoTo CancelHandler
 
 If WsMaster Is Nothing Then
-Set WsMaster = ActiveWorkbook.Sheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count))
+Set WsMaster = ActiveWorkbook.Sheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.count))
 WsMaster.Name = "ConsolidatedData"
 Else
 WsMaster.Cells.Clear
@@ -123,7 +124,7 @@ HeaderCopied = False
 ' ==========================================
 For Each objFile In objFolder.Files
 If (InStr(1, objFile.Name, ".xls", vbTextCompare) > 0) And (Left(objFile.Name, 2) <> "~$") And (objFile.Name <> ThisWorkbook.Name) Then
-Set WbSource = Workbooks.Open(objFile.Path, ReadOnly:=True, UpdateLinks:=False)
+Set WbSource = Workbooks.Open(objFile.path, ReadOnly:=True, UpdateLinks:=False)
 On Error Resume Next
 Set wsSource = WbSource.Sheets(1)
 On Error GoTo CancelHandler
@@ -132,9 +133,9 @@ If Not wsSource Is Nothing Then
     With wsSource
         Set HeaderCell = .Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole)
         If Not HeaderCell Is Nothing Then
-            HeaderRow = HeaderCell.Row
+            HeaderRow = HeaderCell.row
             HeadCol = HeaderCell.Column
-            LastRowSource = .Cells(.Rows.Count, HeadCol).End(xlUp).Row
+            LastRowSource = .Cells(.Rows.count, HeadCol).End(xlUp).row
             
             If LastRowSource >= HeaderRow Then
                 If Not HeaderCopied Then
@@ -142,7 +143,7 @@ If Not wsSource Is Nothing Then
                     HeaderCopied = True
                 Else
                     If LastRowSource > HeaderRow Then
-                        LastRowMaster = WsMaster.Cells(WsMaster.Rows.Count, "A").End(xlUp).Row + 1
+                        LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, "A").End(xlUp).row + 1
                         .Range(.Cells(HeaderRow + 1, HeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=WsMaster.Range("A" & LastRowMaster)
                     End If
                 End If
@@ -163,7 +164,7 @@ wsHome.Parent.Sheets("TempRawBackup").Delete
 Application.DisplayAlerts = True
 On Error GoTo CancelHandler
 
-WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.Count)
+WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
 Set WsRawTemp = ActiveSheet
 WsRawTemp.Name = "TempRawBackup"
 
@@ -174,7 +175,7 @@ WsMaster.Activate
 
 Set DateHeader = WsMaster.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
 If Not DateHeader Is Nothing Then
-LastRowMaster = WsMaster.Cells(WsMaster.Rows.Count, DateHeader.Column).End(xlUp).Row
+LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, DateHeader.Column).End(xlUp).row
 If LastRowMaster > 1 Then
 Set DateRange = WsMaster.Range(WsMaster.Cells(2, DateHeader.Column), WsMaster.Cells(LastRowMaster, DateHeader.Column))
 DateRange.TextToColumns Destination:=DateRange.Cells(1, 1), DataType:=xlDelimited, FieldInfo:=Array(Array(1, 3))
@@ -184,7 +185,7 @@ End If
 
 Set AmtHeader = WsMaster.Rows(1).Find(What:="Transaction Amount", LookIn:=xlValues, LookAt:=xlPart)
 If Not AmtHeader Is Nothing Then
-LastRowMaster = WsMaster.Cells(WsMaster.Rows.Count, AmtHeader.Column).End(xlUp).Row
+LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, AmtHeader.Column).End(xlUp).row
 If LastRowMaster > 1 Then
 Set AmtRange = WsMaster.Range(WsMaster.Cells(2, AmtHeader.Column), WsMaster.Cells(LastRowMaster, AmtHeader.Column))
 AmtRange.Value = AmtRange.Value
@@ -203,8 +204,8 @@ drCrCol = drCrCell.Column
 benNameCol = benNameCell.Column
 origNameCol = origNameCell.Column
 
-LastRowMaster = WsMaster.Cells(WsMaster.Rows.Count, "A").End(xlUp).Row
-LastCol = WsMaster.Cells(1, WsMaster.Columns.Count).End(xlToLeft).Column + 1
+LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, "A").End(xlUp).row
+LastCol = WsMaster.Cells(1, WsMaster.Columns.count).End(xlToLeft).Column + 1
 
 If LastRowMaster > 1 Then
 WsMaster.Cells(1, LastCol).Value = "Counterparty"
@@ -225,7 +226,7 @@ End If
 Set newWb = Workbooks.Add
 
 WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
-WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.Count): ActiveSheet.Name = "CP Selection"
+WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "CP Selection"
 
 Set wsExport = newWb.Sheets("CP Selection")
 TransCol = 0: AlertCol = 0
@@ -238,7 +239,7 @@ If TransCol > 0 And AlertCol > 0 Then
 wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol, AlertCol), Header:=xlYes
 End If
 
-wsExport.Copy After:=newWb.Sheets(newWb.Sheets.Count): ActiveSheet.Name = "DeDupe"
+wsExport.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "DeDupe"
 
 Set wsExport = newWb.Sheets("DeDupe")
 TransCol = 0
@@ -268,8 +269,8 @@ Next ws
 ' 4.5 PIVOT TABLES (MULTI-SOURCE)
 ' ==========================================
 Set wsExport = newWb.Sheets("CP Selection")
-lastRowCP = wsExport.Cells(wsExport.Rows.Count, "A").End(xlUp).Row
-lastColCP = wsExport.Cells(1, wsExport.Columns.Count).End(xlToLeft).Column
+lastRowCP = wsExport.Cells(wsExport.Rows.count, "A").End(xlUp).row
+lastColCP = wsExport.Cells(1, wsExport.Columns.count).End(xlToLeft).Column
 
 If lastRowCP > 1 Then
 Set ptRange = wsExport.Range(wsExport.Cells(1, 1), wsExport.Cells(lastRowCP, lastColCP))
@@ -320,7 +321,7 @@ Set wsDeDupe = newWb.Sheets("DeDupe")
 ' --- INVISIBLE STABILITY FIX: Delete blank rows so grouping doesn't crash ---
 On Error Resume Next
 dtColDD = wsDeDupe.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.Count, dtColDD).End(xlUp).Row
+lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.count, dtColDD).End(xlUp).row
 If lastRowDD > 1 And dtColDD > 0 Then
 wsDeDupe.Range(wsDeDupe.Cells(2, dtColDD), wsDeDupe.Cells(lastRowDD, dtColDD)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
 ' Format the raw column as short dates so the new pivots inherit it perfectly
@@ -328,8 +329,8 @@ wsDeDupe.Range(wsDeDupe.Cells(2, dtColDD), wsDeDupe.Cells(lastRowDD, dtColDD)).N
 End If
 On Error GoTo CancelHandler
 
-lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.Count, "A").End(xlUp).Row
-lastColDD = wsDeDupe.Cells(1, wsDeDupe.Columns.Count).End(xlToLeft).Column
+lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.count, "A").End(xlUp).row
+lastColDD = wsDeDupe.Cells(1, wsDeDupe.Columns.count).End(xlToLeft).Column
 
 If lastRowDD > 1 Then
 ' --- MEMORY BANK 2: Connected to "DeDupe" ---
@@ -482,7 +483,7 @@ Application.DisplayAlerts = True
 
 ' Centralized audit ledger row - Register tab of this case's own
 ' Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx.
-modAuditLog.LogAuditEvent ecmID:=ecmID, alertID:=AlertID, _
+modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
 customerName:=Trim(wsHome.Range("J14").Value), _
 counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
 eventType:="Transaction File Consolidated", _
@@ -513,90 +514,14 @@ ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
 On Error GoTo 0
 
 ' ==========================================
-' 6. LIVE PUSH TO SHARED ONEDRIVE MASTER TRACKER (SHEET2) - HEADLESS GHOST MODE
+' 6. UPDATE SHARED MASTER TRACKER (SHEET2) - DEFERRED
+'    Scheduled to run ~1s later in the background (modTrackerPush) so the
+'    analyst sees "Workflow Complete" immediately instead of waiting on
+'    the slow ghost-Excel / OneDrive write. The row still gets written.
 ' ==========================================
-Dim masterPath As String, masterWb As Workbook, masterWs As Worksheet, pushWb As Workbook
-Dim mRow As Long, wasAlreadyOpen As Boolean
-Dim expectedHeaders As Variant, hdrIdx As Integer, headersOK As Boolean, headerMsg As String
-Dim ghostApp As Object ' <--- Our invisible background Excel
-
-masterPath = TrackerFile()
-
-' 1. Check if the file is already open in the visible Excel window
-wasAlreadyOpen = False
-For Each pushWb In Application.Workbooks
-If pushWb.Name = TrackerFileName() Then
-Set masterWb = pushWb
-wasAlreadyOpen = True
-Exit For
-End If
-Next pushWb
-
-' 2. THE GHOST EXCEL FIX: Open silently in the background
-If masterWb Is Nothing Then
-Set ghostApp = CreateObject("Excel.Application")
-ghostApp.Visible = False ' Keep it hidden from taskbar
-ghostApp.DisplayAlerts = False ' Suppress cloud sync popups
-ghostApp.EnableEvents = False ' Lock out UI flashes
-
 On Error Resume Next
-Set masterWb = ghostApp.Workbooks.Open(fileName:=masterPath, UpdateLinks:=False)
-On Error GoTo CancelHandler
-End If
-
-' 3. Process Data on SHEET2
-If Not masterWb Is Nothing Then
-If Not masterWb.ReadOnly Then
-On Error Resume Next
-Set masterWs = masterWb.Sheets("Sheet2")
-On Error GoTo CancelHandler
-
-If Not masterWs Is Nothing Then
-    expectedHeaders = Array("Date & Time", "Analyst ID", "ECM Case ID", "Tool Version")
-    headersOK = True
-    headerMsg = ""
-    
-    For hdrIdx = LBound(expectedHeaders) To UBound(expectedHeaders)
-        If masterWs.Cells(1, hdrIdx + 1).Value <> expectedHeaders(hdrIdx) Then
-            headersOK = False
-            headerMsg = headerMsg & "- Col " & Split(masterWs.Cells(1, hdrIdx + 1).Address, "$")(1) & " expected '" & expectedHeaders(hdrIdx) & "' but found '" & masterWs.Cells(1, hdrIdx + 1).Value & "'" & vbCrLf
-        End If
-    Next hdrIdx
-    
-    If headersOK Then
-        mRow = masterWs.Cells(masterWs.Rows.Count, "A").End(xlUp).Row + 1
-        
-        masterWs.Cells(mRow, 1).Value = Now
-        masterWs.Cells(mRow, 2).Value = Environ("USERNAME")
-        masterWs.Cells(mRow, 3).Value = ecmID
-        masterWs.Cells(mRow, 4).Value = "2.4.1"
-        
-        If wasAlreadyOpen Then
-            masterWb.Save
-        Else
-            masterWb.Close SaveChanges:=True
-        End If
-        
-    Else
-        MsgBox "DIAGNOSTIC WARNING! HEADER MISMATCH ON SHEET2" & vbCrLf & vbCrLf & _
-               "The master tracker headers on Sheet2 have been altered:" & vbCrLf & vbCrLf & _
-               headerMsg & vbCrLf & _
-               "Tracker data was NOT saved. Please notify the team lead.", vbCritical, "Diagnostic Failed"
-        
-        If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
-    End If
-End If
-Else
-' File is locked by another user
-If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
-End If
-End If
-
-' 4. DESTROY THE GHOST EXCEL PROCESS
-If Not ghostApp Is Nothing Then
-ghostApp.Quit
-Set ghostApp = Nothing
-End If
+Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
+On Error GoTo 0
 ' ==========================================
 
 MsgBox "Workflow Complete!" & vbCrLf & _
@@ -637,7 +562,7 @@ Set rUsed = ws.UsedRange
 
 ' Single-cell UsedRange is the one case .Value returns a scalar,
 ' not a 2D array - handle it directly rather than indexing into it.
-If rUsed.Cells.Count = 1 Then
+If rUsed.Cells.count = 1 Then
 If IsDate(rUsed.Value) And Not IsEmpty(rUsed.Value) Then
 If Year(CDate(rUsed.Value)) > 1950 Then rUsed.NumberFormat = "mm/dd/yyyy"
 End If
@@ -675,7 +600,7 @@ On Error Resume Next
 
 Dim sumColIndex As Long, baseRow As Long
 sumColIndex = pt.DataBodyRange.Columns(2).Column
-baseRow = pt.RowRange.Row
+baseRow = pt.RowRange.row
 
 Dim rowArr As Variant, rIdx As Long, cellVal As String
 Dim hitRange As Range
@@ -705,4 +630,5 @@ hitRange.Interior.Color = RGB(255, 199, 206)   ' Light Red Fill
 hitRange.Font.Color = RGB(156, 0, 6)           ' Dark Red Text
 End If
 End Sub
+
 
