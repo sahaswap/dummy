@@ -285,44 +285,53 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     wdDoc.content.Font.Size = 11
     wdDoc.content.Font.Color = RGB(0, 0, 0)
     
-    ' 1. Set page header and footer (skipped entirely for the Common template)
-    If Not isCommonTpl Then
+    ' 1. Set page header and footer. The Common template gets an
+    '    explicitly EMPTY header + footer (no compliance banner, no page
+    '    numbers). We still touch every section's header/footer rather
+    '    than skip it, so the section is properly initialized - just
+    '    skipping it left the first page laid out so the top of the body
+    '    (title / To / Cc / Subject) rendered up in the margin, out of
+    '    view. The other templates get the standard header/footer.
     For Each sec In wdDoc.Sections
-        ' Right-aligned header
-        Set hdrRange = sec.Headers(1).Range
-        hdrRange.text = "Financial Crimes Compliance Unit" & vbCrLf & "AML / TM Department"
-        hdrRange.ParagraphFormat.Alignment = 2 ' wdAlignParagraphRight
-        hdrRange.ParagraphFormat.LineSpacingRule = 0
-        hdrRange.ParagraphFormat.SpaceAfter = 0
-        hdrRange.Font.Name = "Arial"
-        hdrRange.Font.Size = 9
-        hdrRange.Font.Color = RGB(0, 0, 0)
-        
-        ' Centered page numbers in footer
-        Set ftrRange = sec.Footers(1).Range
-        ftrRange.text = ""
-        ftrRange.ParagraphFormat.Alignment = 1 ' wdAlignParagraphCenter
-        ftrRange.ParagraphFormat.LineSpacingRule = 0
-        ftrRange.ParagraphFormat.SpaceAfter = 0
-        ftrRange.Font.Name = "Arial"
-        ftrRange.Font.Size = 10
-        ftrRange.Font.Color = RGB(0, 0, 0)
-        
-        ' Add page fields dynamically (33 = wdFieldPage, 26 = wdFieldNumPages)
-        ftrRange.Fields.Add Range:=ftrRange, Type:=33
-        
-        Set ftrRange = sec.Footers(1).Range
-        ftrRange.Collapse Direction:=0
-        ftrRange.text = " of "
-        
-        Set ftrRange = sec.Footers(1).Range
-        ftrRange.Collapse Direction:=0
-        ftrRange.Fields.Add Range:=ftrRange, Type:=26
-        
-        Set ftrRange = sec.Footers(1).Range
-        ftrRange.InsertBefore "Page "
+        If isCommonTpl Then
+            sec.Headers(1).Range.text = ""
+            sec.Footers(1).Range.text = ""
+        Else
+            ' Right-aligned header
+            Set hdrRange = sec.Headers(1).Range
+            hdrRange.text = "Financial Crimes Compliance Unit" & vbCrLf & "AML / TM Department"
+            hdrRange.ParagraphFormat.Alignment = 2 ' wdAlignParagraphRight
+            hdrRange.ParagraphFormat.LineSpacingRule = 0
+            hdrRange.ParagraphFormat.SpaceAfter = 0
+            hdrRange.Font.Name = "Arial"
+            hdrRange.Font.Size = 9
+            hdrRange.Font.Color = RGB(0, 0, 0)
+
+            ' Centered page numbers in footer
+            Set ftrRange = sec.Footers(1).Range
+            ftrRange.text = ""
+            ftrRange.ParagraphFormat.Alignment = 1 ' wdAlignParagraphCenter
+            ftrRange.ParagraphFormat.LineSpacingRule = 0
+            ftrRange.ParagraphFormat.SpaceAfter = 0
+            ftrRange.Font.Name = "Arial"
+            ftrRange.Font.Size = 10
+            ftrRange.Font.Color = RGB(0, 0, 0)
+
+            ' Add page fields dynamically (33 = wdFieldPage, 26 = wdFieldNumPages)
+            ftrRange.Fields.Add Range:=ftrRange, Type:=33
+
+            Set ftrRange = sec.Footers(1).Range
+            ftrRange.Collapse Direction:=0
+            ftrRange.text = " of "
+
+            Set ftrRange = sec.Footers(1).Range
+            ftrRange.Collapse Direction:=0
+            ftrRange.Fields.Add Range:=ftrRange, Type:=26
+
+            Set ftrRange = sec.Footers(1).Range
+            ftrRange.InsertBefore "Page "
+        End If
     Next sec
-    End If
 
     ' 2. Strip compliance header from document body (including surrounding whitespace/tabs)
     Set bodyRng = wdDoc.content
@@ -346,22 +355,26 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
         wdDoc.Range(0, 1).Delete
     Loop
     
-    ' 3. Insert and Format Title centered and underlined at top
-    If InStr(wdDoc.content.text, "Request for Information (RFI)") <> 1 Then
-        Set titleRng = wdDoc.Range(0, 0)
-        titleRng.text = "Request for Information (RFI)" & vbCrLf
-    Else
-        Set titleRng = wdDoc.Paragraphs(1).Range
+    ' 3. Insert and Format Title centered and underlined at top.
+    '    The Common format has no title banner (it starts at "To:"), so
+    '    the title is inserted only for the other templates.
+    If Not isCommonTpl Then
+        If InStr(wdDoc.content.text, "Request for Information (RFI)") <> 1 Then
+            Set titleRng = wdDoc.Range(0, 0)
+            titleRng.text = "Request for Information (RFI)" & vbCrLf
+        Else
+            Set titleRng = wdDoc.Paragraphs(1).Range
+        End If
+        titleRng.ParagraphFormat.Alignment = 1 ' Center
+        titleRng.ParagraphFormat.SpaceBefore = 0
+        titleRng.ParagraphFormat.SpaceAfter = 12
+        titleRng.ParagraphFormat.LineSpacingRule = 0 ' Single spacing
+        titleRng.Font.Name = "Arial"
+        titleRng.Font.Size = 11
+        titleRng.Font.bold = True
+        titleRng.Font.Underline = 1 ' Underline
+        titleRng.Font.Color = RGB(0, 0, 0)
     End If
-    titleRng.ParagraphFormat.Alignment = 1 ' Center
-    titleRng.ParagraphFormat.SpaceBefore = 0
-    titleRng.ParagraphFormat.SpaceAfter = 12
-    titleRng.ParagraphFormat.LineSpacingRule = 0 ' Single spacing
-    titleRng.Font.Name = "Arial"
-    titleRng.Font.Size = 11
-    titleRng.Font.bold = True
-    titleRng.Font.Underline = 1 ' Underline
-    titleRng.Font.Color = RGB(0, 0, 0)
     
     ' 4. Clean up mail routing keywords
     Set bodyRng = wdDoc.content
