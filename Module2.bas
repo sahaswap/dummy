@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module2"
 '==================================================================
 ' OSINT Automation Tool
 '
@@ -58,6 +59,9 @@ ByVal lParam As String) As LongPtr
 Private Declare PtrSafe Function SendMessageLen Lib "user32" Alias "SendMessageA" _
 (ByVal hwnd As LongPtr, ByVal wMsg As Long, ByVal wParam As LongPtr, _
 ByVal lParam As LongPtr) As LongPtr
+Private Declare PtrSafe Function IsWindowVisible Lib "user32" (ByVal hwnd As LongPtr) As Long
+Private Declare PtrSafe Function GetWindowText Lib "user32" Alias "GetWindowTextA" _
+(ByVal hwnd As LongPtr, ByVal lpString As String, ByVal cch As Long) As Long
 #Else
 Private Declare Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" _
 (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, _
@@ -89,6 +93,9 @@ ByVal lParam As String) As Long
 Private Declare Function SendMessageLen Lib "user32" Alias "SendMessageA" _
 (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, _
 ByVal lParam As Long) As Long
+Private Declare Function IsWindowVisible Lib "user32" (ByVal hwnd As Long) As Long
+Private Declare Function GetWindowText Lib "user32" Alias "GetWindowTextA" _
+(ByVal hwnd As Long, ByVal lpString As String, ByVal cch As Long) As Long
 #End If
 
 ' Win32 MessageBox flags used by TopMostMsgBox.
@@ -381,8 +388,8 @@ Dim CustName As String, custAddr As String
 Dim custNameNegNews As String, custNameNegNewsNoMiddle As String
 Dim additionalCustAddr As String
 Dim cpName As String, cpAddr As String
-Dim cpNameNegNews(19 To 24) As String
-Dim cpNameNegNewsNoMiddle(19 To 24) As String
+Dim cpNameNegNews(18 To 23) As String
+Dim cpNameNegNewsNoMiddle(18 To 23) As String
 
 Dim baseFileName As String, desktopPath As String
 Dim caseFolderPath As String, mainFolderPath As String
@@ -431,19 +438,19 @@ Else
 desktopPath = userProfile & "\Desktop"
 End If
 
-ecmCase = SanitizeFileNamePart(Trim(CStr(ws.Range("J10").Value)))
-AlertID = SanitizeFileNamePart(Trim(CStr(ws.Range("J11").Value)))
-CustName = SanitizeFileNamePart(Trim(CStr(ws.Range("J14").Value)))
-custAddr = SanitizeFileNamePart(Trim(CStr(ws.Range("J15").Value)))
+ecmCase = SanitizeFileNamePart(Trim(CStr(ws.Range("J9").Value)))
+AlertID = SanitizeFileNamePart(Trim(CStr(ws.Range("J10").Value)))
+CustName = SanitizeFileNamePart(Trim(CStr(ws.Range("J13").Value)))
+custAddr = SanitizeFileNamePart(Trim(CStr(ws.Range("J14").Value)))
 
-If CustName = "" And Application.CountA(ws.Range("J19:J24")) = 0 Then
+If CustName = "" And Application.CountA(ws.Range("J18:J23")) = 0 Then
 MsgBox "I don't see a Customer Name or any Counterparties to search. " & _
 "Please fill them in first!", vbExclamation, "Nothing to Search"
 Exit Sub
 End If
 
 If ecmCase = "" Then
-MsgBox "I don't see an ECM Case ID in cell J10. Please enter it before running.", _
+MsgBox "I don't see an ECM Case ID in cell J9. Please enter it before running.", _
 vbExclamation, "Missing Case ID"
 Exit Sub
 End If
@@ -472,7 +479,7 @@ If Not FSO.FolderExists(caseFolderPath) Then FSO.CreateFolder caseFolderPath
 mainFolderPath = caseFolderPath & "\OSDD Searches"
 If Not FSO.FolderExists(mainFolderPath) Then FSO.CreateFolder mainFolderPath
 
-totalCPs = Application.CountA(ws.Range("J19:J24"))
+totalCPs = Application.CountA(ws.Range("J18:J23"))
 
 ' Ask which search mode to run this batch under (v3.5). Replaces
 ' the old binary non-English Yes/No prompt - Visible mode below
@@ -559,7 +566,7 @@ End If
 End If
 LogStep "STEP 3: customer prompts complete"
 
-For i = 19 To 24
+For i = 18 To 23
 cpName = SanitizeFileNamePart(Trim(CStr(ws.Range("J" & i).Value)))
 If cpName <> "" Then
 Application.StatusBar = "OSINT: Waiting for CP '" & cpName & "' Negative News input..."
@@ -671,7 +678,7 @@ End If
 
 ' ---- Counterparty tasks (appended to same queue) ----
 cpLoopPosition = 0
-For i = 19 To 24
+For i = 18 To 23
 cpName = SanitizeFileNamePart(Trim(CStr(ws.Range("J" & i).Value)))
 cpAddr = SanitizeFileNamePart(Trim(CStr(ws.Range("T" & i).Value)))
 
@@ -681,29 +688,29 @@ cpLabel = "CP " & cpLoopPosition & " of " & totalCPs & " (" & cpName & ")"
 fileCounter = 1
 
 allTasks.Add Array(cpName, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Google.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Google.pdf", _
 1, "Google name", cpLabel)
 fileCounter = fileCounter + 1
 
 If cpAddr <> "" Then
 allTasks.Add Array(cpAddr, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Address.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Address.pdf", _
 1, "Address", cpLabel)
 fileCounter = fileCounter + 1
 
 allTasks.Add Array(cpName & " + " & cpAddr, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Google+Address.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Google+Address.pdf", _
 1, "Name + Address", cpLabel)
 fileCounter = fileCounter + 1
 End If
 
 If Trim(cpNameNegNews(i)) <> "" Then
 allTasks.Add Array("""" & cpNameNegNews(i) & """" & negWords, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Negative News 1.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Negative News 1.pdf", _
 1, "Negative News page 1", cpLabel)
 fileCounter = fileCounter + 1
 allTasks.Add Array("""" & cpNameNegNews(i) & """" & negWords, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Negative News 2.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Negative News 2.pdf", _
 2, "Negative News page 2", cpLabel)
 fileCounter = fileCounter + 1
 End If
@@ -711,11 +718,11 @@ End If
 If Trim(cpNameNegNewsNoMiddle(i)) <> "" And _
 StrComp(cpNameNegNewsNoMiddle(i), cpNameNegNews(i), vbTextCompare) <> 0 Then
 allTasks.Add Array("""" & cpNameNegNewsNoMiddle(i) & """" & negWords, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Negative News 3.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Negative News 3.pdf", _
 1, "Negative News w/o middle, page 1", cpLabel)
 fileCounter = fileCounter + 1
 allTasks.Add Array("""" & cpNameNegNewsNoMiddle(i) & """" & negWords, _
-mainFolderPath & "\" & baseFileName & "_CP" & (i - 18) & "_" & fileCounter & "_Negative News 4.pdf", _
+mainFolderPath & "\" & baseFileName & "_CP" & (i - 17) & "_" & fileCounter & "_Negative News 4.pdf", _
 2, "Negative News w/o middle, page 2", cpLabel)
 fileCounter = fileCounter + 1
 End If
@@ -725,9 +732,9 @@ Next i
 ' ---- Gap-fill: offer to run ONLY what's missing/failed ----
 ' Only asked when the case folder already holds results from a
 ' previous attempt, so a first run is never interrupted by it.
-If allTasks.Count > 0 Then
+If allTasks.count > 0 Then
 Set allTasks = MaybeFilterToFailedOnly(allTasks)
-If allTasks.Count = 0 Then
+If allTasks.count = 0 Then
 AutoRestoreRuntime
 MsgBox "Every search for this case already has a good result on disk - " & _
 "there's nothing left to re-run.", vbInformation, "Nothing To Do"
@@ -736,13 +743,13 @@ End If
 End If
 
 ' ---- Single dispatch across a shared worker pool ----
-If allTasks.Count > 0 Then
+If allTasks.count > 0 Then
 If USE_HEADLESS Then
 Set allTasks = SortTasksHeaviestFirst(allTasks)
 End If
 
-Application.StatusBar = "OSINT: Queued " & allTasks.Count & " searches - dispatching..."
-LogStep "SEARCH PHASE - queued " & allTasks.Count & " tasks across all entities (heaviest first)"
+Application.StatusBar = "OSINT: Queued " & allTasks.count & " searches - dispatching..."
+LogStep "SEARCH PHASE - queued " & allTasks.count & " tasks across all entities (heaviest first)"
 actualSearchCount = RunSearchBatch(allTasks, WshShell)
 If bAbort Then GoTo AbortProcess
 
@@ -754,25 +761,25 @@ If m_searchMode = smFast Then
 Dim fastRescue As Collection
 Set fastRescue = New Collection
 Dim rt As Long, rescTask As Variant
-For rt = 1 To allTasks.Count
+For rt = 1 To allTasks.count
 If Not TaskHasGoodResult(allTasks(rt)) Then fastRescue.Add allTasks(rt)
 Next rt
 
-If fastRescue.Count > 0 Then
+If fastRescue.count > 0 Then
 Dim rescueResp As Long
 rescueResp = TopMostMsgBox( _
-fastRescue.Count & " search(es) hit a CAPTCHA in Fast mode and were saved with a '" & _
+fastRescue.count & " search(es) hit a CAPTCHA in Fast mode and were saved with a '" & _
 CAPTCHA_FLAG_SUFFIX & "' tag." & vbCrLf & vbCrLf & _
-"Re-run just those " & fastRescue.Count & " now in VISIBLE mode?" & vbCrLf & vbCrLf & _
+"Re-run just those " & fastRescue.count & " now in VISIBLE mode?" & vbCrLf & vbCrLf & _
 "Browser windows will open - keep your hands off the mouse and keyboard. Ones that " & _
 "succeed are saved under the normal name and their flagged files are deleted.", _
 "Finish Blocked Searches?", MB_YESNO Or MB_ICONQUESTION Or MB_TOPMOST)
 
 If rescueResp = IDYES Then
 USE_HEADLESS = False   ' visible/interactive path, for the rescue only
-Application.StatusBar = "OSINT: finishing " & fastRescue.Count & _
+Application.StatusBar = "OSINT: finishing " & fastRescue.count & _
 " blocked search(es) in Visible mode..."
-LogStep "RESCUE (Fast->Visible): re-running " & fastRescue.Count & " blocked search(es) visibly"
+LogStep "RESCUE (Fast->Visible): re-running " & fastRescue.count & " blocked search(es) visibly"
 
 Dim rescuedOK As Long
 rescuedOK = RunSearchBatch(fastRescue, WshShell)
@@ -785,7 +792,7 @@ If bAbort Then GoTo AbortProcess
 ' flag deleted - leaving a block page sitting under a clean name. Must
 ' match TaskHasGoodResult's bar: at least CAPTCHA_SIZE_HINT.
 Dim cleaned As Long, spRes As String, fpRes As String
-For rt = 1 To fastRescue.Count
+For rt = 1 To fastRescue.count
 rescTask = fastRescue(rt)
 spRes = CStr(rescTask(1))
 On Error Resume Next
@@ -805,7 +812,7 @@ actualSearchCount = actualSearchCount + rescuedOK
 
 ' Recount what's STILL unresolved so the summary is accurate.
 m_captchaFlaggedCount = 0
-For rt = 1 To allTasks.Count
+For rt = 1 To allTasks.count
 If Not TaskHasGoodResult(allTasks(rt)) Then _
 m_captchaFlaggedCount = m_captchaFlaggedCount + 1
 Next rt
@@ -825,7 +832,7 @@ End If
 ' suffix here, so a 71 KB block page can't pass as a real result.
 If Not allTasks Is Nothing Then
 Dim swT As Long, swTask As Variant, swSave As String, swFlag As String, swept As Long
-For swT = 1 To allTasks.Count
+For swT = 1 To allTasks.count
 swTask = allTasks(swT)
 swSave = CStr(swTask(1))
 On Error Resume Next
@@ -862,7 +869,7 @@ entityCount = IIf(CustName <> "" Or custNameNegNews <> "", 1, 0) + totalCPs
 
 ' Centralized audit ledger row (modAuditLog) - also refreshes this
 ' case's own Register tab in its Desktop\{ecmCase}\{ecmCase}_Audit_Log.xlsx.
-modAuditLog.LogAuditEvent ecmID:=ecmCase, alertID:=AlertID, _
+modAuditLog.LogAuditEvent ecmID:=ecmCase, AlertID:=AlertID, _
 customerName:=CustName, _
 counterparties:=modAuditLog.GetCounterpartyList(ws), _
 eventType:="OSDD Search", _
@@ -926,7 +933,7 @@ End If
 Next hdrIdx
 
 If headersOK Then
-mRow = masterWs.Cells(masterWs.Rows.Count, "A").End(xlUp).Row + 1
+mRow = masterWs.Cells(masterWs.Rows.count, "A").End(xlUp).row + 1
 masterWs.Cells(mRow, 1).Value = Now
 masterWs.Cells(mRow, 2).Value = Environ("USERNAME")
 masterWs.Cells(mRow, 3).Value = ecmCase
@@ -963,7 +970,7 @@ Application.StatusBar = False
 '--------------------------------------------------------------
 ' STEP 11: Final summary dialog -> folder open on OK
 '--------------------------------------------------------------
-AppActivate Application.Caption
+AppActivate Application.caption
 
 Dim summary As String
 summary = "All done! I saved " & actualSearchCount & " PDF(s) directly into:" & vbCrLf & _
@@ -1006,7 +1013,7 @@ AutoRestoreRuntime
 On Error Resume Next
 Dim cpListForAbortLog As String
 If Not ws Is Nothing Then cpListForAbortLog = modAuditLog.GetCounterpartyList(ws)
-modAuditLog.LogAuditEvent ecmID:=ecmCase, alertID:=AlertID, _
+modAuditLog.LogAuditEvent ecmID:=ecmCase, AlertID:=AlertID, _
 customerName:=CustName, counterparties:=cpListForAbortLog, _
 eventType:="OSDD Search (Cancelled)", outputFile:=mainFolderPath, _
 toolVersion:=TOOL_VERSION, _
@@ -1017,7 +1024,7 @@ saveWorkbook:=False
 On Error GoTo 0
 
 On Error Resume Next
-AppActivate Application.Caption
+AppActivate Application.caption
 On Error GoTo 0
 MsgBox "You safely canceled the process. Any PDFs already downloaded " & _
 "are in the case folder." & vbCrLf & vbCrLf & _
@@ -1043,7 +1050,7 @@ LogStep "ERROR Err " & errN & ": " & errD & " [src: " & errS & "]"
 ' indefinitely and freeze Excel.
 Dim cpListForLog As String
 If Not ws Is Nothing Then cpListForLog = modAuditLog.GetCounterpartyList(ws)
-modAuditLog.LogAuditEvent ecmID:=ecmCase, alertID:=AlertID, _
+modAuditLog.LogAuditEvent ecmID:=ecmCase, AlertID:=AlertID, _
 customerName:=CustName, counterparties:=cpListForLog, _
 eventType:="OSDD Search", outputFile:=mainFolderPath, _
 toolVersion:=TOOL_VERSION, _
@@ -1300,14 +1307,14 @@ targets = Array( _
 "OneDrive.exe")
 
 Const PRIORITY_BELOW_NORMAL As Long = 16384
-Dim Target As Variant
+Dim target As Variant
 Dim procs As Object, p As Object
 Dim lowered As Long
 
-For Each Target In targets
+For Each target In targets
 Set procs = wmi.ExecQuery( _
 "SELECT ProcessId FROM Win32_Process WHERE Name = '" & _
-Replace(CStr(Target), "'", "''") & "'")
+Replace(CStr(target), "'", "''") & "'")
 If Not procs Is Nothing Then
 For Each p In procs
 If p.SetPriority(PRIORITY_BELOW_NORMAL) = 0 Then
@@ -1316,7 +1323,7 @@ lowered = lowered + 1
 End If
 Next p
 End If
-Next Target
+Next target
 
 If lowered > 0 Then
 LogStep "BG TUNE: lowered " & lowered & " background process(es) to BelowNormal"
@@ -1327,7 +1334,7 @@ End Sub
 ' exited in the meantime are just ignored.
 Private Sub RestoreBackgroundApps()
 If m_tunedPids Is Nothing Then Exit Sub
-If m_tunedPids.Count = 0 Then
+If m_tunedPids.count = 0 Then
 Set m_tunedPids = Nothing
 Exit Sub
 End If
@@ -1563,7 +1570,7 @@ End Sub
 ' behind something.
 Private Sub ForcePromptToFront()
 On Error Resume Next
-AppActivate Application.Caption
+AppActivate Application.caption
 DoEvents
 On Error GoTo 0
 End Sub
@@ -1577,7 +1584,7 @@ ByVal title As String, _
 ByVal flags As Long) As Long
 Beep   ' audible cue for the analyst
 On Error Resume Next
-AppActivate Application.Caption
+AppActivate Application.caption
 DoEvents
 On Error GoTo 0
 TopMostMsgBox = MessageBoxW(0, StrPtr(msg), StrPtr(title), _
@@ -1700,12 +1707,12 @@ Dim i As Long, a As Variant, list As String
 Dim modeLabel As String
 modeLabel = "Method: " & ModeName(m_searchMode)
 
-If tasks Is Nothing Or tasks.Count = 0 Then
+If tasks Is Nothing Or tasks.count = 0 Then
 BuildSearchDetailList = modeLabel & " | Searches: (none queued)"
 Exit Function
 End If
 
-For i = 1 To tasks.Count
+For i = 1 To tasks.count
 a = tasks(i)
 If list <> "" Then list = list & "; "
 list = list & "[" & CStr(a(4)) & "] " & CStr(a(3))
@@ -1730,7 +1737,7 @@ Private Function MaybeFilterToFailedOnly(ByVal tasks As Collection) As Collectio
 On Error GoTo Fallback
 
 Dim i As Long, goodCount As Long
-For i = 1 To tasks.Count
+For i = 1 To tasks.count
 If TaskHasGoodResult(tasks(i)) Then goodCount = goodCount + 1
 Next i
 
@@ -1741,7 +1748,7 @@ Exit Function
 End If
 
 Dim pendingCount As Long
-pendingCount = tasks.Count - goodCount
+pendingCount = tasks.count - goodCount
 
 Dim resp As Long
 resp = TopMostMsgBox( _
@@ -1751,21 +1758,21 @@ resp = TopMostMsgBox( _
 "YES = re-run ONLY the " & pendingCount & " missing/failed search(es)." & vbCrLf & _
 "   Recommended - far fewer requests, so much less likely to trip" & vbCrLf & _
 "   the block again. Existing good results are left untouched." & vbCrLf & vbCrLf & _
-"NO = re-run all " & tasks.Count & " from scratch (overwrites everything).", _
+"NO = re-run all " & tasks.count & " from scratch (overwrites everything).", _
 "Re-run Failed Only?", MB_YESNO Or MB_ICONQUESTION Or MB_TOPMOST)
 
 If resp <> IDYES Then
-LogStep "GAP-FILL: analyst chose FULL re-run of all " & tasks.Count & " task(s)"
+LogStep "GAP-FILL: analyst chose FULL re-run of all " & tasks.count & " task(s)"
 Set MaybeFilterToFailedOnly = tasks
 Exit Function
 End If
 
 Dim filtered As New Collection
-For i = 1 To tasks.Count
+For i = 1 To tasks.count
 If Not TaskHasGoodResult(tasks(i)) Then filtered.Add tasks(i)
 Next i
 
-LogStep "GAP-FILL: re-running " & filtered.Count & " missing/failed task(s), " & _
+LogStep "GAP-FILL: re-running " & filtered.count & " missing/failed task(s), " & _
 "skipping " & goodCount & " already-good (saved " & goodCount & " request(s))"
 Set MaybeFilterToFailedOnly = filtered
 Exit Function
@@ -1813,7 +1820,7 @@ End Function
 ' Stable sort - within a weight bucket, original order is kept so
 ' per-entity ordering is mostly preserved.
 Private Function SortTasksHeaviestFirst(ByVal tasks As Collection) As Collection
-Dim n As Long: n = tasks.Count
+Dim n As Long: n = tasks.count
 If n <= 1 Then
 Set SortTasksHeaviestFirst = tasks
 Exit Function
@@ -1886,7 +1893,7 @@ End Function
 ' on disk.
 Private Function RunSearchBatch(tasks As Collection, wsh As Object) As Long
 If tasks Is Nothing Then Exit Function
-If tasks.Count = 0 Then Exit Function
+If tasks.count = 0 Then Exit Function
 
 ' Reset the per-run CAPTCHA counter here so it's correct regardless
 ' of which path (headless/interactive) actually runs.
@@ -1912,7 +1919,7 @@ End Function
 Private Function RunSearchBatchParallel(tasks As Collection, wsh As Object) As Long
 On Error Resume Next
 
-Dim n As Long: n = tasks.Count
+Dim n As Long: n = tasks.count
 If n = 0 Then Exit Function
 
 Dim batchStartT As Single: batchStartT = Timer
@@ -1962,9 +1969,9 @@ End If
 On Error GoTo 0
 Next i
 
-If rescueList.Count > 0 And Not bAbort Then
-LogStep "RESCUE PASS: " & rescueList.Count & " files still missing - final retry"
-Application.StatusBar = "OSINT: final rescue pass for " & rescueList.Count & " missing file(s)..."
+If rescueList.count > 0 And Not bAbort Then
+LogStep "RESCUE PASS: " & rescueList.count & " files still missing - final retry"
+Application.StatusBar = "OSINT: final rescue pass for " & rescueList.count & " missing file(s)..."
 Dim rescueSizes() As Long
 DispatchTaskPass rescueList, wsh, "rescue", rescueSizes, True, RETRY_TIMEOUT_SEC, CAPTCHA_MAX_ATTEMPTS_RESCUE - 1
 End If
@@ -1984,7 +1991,7 @@ On Error GoTo 0
 Next i
 
 LogStep "BATCH ALL end, success=" & finalSuccess & "/" & n & _
-" wall=" & CLng(Timer - batchStartT) & "s rescue=" & rescueList.Count & _
+" wall=" & CLng(Timer - batchStartT) & "s rescue=" & rescueList.count & _
 " captchaFlagged=" & m_captchaFlaggedCount
 
 RunSearchBatchParallel = finalSuccess
@@ -2008,7 +2015,7 @@ Optional ByVal timeoutSeconds As Long = 0, _
 Optional ByVal maxRetries As Long = 0)
 On Error GoTo Fail
 
-Dim n As Long: n = tasks.Count
+Dim n As Long: n = tasks.count
 If n = 0 Then
 ReDim finalSizes(1 To 1)   ' guard against uninitialised array in caller
 Exit Sub
@@ -2664,7 +2671,7 @@ On Error GoTo 0
 End Sub
 
 Private Function RunSearchBatchSerial(tasks As Collection, wsh As Object) As Long
-Dim n As Long: n = tasks.Count
+Dim n As Long: n = tasks.count
 Dim i As Long, successCount As Long
 Dim a As Variant
 Dim currLabel As String, currDesc As String
@@ -2890,7 +2897,7 @@ End Function
 ' Safety-first: TRUE unless we can positively read a results page.
 ' A read failure/timeout defaults to TRUE, so a genuine block is
 ' never accepted as a clean result.
-Private Function IsCaptchaContent(ByVal query As String, ByVal pageNum As Long, _
+Private Function IsCaptchaContent(ByVal query As String, ByVal PageNum As Long, _
 ByVal workerIdx As Long, wsh As Object) As Boolean
 IsCaptchaContent = True   ' safe default
 
@@ -2899,8 +2906,8 @@ If Not CAPTCHA_CONTENT_DETECT_ENABLED Then Exit Function
 On Error GoTo Fallback
 
 Dim edgeExe As String, profilePath As String, outPath As String
-Dim baseURL As String, cmd As String, q As String
-q = Chr$(34)   ' one double-quote
+Dim baseURL As String, cmd As String, Q As String
+Q = Chr$(34)   ' one double-quote
 
 edgeExe = GetEdgePath()
 If Len(edgeExe) = 0 Then Exit Function
@@ -2914,15 +2921,15 @@ If Dir(outPath) <> "" Then Kill outPath
 On Error GoTo Fallback
 
 baseURL = "https://www.google.com/search?q=" & URLEncode(query) & "&num=100&hl=en"
-If pageNum > 1 Then baseURL = baseURL & "&start=" & ((pageNum - 1) * 10)
+If PageNum > 1 Then baseURL = baseURL & "&start=" & ((PageNum - 1) * 10)
 
 ' Headless --dump-dom, stdout redirected to a file via cmd. Hidden.
-cmd = "cmd.exe /c " & q & q & edgeExe & q & _
+cmd = "cmd.exe /c " & Q & Q & edgeExe & Q & _
 " --headless=new --disable-gpu" & _
-" --user-data-dir=" & q & profilePath & q & _
+" --user-data-dir=" & Q & profilePath & Q & _
 " --no-first-run --no-default-browser-check --disable-extensions" & _
-" --disable-sync --dump-dom " & q & baseURL & q & _
-" > " & q & outPath & q & " 2>nul" & q
+" --disable-sync --dump-dom " & Q & baseURL & Q & _
+" > " & Q & outPath & Q & " 2>nul" & Q
 wsh.Run cmd, 0, False   ' 0 = hidden, don't wait (we poll below)
 
 ' Poll for the DOM file to be written (the redirect flushes when Edge
@@ -2959,13 +2966,13 @@ isCap = (InStr(html, "unusual traffic") > 0) _
 Or (InStr(html, "/sorry/") > 0) _
 Or (InStr(html, "g-recaptcha") > 0) _
 Or (InStr(html, "recaptcha") > 0) _
-Or (InStr(html, "id=" & q & "recaptcha" & q) > 0) _
+Or (InStr(html, "id=" & Q & "recaptcha" & Q) > 0) _
 Or (InStr(html, "not a robot") > 0)
 
 isResults = (InStr(html, "result-stats") > 0) _
-Or (InStr(html, "id=" & q & "search" & q) > 0) _
-Or (InStr(html, "id=" & q & "rso" & q) > 0) _
-Or (InStr(html, "id=" & q & "result-stats" & q) > 0)
+Or (InStr(html, "id=" & Q & "search" & Q) > 0) _
+Or (InStr(html, "id=" & Q & "rso" & Q) > 0) _
+Or (InStr(html, "id=" & Q & "result-stats" & Q) > 0)
 
 If isCap Then
 IsCaptchaContent = True
@@ -2994,9 +3001,9 @@ End Function
 ' Reads a whole text file into a string (used for the DOM probe).
 Private Function ReadTextFile(ByVal path As String) As String
 On Error Resume Next
-Dim fso As Object, ts As Object
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set ts = fso.OpenTextFile(path, 1)   ' 1 = ForReading
+Dim FSO As Object, ts As Object
+Set FSO = CreateObject("Scripting.FileSystemObject")
+Set ts = FSO.OpenTextFile(path, 1)   ' 1 = ForReading
 ReadTextFile = ts.ReadAll
 ts.Close
 On Error GoTo 0
@@ -3037,10 +3044,13 @@ ShellExecute 0, "open", "msedge.exe", edgeArgs, "", 3
 
 For waitCounter = 1 To 30
 SmartWait t(0.5)
-hEdge = FindWindow("Chrome_WidgetWin_1", vbNullString)
+hEdge = FindEdgeBrowserWindow()
 If hEdge <> 0 Then Exit For
 If bAbort Then GoTo EmergencyClose
 Next waitCounter
+' Fallback: if the title-based match never fired (odd Edge build /
+' locale), fall back to the first window of the class so we still try.
+If hEdge = 0 Then hEdge = FindWindow("Chrome_WidgetWin_1", vbNullString)
 SmartWait t(1.5)
 
 ' Edge finding its window handle does NOT mean Edge has focus -
@@ -3064,11 +3074,12 @@ If bAbort Then GoTo EmergencyClose
 Dim pAttempt As Long, pFore As Boolean
 pFore = False
 For pAttempt = 1 To 6
+If hEdge = 0 Then hEdge = FindEdgeBrowserWindow()
 If hEdge <> 0 Then ForceForeground hEdge
 SmartWait t(0.35), True
-If hEdge <> 0 Then
-If GetForegroundWindow() = hEdge Then pFore = True: Exit For
-End If
+' Accept success when ANY Edge browser window is the foreground -
+' robust to the handle differing from the exact one we grabbed.
+If ForegroundIsEdge() Then pFore = True: Exit For
 Next pAttempt
 
 If Not pFore Then
@@ -3242,6 +3253,62 @@ AttachThreadInput tidTarget, tidMe, 0
 On Error GoTo 0
 End Sub
 
+' Reads a window's title bar text.
+#If VBA7 Then
+Private Function WindowTitleText(ByVal h As LongPtr) As String
+#Else
+Private Function WindowTitleText(ByVal h As Long) As String
+#End If
+On Error Resume Next
+WindowTitleText = ""
+If h = 0 Then Exit Function
+Dim buf As String, n As Long
+buf = String$(512, vbNullChar)
+n = GetWindowText(h, buf, 512)
+If n > 0 Then WindowTitleText = Left$(buf, n)
+On Error GoTo 0
+End Function
+
+' Finds the REAL, visible Edge BROWSER window - not the first window of
+' class "Chrome_WidgetWin_1" (which on Win10/11 is shared by every
+' WebView2 surface: Widgets, Copilot, Outlook, Teams, the headless
+' warm-up Edge...). Grabbing one of those ghost windows is why the
+' foreground check never confirmed and the print keystrokes were never
+' sent. We enumerate top-level windows of that class and return the
+' first VISIBLE one whose title identifies it as Microsoft Edge.
+#If VBA7 Then
+Private Function FindEdgeBrowserWindow() As LongPtr
+Dim h As LongPtr
+#Else
+Private Function FindEdgeBrowserWindow() As Long
+Dim h As Long
+#End If
+On Error Resume Next
+h = 0
+Do
+h = FindWindowEx(0, h, "Chrome_WidgetWin_1", vbNullString)
+If h = 0 Then Exit Do
+If IsWindowVisible(h) <> 0 Then
+If InStr(1, WindowTitleText(h), "Microsoft", vbTextCompare) > 0 _
+And InStr(1, WindowTitleText(h), "Edge", vbTextCompare) > 0 Then
+FindEdgeBrowserWindow = h
+Exit Function
+End If
+End If
+Loop
+On Error GoTo 0
+End Function
+
+' True if the CURRENT foreground window is an Edge browser window. Used
+' instead of an exact-handle match so the keystrokes fire as long as an
+' Edge browser (not Excel, not a dialog) genuinely holds focus.
+Private Function ForegroundIsEdge() As Boolean
+Dim ttl As String
+ttl = WindowTitleText(GetForegroundWindow())
+ForegroundIsEdge = (InStr(1, ttl, "Microsoft", vbTextCompare) > 0 _
+And InStr(1, ttl, "Edge", vbTextCompare) > 0)
+End Function
+
 ' ---- Save-dialog filename verification (interactive fallback) ----
 ' Reads the text currently sitting in the Save dialog's file-name
 ' Edit control so we can confirm our pasted path actually landed
@@ -3321,18 +3388,18 @@ End Function
 ' name.
 Private Function FileNameFieldMatches(ByVal fieldText As String, _
 ByVal fullPath As String) As Boolean
-Dim a As String, b As String, baseName As String, baseNoExt As String
+Dim a As String, B As String, baseName As String, baseNoExt As String
 a = Trim$(fieldText)
-b = Trim$(fullPath)
+B = Trim$(fullPath)
 If Len(a) = 0 Then Exit Function
 
-If StrComp(a, b, vbTextCompare) = 0 Then
+If StrComp(a, B, vbTextCompare) = 0 Then
 FileNameFieldMatches = True
 Exit Function
 End If
 
 a = Replace(a, """", "")
-baseName = Mid$(b, InStrRev(b, "\") + 1)
+baseName = Mid$(B, InStrRev(B, "\") + 1)
 If StrComp(a, baseName, vbTextCompare) = 0 Then
 FileNameFieldMatches = True
 Exit Function
@@ -3354,7 +3421,8 @@ Dim hwndBrowser As LongPtr
 Dim hwndBrowser As Long
 #End If
 
-hwndBrowser = FindWindow("Chrome_WidgetWin_1", vbNullString)
+hwndBrowser = FindEdgeBrowserWindow()
+If hwndBrowser = 0 Then hwndBrowser = FindWindow("Chrome_WidgetWin_1", vbNullString)
 
 ' CRITICAL SAFETY: never send Ctrl+W unless we've CONFIRMED Edge is
 ' the foreground window. If no Edge window is found, or we can't
@@ -3375,7 +3443,7 @@ isFore = False
 For attempt = 1 To 6
 ForceForeground hwndBrowser
 SmartWait t(0.35), True
-If GetForegroundWindow() = hwndBrowser Then
+If ForegroundIsEdge() Then
 isFore = True
 Exit For
 End If
@@ -3394,7 +3462,7 @@ End If
 wsh.SendKeys "{ESC}"
 SmartWait t(0.3), True
 ' Re-verify immediately before the destructive keystroke.
-If GetForegroundWindow() = hwndBrowser Then
+If ForegroundIsEdge() Then
 wsh.SendKeys "^w"
 SmartWait t(0.5), True
 Else
@@ -3561,4 +3629,5 @@ Loop
 ' Drain any ESC presses we swallowed while ignoring them.
 If IgnoreESC Then GetAsyncKeyState 27
 End Sub
+
 

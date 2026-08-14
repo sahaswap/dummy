@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module7"
 Sub Run_Mass_Rename_v3()
 ' ========================================================
 ' ESC KEY HANDLER: Tell Excel not to show the default debug box
@@ -7,11 +8,11 @@ On Error GoTo CancelHandler
 
 Dim ws As Worksheet: Set ws = ActiveSheet
 
-Dim ECM As String: ECM = ws.Range("J10").Value
-Dim sheetAlertID As String: sheetAlertID = ws.Range("J11").Value
-Dim CustName As String: CustName = ws.Range("J14").Value
+Dim ECM As String: ECM = ws.Range("J9").Value
+Dim sheetAlertID As String: sheetAlertID = ws.Range("J10").Value
+Dim CustName As String: CustName = ws.Range("J13").Value
 
-If ECM = "" Or sheetAlertID = "" Then MsgBox "Fill ECM (J10) & Alert ID (J11)!", vbCritical: Exit Sub
+If ECM = "" Or sheetAlertID = "" Then MsgBox "Fill ECM (J9) & Alert ID (J10)!", vbCritical: Exit Sub
 
 Dim fd As FileDialog: Set fd = Application.FileDialog(msoFileDialogFilePicker)
 
@@ -103,7 +104,7 @@ If fd.Show = -1 Then
             ' Build the dynamic menu with actual names
             entityMenu = "Who is this file for?" & vbNewLine & vbNewLine & "0: Customer (" & CustName & ")"
             For i = 1 To 6
-                tempCP = ws.Range("J19").Offset(i - 1, 0).Value
+                tempCP = ws.Range("J18").Offset(i - 1, 0).Value
                 If tempCP <> "" Then
                     entityMenu = entityMenu & vbNewLine & i & ": Counterparty " & i & " (" & tempCP & ")"
                 Else
@@ -155,7 +156,7 @@ If fd.Show = -1 Then
             ' STEP 2B: COUNTERPARTY LOGIC
             ElseIf Val(entityChoice) >= 1 And Val(entityChoice) <= 6 Then
                 Dim cpIdx As Integer: cpIdx = Val(entityChoice)
-                Dim cpCellVal As String: cpCellVal = ws.Range("J19").Offset(cpIdx - 1, 0).Value
+                Dim cpCellVal As String: cpCellVal = ws.Range("J18").Offset(cpIdx - 1, 0).Value
 
                 If cpCellVal = "" Then
                     identifier = "Counterparty " & cpIdx
@@ -279,16 +280,16 @@ End Function
 Sub Run_Mass_Rename_v4()
 Dim ws As Worksheet: Set ws = ActiveSheet
 
-Dim ECM As String: ECM = ws.Range("J10").Value
-Dim AlertID As String: AlertID = ws.Range("J11").Value
-Dim CustName As String: CustName = ws.Range("J14").Value
+Dim ECM As String: ECM = ws.Range("J9").Value
+Dim AlertID As String: AlertID = ws.Range("J10").Value
+Dim CustName As String: CustName = ws.Range("J13").Value
 
-If ECM = "" Or AlertID = "" Then MsgBox "Fill ECM (J10) & Alert ID (J11)!", vbCritical: Exit Sub
+If ECM = "" Or AlertID = "" Then MsgBox "Fill ECM (J9) & Alert ID (J10)!", vbCritical: Exit Sub
 
 Dim CPNames(1 To 6) As String
 Dim i As Long
 For i = 1 To 6
-CPNames(i) = ws.Range("J19").Offset(i - 1, 0).Value
+CPNames(i) = ws.Range("J18").Offset(i - 1, 0).Value
 Next i
 
 Dim fd As FileDialog: Set fd = Application.FileDialog(msoFileDialogFilePicker)
@@ -307,4 +308,5 @@ UserForm2.InitRows fd.SelectedItems, ECM, AlertID, CustName, CPNames
 UserForm2.Show vbModal
 Unload UserForm2
 End Sub
+
 

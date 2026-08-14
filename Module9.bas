@@ -46,12 +46,12 @@ ThisWorkbook.Sheets("ConsolidatedData").Unprotect Password:="p7ss"
 On Error GoTo CancelHandler ' Turn the error handler back on
 
 Set wsHome = ActiveWorkbook.Sheets("Sheet1")
-ecmID = Trim(wsHome.Range("J10").Value)
-AlertID = Trim(wsHome.Range("J11").Value)
+ecmID = Trim(wsHome.Range("J9").Value)
+AlertID = Trim(wsHome.Range("J10").Value)
 If AlertID = "" Then AlertID = "ALERT"
 
 If ecmID = "" Then
-MsgBox "Action Denied: ECM ID is missing in J10.", vbCritical, "Missing ID"
+MsgBox "Action Denied: ECM ID is missing in J9.", vbCritical, "Missing ID"
 Exit Sub
 End If
 
@@ -484,7 +484,7 @@ Application.DisplayAlerts = True
 ' Centralized audit ledger row - Register tab of this case's own
 ' Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx.
 modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-customerName:=Trim(wsHome.Range("J14").Value), _
+customerName:=Trim(wsHome.Range("J13").Value), _
 counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
 eventType:="Transaction File Consolidated", _
 outputFile:=finalSavePath, _
@@ -630,5 +630,6 @@ hitRange.Interior.Color = RGB(255, 199, 206)   ' Light Red Fill
 hitRange.Font.Color = RGB(156, 0, 6)           ' Dark Red Text
 End If
 End Sub
+
 
 

@@ -1,3 +1,4 @@
+Attribute VB_Name = "modAuditLog"
 '==================================================================
 ' modAuditLog  -  centralized cross-tool audit ledger (v3.6)
 '
@@ -109,7 +110,7 @@ Private Const DETAIL_CELL_CAP As Long = 32000
 '                 behavior.
 '------------------------------------------------------------------
 Public Sub LogAuditEvent(ByVal ecmID As String, _
-ByVal alertID As String, _
+ByVal AlertID As String, _
 ByVal customerName As String, _
 ByVal counterparties As String, _
 ByVal eventType As String, _
@@ -127,7 +128,7 @@ End If
 ' 1. Firm-wide index, inside THIS workbook.
 Dim ws As Worksheet
 Set ws = GetOrCreateAuditSheet(ThisWorkbook)
-WriteAuditRow ws, ecmID, alertID, customerName, counterparties, _
+WriteAuditRow ws, ecmID, AlertID, customerName, counterparties, _
 eventType, outputFile, toolVersion, notes, detail
 
 If saveWorkbook Then
@@ -138,7 +139,7 @@ End If
 
 ' 2. This case's own Register tab, inside its Desktop\{ECMID}\
 ' audit workbook.
-WriteCaseRegisterRow ecmID, alertID, customerName, counterparties, _
+WriteCaseRegisterRow ecmID, AlertID, customerName, counterparties, _
 eventType, outputFile, toolVersion, notes, detail
 
 Exit Sub
@@ -204,8 +205,8 @@ oldWs.Delete
 wb.Application.DisplayAlerts = True
 End If
 
-srcSheet.Copy After:=wb.Sheets(wb.Sheets.Count)
-wb.Sheets(wb.Sheets.Count).Name = destName
+srcSheet.Copy After:=wb.Sheets(wb.Sheets.count)
+wb.Sheets(wb.Sheets.count).Name = destName
 End If
 Next nm
 
@@ -248,14 +249,14 @@ wb.Sheets(NARRATIVE_SHEET_NAME).Delete
 wb.Application.DisplayAlerts = True
 On Error GoTo Fail
 
-Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
 ws.Name = NARRATIVE_SHEET_NAME
 ws.Cells(1, 1).Value = "Generated"
 ws.Cells(1, 2).Value = Now
 ws.Cells(2, 1).Value = "Document"
 ws.Cells(2, 2).Value = docLabel
 ws.Cells(4, 1).Value = "Text"
-ws.Cells(4, 1).Font.Bold = True
+ws.Cells(4, 1).Font.bold = True
 
 Dim lines() As String, i As Long
 lines = Split(Replace(Replace(fullText, vbCrLf, vbCr), vbLf, vbCr), vbCr)
@@ -290,7 +291,7 @@ Set ws = wb.Sheets(AUDIT_SHEET_NAME)
 On Error GoTo 0
 
 If ws Is Nothing Then
-Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
 ws.Name = AUDIT_SHEET_NAME
 WriteAuditHeaders ws
 End If
@@ -311,7 +312,7 @@ ws.Cells(1, COL_TOOLVERSION).Value = "Tool Version"
 ws.Cells(1, COL_NOTES).Value = "Notes"
 ws.Cells(1, COL_DETAIL).Value = "Detail"
 With ws.Range(ws.Cells(1, 1), ws.Cells(1, AUDIT_HEADER_COLS))
-.Font.Bold = True
+.Font.bold = True
 .Interior.Color = RGB(0, 70, 127)
 .Font.Color = RGB(255, 255, 255)
 End With
@@ -319,16 +320,16 @@ ws.Columns("A:K").AutoFit
 End Sub
 
 Private Sub WriteAuditRow(ByVal ws As Worksheet, _
-ByVal ecmID As String, ByVal alertID As String, _
+ByVal ecmID As String, ByVal AlertID As String, _
 ByVal customerName As String, ByVal counterparties As String, _
 ByVal eventType As String, ByVal outputFile As String, _
 ByVal toolVersion As String, ByVal notes As String, ByVal detail As String)
 Dim nextRow As Long
-nextRow = ws.Cells(ws.Rows.Count, COL_TIMESTAMP).End(xlUp).Row + 1
+nextRow = ws.Cells(ws.Rows.count, COL_TIMESTAMP).End(xlUp).row + 1
 ws.Cells(nextRow, COL_TIMESTAMP).Value = Now
 ws.Cells(nextRow, COL_ANALYST).Value = Environ("USERNAME")
 ws.Cells(nextRow, COL_ECMCASE).Value = ecmID
-ws.Cells(nextRow, COL_ALERTID).Value = alertID
+ws.Cells(nextRow, COL_ALERTID).Value = AlertID
 ws.Cells(nextRow, COL_CUSTOMER).Value = customerName
 ws.Cells(nextRow, COL_COUNTERPARTIES).Value = counterparties
 ws.Cells(nextRow, COL_EVENTTYPE).Value = eventType
@@ -342,7 +343,7 @@ End Sub
 ' PER-CASE AUDIT WORKBOOK (Desktop\{ECMID}\{ECMID}_Audit_Log.xlsx)
 '==================================================================
 
-Private Sub WriteCaseRegisterRow(ByVal ecmID As String, ByVal alertID As String, _
+Private Sub WriteCaseRegisterRow(ByVal ecmID As String, ByVal AlertID As String, _
 ByVal customerName As String, ByVal counterparties As String, _
 ByVal eventType As String, ByVal outputFile As String, _
 ByVal toolVersion As String, ByVal notes As String, ByVal detail As String)
@@ -356,7 +357,7 @@ Set wb = OpenCaseAuditWorkbook(ecmID, ghostApp, wasAlreadyOpen, isNewFile)
 If wb Is Nothing Then Exit Sub
 
 Set ws = EnsureRegisterSheet(wb)
-WriteAuditRow ws, ecmID, alertID, customerName, counterparties, _
+WriteAuditRow ws, ecmID, AlertID, customerName, counterparties, _
 eventType, outputFile, toolVersion, notes, detail
 
 CloseCaseAuditWorkbook wb, ghostApp, wasAlreadyOpen, ecmID, isNewFile
@@ -385,9 +386,9 @@ Set EnsureRegisterSheet = ws
 Exit Function
 End If
 
-Do While wb.Sheets.Count > 1
+Do While wb.Sheets.count > 1
 wb.Application.DisplayAlerts = False
-wb.Sheets(wb.Sheets.Count).Delete
+wb.Sheets(wb.Sheets.count).Delete
 wb.Application.DisplayAlerts = True
 Loop
 Set ws = wb.Sheets(1)
@@ -647,14 +648,14 @@ End Function
 
 '------------------------------------------------------------------
 ' Shared helper: builds the semicolon-joined counterparty name list
-' from Sheet1!J19:J24, the same range every macro in this workbook
+' from Sheet1!J18:J23, the same range every macro in this workbook
 ' already reads counterparties from. Centralized here so every
 ' LogAuditEvent call gets the same list without each caller
 ' re-implementing the loop.
 '------------------------------------------------------------------
 Public Function GetCounterpartyList(ByVal ws As Worksheet) As String
 Dim i As Long, cpName As String, list As String
-For i = 19 To 24
+For i = 18 To 23
 cpName = Trim$(CStr(ws.Range("J" & i).Value))
 If cpName <> "" Then
 If list <> "" Then list = list & "; "
@@ -663,3 +664,4 @@ End If
 Next i
 GetCounterpartyList = list
 End Function
+
