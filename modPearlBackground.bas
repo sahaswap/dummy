@@ -52,12 +52,15 @@ Sub ApplyPearlBackground()
         .OneColorGradient msoGradientDiagonalUp, 1, 1
     End With
     On Error Resume Next          ' GradientStops.Insert is version-sensitive
+    ' Deep, saturated nacre bands - rich iridescence, not a pale sheen.
     With shp.Fill.GradientStops
-        .Insert RGB(250, 226, 236), 0#      ' pink
-        .Insert RGB(252, 243, 222), 0.25    ' cream
-        .Insert RGB(222, 245, 230), 0.5     ' mint
-        .Insert RGB(230, 222, 248), 0.75    ' lilac
-        .Insert RGB(220, 236, 250), 1#      ' powder blue
+        .Insert RGB(233, 120, 176), 0#      ' magenta-pink
+        .Insert RGB(240, 176, 96), 0.18     ' amber / gold
+        .Insert RGB(96, 200, 150), 0.36     ' green
+        .Insert RGB(80, 182, 214), 0.54     ' teal
+        .Insert RGB(150, 110, 228), 0.72    ' violet
+        .Insert RGB(224, 110, 178), 0.86    ' deep rose
+        .Insert RGB(96, 160, 228), 1#       ' blue
     End With
     On Error GoTo Fail
     shp.Line.Visible = msoFalse
