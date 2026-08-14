@@ -6,7 +6,7 @@ Attribute VB_PredeclaredId = True
 Attribute VB_Exposed = True
 Attribute VB_TemplateDerived = False
 Attribute VB_Customizable = True
-Private Sub Worksheet_Change(ByVal Target As Range)
+Private Sub Worksheet_Change(ByVal target As Range)
     Dim stepName As String
     On Error GoTo ErrorHandler
     
@@ -21,7 +21,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     End If
     On Error GoTo ErrorHandler
     
-    LogDebug "Worksheet_Change triggered on sheet '" & Me.Name & "' for cells: " & Target.Address
+    LogDebug "Worksheet_Change triggered on sheet '" & Me.Name & "' for cells: " & target.Address
     LogDebug "Initial State - Sheet Protected: " & Me.ProtectContents & ", Workbook Protected: " & ThisWorkbook.ProtectStructure
     
     ' ==========================================================
@@ -42,19 +42,19 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     Dim AllAutoCapCells As Range
     
     ' Logic Ranges
-    Set DecisionCell = Range("J6")
-    Set TemplateCell = Range("J7")
-    Set ProgNameRange = Range("J8:T8")
-    Set EscScenarioRange = Range("J9:T9")
+    Set DecisionCell = Range("J5")
+    Set TemplateCell = Range("J6")
+    Set ProgNameRange = Range("J7:T7")
+    Set EscScenarioRange = Range("J8:T8")
     
     ' Autocapitalize Ranges
-    ' (fixed off-by-one: Name value is J14, Address value is J15 - the
-    '  old J13/J14 watched the section header + name, so the address at
+    ' (fixed off-by-one: Name value is J13, Address value is J14 - the
+    '  old J12/J13 watched the section header + name, so the address at
     '  J15 was never capitalized.)
-    Set CustNameCell = Range("J14")
-    Set CustAddressCell = Range("J15")
-    Set CpNameRange = Range("J19:J24")
-    Set CpAddressRange = Range("T19:T24")
+    Set CustNameCell = Range("J13")
+    Set CustAddressCell = Range("J14")
+    Set CpNameRange = Range("J18:J23")
+    Set CpAddressRange = Range("T18:T23")
     
     ' Bundle all text fields that need capitalizing into one group
     Set AllAutoCapCells = Union(CustNameCell, CustAddressCell, CpNameRange, CpAddressRange)
@@ -67,7 +67,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     ' ==========================================================
     stepName = "3. Checking Autocapitalize"
     ' Check if they typed or pasted into ANY of the name/address cells
-    If Not Intersect(Target, AllAutoCapCells) Is Nothing Then
+    If Not Intersect(target, AllAutoCapCells) Is Nothing Then
         LogDebug "Autocapitalize triggered"
         Dim changedCell As Range
         Dim words() As String
@@ -75,7 +75,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
         Dim finalName As String
         
         ' Loop through exactly what was changed (handles pasting multiple rows safely)
-        For Each changedCell In Intersect(Target, AllAutoCapCells)
+        For Each changedCell In Intersect(target, AllAutoCapCells)
             ' Only apply if the cell isn't blank
             If Not IsEmpty(changedCell.Value) Then
                 words = Split(changedCell.Value, " ")
@@ -102,7 +102,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     ' ==========================================================
     stepName = "4. Checking Greying/Locking Logic"
     ' Check if EITHER Decision (J6) or Template (J7) was changed
-    If Not Intersect(Target, Union(DecisionCell, TemplateCell)) Is Nothing Then
+    If Not Intersect(target, Union(DecisionCell, TemplateCell)) Is Nothing Then
         Dim decValue As String
         Dim tempValue As String
         
@@ -151,15 +151,15 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     ' PART 3: THE J8 / WISE RULE
     ' ==============================================================================
     stepName = "5. Checking J8/Wise Rule"
-    If Not Intersect(Target, Range("J6")) Is Nothing Then
-        If Range("J6").Value <> "Wise" Then
-            Range("J8").Value = ""
+    If Not Intersect(target, Range("J5")) Is Nothing Then
+        If Range("J5").Value <> "Wise" Then
+            Range("J7").Value = ""
         End If
     End If
 
     ' --- DEFENSIVE ---
     stepName = "6. Checking Defensive Rules"
-    If Not Intersect(Target, DecisionCell) Is Nothing Then
+    If Not Intersect(target, DecisionCell) Is Nothing Then
         Dim curT As String, okT As Boolean
         curT = UCase(Trim(TemplateCell.Value))
         okT = True
@@ -176,7 +176,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     ' NEW RULE: REFRESH SEARCH MATRIX HYPERLINKS
     ' ==========================================================
     stepName = "6b. Refreshing Search Matrix Hyperlinks"
-    If Not Intersect(Target, Range("J10:J24,T19:T24")) Is Nothing Then
+    If Not Intersect(target, Range("J9:J23,T18:T23")) Is Nothing Then
         RefreshSearchMatrixHyperlinks
     End If
 
@@ -195,11 +195,11 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     Set ctryCell = Range("G27")
     Set iso2Cell = Range("L27")
     Set iso3Cell = Range("O27")
-    Set nameArr = Range("O36:O289")
-    Set iso2Arr = Range("P36:P289")
-    Set iso3Arr = Range("Q36:Q289")
+    Set nameArr = Range("O37:O290")
+    Set iso2Arr = Range("P37:P290")
+    Set iso3Arr = Range("Q37:Q290")
 
-    If Not Intersect(Target, ctryCell) Is Nothing Then
+    If Not Intersect(target, ctryCell) Is Nothing Then
         ' Country picked -> fill both ISO codes.
         If Trim(ctryCell.Value) = "" Then
             iso2Cell.Value = "": iso3Cell.Value = ""
@@ -207,7 +207,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
             iso2Cell.Value = LookupOrBlank(CStr(ctryCell.Value), nameArr, iso2Arr)
             iso3Cell.Value = LookupOrBlank(CStr(ctryCell.Value), nameArr, iso3Arr)
         End If
-    ElseIf Not Intersect(Target, iso2Cell) Is Nothing Then
+    ElseIf Not Intersect(target, iso2Cell) Is Nothing Then
         ' ISO2 picked -> set country (risk formulas cascade), fill ISO3.
         Dim nm2 As String
         If Trim(iso2Cell.Value) = "" Then
@@ -217,7 +217,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
             ctryCell.Value = nm2
             If nm2 = "" Then iso3Cell.Value = "" Else iso3Cell.Value = LookupOrBlank(nm2, nameArr, iso3Arr)
         End If
-    ElseIf Not Intersect(Target, iso3Cell) Is Nothing Then
+    ElseIf Not Intersect(target, iso3Cell) Is Nothing Then
         ' ISO3 picked -> set country, fill ISO2.
         Dim nm3 As String
         If Trim(iso3Cell.Value) = "" Then
@@ -281,7 +281,7 @@ End Sub
 Private Function LookupOrBlank(ByVal key As String, ByVal lookupCol As Range, ByVal returnCol As Range) As String
     Dim m As Variant
     m = Application.Match(key, lookupCol, 0)
-    If IsError(m) Then
+    If isError(m) Then
         LookupOrBlank = ""
     Else
         LookupOrBlank = CStr(returnCol.Cells(CLng(m), 1).Value)
