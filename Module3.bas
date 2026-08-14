@@ -83,11 +83,11 @@ If wdApp Is Nothing Then
 End If
 On Error GoTo 0
 
-' Build with the Word window HIDDEN and redraw / spell-check /
-' grammar-check / background repagination all OFF. Those background
-' passes are what made a large RFI take ~a minute and flash a blank Word
-' window while it churned. Everything is restored and the finished
-' document is revealed at the very end (see the completion block).
+wdApp.Visible = True
+' Keep the window VISIBLE so you can watch the narrative build live (as
+' it did before). Only turn off Word's background spell-check / grammar-
+' check / repagination - those passes, not the on-screen editing, are
+' what made it slow. Screen updating stays ON. All restored at the end.
 Dim prevSpell As Boolean, prevGram As Boolean, prevPag As Boolean
 On Error Resume Next
 prevSpell = wdApp.Options.CheckSpellingAsYouType
@@ -96,7 +96,6 @@ prevPag = wdApp.Options.Pagination
 wdApp.Options.CheckSpellingAsYouType = False
 wdApp.Options.CheckGrammarAsYouType = False
 wdApp.Options.Pagination = False
-wdApp.ScreenUpdating = False
 On Error GoTo 0
 Set wdDoc = wdApp.Documents.Add
 
@@ -226,14 +225,12 @@ Application.OnTime Now + TimeSerial(0, 0, 1), "PushRFITracker_Deferred"
 On Error GoTo 0
 ' ==========================================
 
-' Restore Word's state and reveal the finished document(s) - fully
-' built, so the analyst never sees the blank "still building" window.
+' Restore Word's background checks now that the documents are built
+' (the window stayed visible throughout, so nothing to reveal here).
 On Error Resume Next
 wdApp.Options.CheckSpellingAsYouType = prevSpell
 wdApp.Options.CheckGrammarAsYouType = prevGram
 wdApp.Options.Pagination = prevPag
-wdApp.ScreenUpdating = True
-wdApp.Visible = True
 wdApp.Activate
 On Error GoTo 0
 
