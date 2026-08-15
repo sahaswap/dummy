@@ -1,35 +1,27 @@
 Option Explicit
 '=====================================================================
-' modGlassStyle - rounded "glass" + corporate restyle for the Sheet1
-' dashboard (your buttons and banners are real shapes, so it restyles
-' them in place - no converting, no re-wiring macros).
+' modGlassStyle - DARK frosted-glass restyle for the Sheet1 dashboard,
+' to sit on the dark aurora background (ApplyPearlBackground).
 '
-'   ApplyGlassStyle  - Title ("Beta 3.5") -> bold navy corporate header;
-'                      section banners     -> bold navy, frosted glass;
-'                      action buttons       -> rounded frosted glass,
-'                                              Segoe UI, steel-blue edge;
-'                      "Reset" keeps a danger-red label.
+' Your buttons and banners are real shapes, so it restyles them in
+' place - dark translucent fill (aurora shimmers through), soft edge,
+' and LIGHT text so it reads on the dark theme. Rounds the buttons.
+'
+'   ApplyGlassStyle  - buttons -> rounded dark frosted glass, light text;
+'                      banners/title -> dark frosted, light text;
+'                      "Reset" keeps a soft danger-red label.
 '   RemoveGlassStyle - restores every shape EXACTLY (type, fill, line AND
-'                      font), from a stash kept in each shape's AltText.
+'                      font/colour), from a stash in each shape's AltText.
 '
 ' Idempotent (never re-stashes). Touches ONLY shape formatting - no
-' cells, values, data or macros. Pairs with ApplyPearlBackground.
+' cells, values, data or macros.
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "GLASSORIG|"
-Private Const FONT_NAME As String = "Segoe UI"
-
 Private Const CORNER As Single = 0.35          ' button corner roundness (0..0.5)
-Private Const BTN_TRANS As Single = 0.16       ' button fill transparency
-Private Const PANEL_TRANS As Single = 0.46     ' banner/panel fill transparency
+Private Const BTN_TRANS As Single = 0.28       ' button fill transparency
+Private Const PANEL_TRANS As Single = 0.34     ' banner fill transparency
 Private Const TITLE_TRANS As Single = 0.5      ' title box transparency
-
-Private Const GLASS_WHITE As Long = 16777215   ' RGB(255,255,255)
-' corporate palette
-Private Const NAVY As Long = 4991771           ' RGB(27, 43, 76)   headers / title
-Private Const SLATE As Long = 5388845          ' RGB(45, 58, 82)   button text
-Private Const STEEL As Long = 9067310          ' RGB(46, 91, 138)  accents / borders
-Private Const DANGER As Long = 2763440         ' RGB(176, 42, 42)  Reset text
 
 Sub ApplyGlassStyle()
     Dim ws As Worksheet, shp As Shape, n As Long
@@ -63,7 +55,7 @@ Sub ApplyGlassStyle()
     On Error GoTo 0
     If wasProt Then ws.Protect Password:="p7ss"
 
-    MsgBox "Corporate glass style applied to " & n & " shape(s)." & vbCrLf & vbCrLf & _
+    MsgBox "Dark glass style applied to " & n & " shape(s)." & vbCrLf & vbCrLf & _
            "Run RemoveGlassStyle to undo (restores type, fill, line and font).", _
            vbInformation, "Glass Style"
 End Sub
@@ -120,7 +112,7 @@ Private Function IsTitle(ByVal shp As Shape) As Boolean
     On Error GoTo 0
 End Function
 
-' ---- styling -------------------------------------------------------
+' ---- styling (dark frosted glass, light text) ----------------------
 
 Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
@@ -128,27 +120,26 @@ Private Sub StyleButton(ByVal shp As Shape)
     shp.Adjustments(1) = CORNER
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = GLASS_WHITE
+        .ForeColor.RGB = RGB(18, 28, 42)       ' dark slate
         .Transparency = BTN_TRANS
     End With
     With shp.Line
         .Visible = msoTrue
-        .ForeColor.RGB = STEEL
-        .Transparency = 0.15
-        .Weight = 1.25
+        .ForeColor.RGB = RGB(120, 196, 205)    ' soft teal edge
+        .Transparency = 0.55
+        .Weight = 1
     End With
     shp.SoftEdge.Type = 2
     With shp.Shadow
         .Type = msoShadow25: .Visible = msoTrue
-        .Transparency = 0.7: .Blur = 8: .OffsetX = 0: .OffsetY = 2
+        .Transparency = 0.65: .Blur = 9: .OffsetX = 0: .OffsetY = 2
     End With
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
-            .Name = FONT_NAME: .Bold = True: .Italic = False
             If InStr(1, shp.TextFrame.Characters.Text, "Reset", vbTextCompare) > 0 Then
-                .Color = DANGER
+                .Color = RGB(255, 150, 150)    ' soft danger red
             Else
-                .Color = SLATE
+                .Color = RGB(232, 240, 246)    ' light
             End If
         End With
     End If
@@ -159,20 +150,18 @@ Private Sub StylePanel(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = GLASS_WHITE
+        .ForeColor.RGB = RGB(14, 22, 34)
         .Transparency = PANEL_TRANS
     End With
     With shp.Line
         .Visible = msoTrue
-        .ForeColor.RGB = RGB(206, 216, 232)
-        .Transparency = 0.3
+        .ForeColor.RGB = RGB(90, 150, 165)
+        .Transparency = 0.6
         .Weight = 0.75
     End With
     shp.SoftEdge.Type = 1
     If shp.TextFrame.HasText Then
-        With shp.TextFrame.Characters.Font
-            .Name = FONT_NAME: .Bold = True: .Italic = False: .Color = NAVY
-        End With
+        shp.TextFrame.Characters.Font.Color = RGB(232, 240, 246)
     End If
     On Error GoTo 0
 End Sub
@@ -181,16 +170,13 @@ Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = GLASS_WHITE
+        .ForeColor.RGB = RGB(14, 22, 34)
         .Transparency = TITLE_TRANS
     End With
     shp.Line.Visible = msoFalse
     shp.SoftEdge.Type = 1
     If shp.TextFrame.HasText Then
-        With shp.TextFrame.Characters.Font
-            .Name = FONT_NAME: .Bold = True: .Italic = False
-            .Size = 14: .Color = NAVY
-        End With
+        shp.TextFrame.Characters.Font.Color = RGB(236, 243, 249)
     End If
     On Error GoTo 0
 End Sub
@@ -244,7 +230,6 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
         shp.Line.Visible = msoFalse
     End If
 
-    ' restore font (new-format stash only)
     If UBound(p) >= 13 Then
         If CLng(p(8)) <> 0 And Len(p(9)) > 0 Then
             With shp.TextFrame.Characters.Font
