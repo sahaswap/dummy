@@ -41,10 +41,12 @@ Sub ApplyDarkCells()
         End If
     End If
 
-    Dim wasProt As Boolean
+    Dim wasProt As Boolean, wbProt As Boolean
     On Error Resume Next
     wasProt = ws.ProtectContents
     ws.Unprotect Password:="p7ss"
+    wbProt = ThisWorkbook.ProtectStructure        ' structure lock blocks Sheets.Add
+    ThisWorkbook.Unprotect Password:="p7ss"
     On Error GoTo 0
 
     Application.ScreenUpdating = False
@@ -68,6 +70,7 @@ Sub ApplyDarkCells()
 
     bak.Visible = xlSheetVeryHidden
     If wasProt Then ws.Protect Password:="p7ss"
+    If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
 
     MsgBox "Dark mode applied to " & i & " cells (" & RANGE_ADDR & ")." & vbCrLf & vbCrLf & _
@@ -88,10 +91,12 @@ Sub RemoveDarkCells()
         Exit Sub
     End If
 
-    Dim wasProt As Boolean
+    Dim wasProt As Boolean, wbProt As Boolean
     On Error Resume Next
     wasProt = ws.ProtectContents
     ws.Unprotect Password:="p7ss"
+    wbProt = ThisWorkbook.ProtectStructure
+    ThisWorkbook.Unprotect Password:="p7ss"
     On Error GoTo 0
 
     Application.ScreenUpdating = False
@@ -115,6 +120,7 @@ Sub RemoveDarkCells()
     Application.DisplayAlerts = True
 
     If wasProt Then ws.Protect Password:="p7ss"
+    If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
     MsgBox "Dark mode removed; " & (i - 1) & " cells restored to their originals.", _
            vbInformation, "Dark Theme"
