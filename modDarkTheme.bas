@@ -137,6 +137,26 @@ Sub RemoveDarkCells()
            vbInformation, "Dark Theme"
 End Sub
 
+' Removes the stray dropdowns on row 28 (the Country dropdowns' data
+' validation over-extended from row 27 into row 28). Values are left
+' alone; only the row-28 validation is deleted.
+Sub ClearStrayDropdowns()
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    On Error GoTo 0
+    If ws Is Nothing Then MsgBox SHEET_NAME & " not found.", vbCritical: Exit Sub
+
+    Dim wasProt As Boolean
+    On Error Resume Next
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:="p7ss"
+    ws.Range("G28:S28").Validation.Delete
+    If wasProt Then ws.Protect Password:="p7ss"
+    On Error GoTo 0
+    MsgBox "Stray dropdowns on row 28 (G28:S28) removed.", vbInformation, "Dark Theme"
+End Sub
+
 Private Function GetBak(ByVal createIfMissing As Boolean) As Worksheet
     On Error Resume Next
     Set GetBak = ThisWorkbook.Sheets(BAK_SHEET)
