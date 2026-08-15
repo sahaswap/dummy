@@ -64,9 +64,17 @@ Sub ApplyDarkCells()
         bak.Cells(i, 4).Value = c.Font.Color
     Next c
 
-    ' go dark: clear fills (aurora shows through) + light text
-    rng.Interior.ColorIndex = xlNone
+    ' go dark: light text everywhere; clear fills as the baseline
     rng.Font.Color = LIGHT_FONT
+    rng.Interior.ColorIndex = xlNone
+
+    ' dark "cards" behind each section, so the aurora only peeks through the
+    ' GAPS between them (like the demo) instead of blaring behind the data
+    Dim cardColor As Long: cardColor = RGB(18, 29, 45)   ' deep navy-slate
+    ws.Range("G4:T10").Interior.Color = cardColor     ' Alert Related Information
+    ws.Range("G12:T14").Interior.Color = cardColor    ' Customer Information
+    ws.Range("G16:T23").Interior.Color = cardColor    ' Counterparty Information
+    ws.Range("G25:T27").Interior.Color = cardColor    ' Country Risk Rating
 
     bak.Visible = xlSheetVeryHidden
     If wasProt Then ws.Protect Password:="p7ss"

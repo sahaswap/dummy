@@ -91,10 +91,11 @@ End Sub
 
 Private Function IsStylableShape(ByVal shp As Shape) As Boolean
     On Error Resume Next
-    If shp.Type = msoAutoShape Then
-        Dim t As Long: t = shp.AutoShapeType
-        IsStylableShape = (t = msoShapeRectangle Or t = msoShapeRoundedRectangle)
-    End If
+    ' Any autoshape / freeform dashboard shape - buttons, banners AND the
+    ' panel container cards (whose geometry isn't a plain rounded-rect, which
+    ' is why they were being skipped and stayed white). Pictures (the shield
+    ' icon) are not autoshapes, so they're left alone.
+    IsStylableShape = (shp.Type = msoAutoShape Or shp.Type = msoFreeform)
     On Error GoTo 0
 End Function
 
@@ -214,7 +215,7 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
     shp.SoftEdge.Type = 0        ' msoSoftEdgeTypeNone
     shp.Shadow.Visible = msoFalse
 
-    shp.AutoShapeType = CLng(p(1))
+    If CLng(p(1)) > 0 Then shp.AutoShapeType = CLng(p(1))   ' skip mixed/freeform (-2)
     If CLng(p(2)) = msoTrue Then
         shp.Fill.Visible = msoTrue: shp.Fill.Solid
         shp.Fill.ForeColor.RGB = CLng(p(3))
