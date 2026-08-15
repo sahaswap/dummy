@@ -1,3 +1,4 @@
+Attribute VB_Name = "modRFIGenerate"
 '==================================================================
 ' modRFIGenerate  -  RFI data layer + (later) orchestrator
 '
@@ -19,7 +20,7 @@ Option Explicit
 
 ' --- Dynamic fields gathered per case ---
 Public Type RFIData
-    customerName As String     ' Sheet1!J14
+    customerName As String     ' Sheet1!J13
     AccountNumber As String    ' Sheet7 [Account Numbers]
     DateStart As String        ' Sheet7 [Start Date]
     DateEnd As String          ' Sheet7 [End Date]
@@ -27,10 +28,15 @@ Public Type RFIData
     CrTotal As String          ' Sheet7 [Cr]       - credit example line
     NumDr As String            ' Sheet7 [Num Dr]   - debit example line
     DrTotal As String          ' Sheet7 [Dr]       - debit example line
-    Counterparties As String   ' Sheet7 [Counterparties] - both ORIGINATOR & COUNTERPARTY
-    CaseNumber As String       ' Sheet1!J10
-    AlertNumber As String      ' Sheet1!J11
+    counterparties As String   ' Sheet7 [Counterparties] - both ORIGINATOR & COUNTERPARTY
+    CaseNumber As String       ' Sheet1!J9
+    AlertNumber As String      ' Sheet1!J10
 End Type
+
+' Version stamp written to the tracker row. Module-level declarations
+' must sit ABOVE the first procedure, otherwise VBA raises "only
+' comments may appear after End Sub/Function/Property".
+Private Const RFI_TOOL_VERSION As String = "3.5"
 
 '------------------------------------------------------------------
 ' GetSheet7Tag
@@ -44,7 +50,7 @@ Public Function GetSheet7Tag(ByVal tagName As String) As String
 
     On Error GoTo CleanFail
     Set ws = ThisWorkbook.Sheets("Sheet7")
-    lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
+    lastRow = ws.Cells(ws.Rows.count, "J").End(xlUp).row
 
     For i = 1 To lastRow
         If Trim$(CStr(ws.Cells(i, "J").Value)) = tagName Then
@@ -71,9 +77,9 @@ Public Function GatherRFIData() As RFIData
     Dim d As RFIData, ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Sheet1")
 
-    d.customerName = CStr(ws.Range("J14").Value)
-    d.CaseNumber = CStr(ws.Range("J10").Value)
-    d.AlertNumber = CStr(ws.Range("J11").Value)
+    d.customerName = CStr(ws.Range("J13").Value)
+    d.CaseNumber = CStr(ws.Range("J9").Value)
+    d.AlertNumber = CStr(ws.Range("J10").Value)
 
     d.AccountNumber = GetSheet7Tag("[Account Numbers]")
     d.DateStart = GetSheet7Tag("[Start Date]")
@@ -82,7 +88,7 @@ Public Function GatherRFIData() As RFIData
     d.CrTotal = GetSheet7Tag("[Cr]")
     d.NumDr = GetSheet7Tag("[Num Dr]")
     d.DrTotal = GetSheet7Tag("[Dr]")
-    d.Counterparties = GetSheet7Tag("[Counterparties]")
+    d.counterparties = GetSheet7Tag("[Counterparties]")
 
     GatherRFIData = d
 End Function
@@ -119,11 +125,10 @@ End Function
 
 ' Tracker path/name come from modConfig (single source of truth), so
 ' this RFI push lands in the same shared workbook as ExportToWord.
-Private Const RFI_TOOL_VERSION As String = "2.4.1"
 
 '------------------------------------------------------------------
 ' GenerateRFI  -  entry point for an RFI case (called by the router).
-'   PRE:  Sheet1!J6 = "RFI".
+'   PRE:  Sheet1!J5 = "RFI".
 '   POST: builds the RFI Word doc, saves it to the case folder, pushes a
 '         tracker row. Aborts with a MsgBox (no file) on any validation failure.
 '------------------------------------------------------------------
@@ -134,23 +139,23 @@ Public Sub GenerateRFI()
     Set ws = ThisWorkbook.Sheets("Sheet1")
 
     ' 1. Validate required inputs
+    If Trim$(CStr(ws.Range("J9").Value)) = "" Then
+        MsgBox "Missing ECM Case ID (J9). Please fill it before generating an RFI.", _
+               vbExclamation, "RFI": Exit Sub
+    End If
     If Trim$(CStr(ws.Range("J10").Value)) = "" Then
-        MsgBox "Missing ECM Case ID (J10). Please fill it before generating an RFI.", _
+        MsgBox "Missing Alert ID (J10). Please fill it before generating an RFI.", _
                vbExclamation, "RFI": Exit Sub
     End If
-    If Trim$(CStr(ws.Range("J11").Value)) = "" Then
-        MsgBox "Missing Alert ID (J11). Please fill it before generating an RFI.", _
-               vbExclamation, "RFI": Exit Sub
-    End If
-    If Trim$(CStr(ws.Range("J14").Value)) = "" Then
-        MsgBox "Missing Customer Name (J14). Please fill it before generating an RFI.", _
+    If Trim$(CStr(ws.Range("J13").Value)) = "" Then
+        MsgBox "Missing Customer Name (J13). Please fill it before generating an RFI.", _
                vbExclamation, "RFI": Exit Sub
     End If
 
-    ' 2. Resolve the template from J7
-    tpl = GetRFITemplate(CStr(ws.Range("J7").Value))
+    ' 2. Resolve the template from J6
+    tpl = GetRFITemplate(CStr(ws.Range("J6").Value))
     If tpl.Name = "" Then
-        MsgBox "For an RFI, the Template (J7) must be Wise, Airwallex, or Common.", _
+        MsgBox "For an RFI, the Template (J6) must be Wise, Airwallex, or Common.", _
                vbExclamation, "RFI": Exit Sub
     End If
 
@@ -163,8 +168,8 @@ Public Sub GenerateRFI()
 
     ' 5. Save + tracker
     Dim savedPath As String
-    savedPath = SaveRFIDocument(wdDoc, CStr(ws.Range("J10").Value), CStr(ws.Range("J14").Value))
-    PushRFITrackerRow CStr(ws.Range("J10").Value)
+    savedPath = SaveRFIDocument(wdDoc, CStr(ws.Range("J9").Value), CStr(ws.Range("J13").Value))
+    PushRFITrackerRow CStr(ws.Range("J9").Value)
 
     ' Centralized audit ledger row - Register tab of this case's own
     ' Desktop\{ECMID}\{ECMID}_Audit_Log.xlsx. Skipped entirely if the
@@ -178,11 +183,11 @@ Public Sub GenerateRFI()
         On Error GoTo 0
 
         Dim ecmIDForLog As String
-        ecmIDForLog = CStr(ws.Range("J10").Value)
+        ecmIDForLog = CStr(ws.Range("J9").Value)
 
         modAuditLog.LogAuditEvent ecmID:=ecmIDForLog, _
-            alertID:=CStr(ws.Range("J11").Value), _
-            customerName:=CStr(ws.Range("J14").Value), _
+            AlertID:=CStr(ws.Range("J10").Value), _
+            customerName:=CStr(ws.Range("J13").Value), _
             counterparties:=modAuditLog.GetCounterpartyList(ws), _
             eventType:="RFI Generated", _
             outputFile:=savedPath, _
@@ -280,7 +285,7 @@ Private Sub PushRFITrackerRow(ByVal ecmID As String)
                 Next hdrIdx
 
                 If headersOK Then
-                    mRow = masterWs.Cells(masterWs.Rows.Count, "A").End(xlUp).Row + 1
+                    mRow = masterWs.Cells(masterWs.Rows.count, "A").End(xlUp).row + 1
                     masterWs.Cells(mRow, 1).Value = Now
                     masterWs.Cells(mRow, 2).Value = Environ("USERNAME")
                     masterWs.Cells(mRow, 3).Value = ecmID
@@ -304,3 +309,4 @@ Private Sub PushRFITrackerRow(ByVal ecmID As String)
         Set ghostApp = Nothing
     End If
 End Sub
+

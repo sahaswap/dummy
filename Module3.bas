@@ -48,8 +48,8 @@ Dim c2 As Object
 Set ws = ThisWorkbook.Sheets("Sheet7")
 
 ' --- CAPTURE ID's FROM SHEET1 FOR NAMING ---
-ecmID = ThisWorkbook.Sheets("Sheet1").Range("J10").Value
-AlertID = ThisWorkbook.Sheets("Sheet1").Range("J11").Value
+ecmID = ThisWorkbook.Sheets("Sheet1").Range("J9").Value
+AlertID = ThisWorkbook.Sheets("Sheet1").Range("J10").Value
 
 lastRow = ws.Cells(ws.Rows.count, "J").End(xlUp).row
 
@@ -139,8 +139,8 @@ With wdDoc.content.ParagraphFormat
 End With
 
 ' --- NEW: RFI FORMATTING DELEGATED TO LOCAL SUBROUTINE ---
-' J6 is the Decision cell (RFI / Escalation / Non-Escalation / ...).
-decValue = UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J6").Value))
+' J5 is the Decision cell (RFI / Escalation / Non-Escalation / ...).
+decValue = UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J5").Value))
 isRFI = (decValue = "RFI")
 ' Escalation only - deliberately excludes "Non-Escalation".
 isEscalation = (InStr(decValue, "ESCALAT") > 0 And InStr(decValue, "NON") = 0)
@@ -161,7 +161,7 @@ If Len(Dir(folderPath, vbDirectory)) = 0 Then
 End If
 
 ' Define file name
-CustName = ThisWorkbook.Sheets("Sheet1").Range("J14").Value
+CustName = ThisWorkbook.Sheets("Sheet1").Range("J13").Value
 
 If isRFI Then
     wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_RFI QUESTIONS.docx"
@@ -197,7 +197,7 @@ counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), 
 eventType:=IIf(isRFI, "RFI Questions Generated", _
                 IIf(isEscalation, "Escalation Narrative Generated", "Alert Write-Up Generated")), _
 outputFile:=folderPath & wordFileName, _
-toolVersion:="2.4.1", _
+toolVersion:="3.5", _
 detail:="Full text archived in 'Narrative' tab of " & ecmID & "_Audit_Log.xlsx", _
 notes:=""
 
@@ -275,7 +275,7 @@ Public Sub FormatRFIDocument(ByVal wdApp As Object, ByVal wdDoc As Object)
     ' The Common template omits the page header + footer that Wise /
     ' Airwallex carry. Everything else is formatted identically.
     Dim isCommonTpl As Boolean
-    isCommonTpl = (UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J7").Value)) = "COMMON")
+    isCommonTpl = (UCase(Trim(ThisWorkbook.Sheets("Sheet1").Range("J6").Value)) = "COMMON")
 
     ' 0. Set Page Margins to 1.0 Inch (72 points)
     With wdDoc.PageSetup
@@ -583,7 +583,7 @@ End Sub
 ' ================================================================
 ' Pre RFI Alert Write-Up companion document.
 '
-' Generated only when the Decision (J6) is RFI, alongside the RFI
+' Generated only when the Decision (J5) is RFI, alongside the RFI
 ' questions doc. It's a fill-in narrative shell: the "xxxxx"
 ' placeholders and CP1/CP2/CP3 lines are meant to be completed by
 ' the analyst from their OSDD search results. Saved as
@@ -610,16 +610,16 @@ Private Sub GeneratePreRFIWriteUp(ByVal wdApp As Object, ByVal folderPath As Str
            "Internal records confirmed the KYC details as well (if applicable)." & vbCr & _
            "A negative news search identified xxxxxxxxxxxxx information."
 
-    ' COUNTERPARTY REVIEW is built dynamically from Sheet1!J19:J24 - one
+    ' COUNTERPARTY REVIEW is built dynamically from Sheet1!J18:J23 - one
     ' line per counterparty actually present, in slot order (so gaps are
     ' handled). If no counterparties are listed, the whole section is
     ' left out rather than showing empty CP lines.
     Dim wsHome As Worksheet
     Set wsHome = ThisWorkbook.Sheets("Sheet1")
     Dim cpLines As String, rowIdx As Long, slot As Long
-    For rowIdx = 19 To 24
+    For rowIdx = 18 To 23
         If Trim$(CStr(wsHome.Range("J" & rowIdx).Value)) <> "" Then
-            slot = rowIdx - 18                      ' J19 -> CP 1 ... J24 -> CP 6
+            slot = rowIdx - 17                      ' J18 -> CP 1 ... J23 -> CP 6
             If cpLines <> "" Then cpLines = cpLines & vbCr
             cpLines = cpLines & "[CP " & slot & "] (OSDD results)"
         End If
@@ -667,7 +667,7 @@ Private Sub GeneratePreRFIWriteUp(ByVal wdApp As Object, ByVal folderPath As Str
         counterparties:=modAuditLog.GetCounterpartyList(ThisWorkbook.Sheets("Sheet1")), _
         eventType:="Pre RFI Alert Write-Up Generated", _
         outputFile:=folderPath & writeUpName, _
-        toolVersion:="2.4.1", _
+        toolVersion:="3.5", _
         detail:="Fill-in narrative shell generated alongside the RFI questions doc", _
         notes:=""
     On Error GoTo 0
@@ -727,4 +727,5 @@ Private Sub ApplySheet7Tags(ByVal wdTarget As Object)
     Next i
     On Error GoTo 0
 End Sub
+
 
