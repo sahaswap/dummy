@@ -1,42 +1,50 @@
 Option Explicit
 '=====================================================================
-' modDarkTheme - flips the Sheet1 data area to dark mode so it reads on
-' the dark aurora background.
+' modDarkTheme - flips the Sheet1 data area to DARK or LIGHT mode.
 '
-' For every cell in the dashboard range it:
-'   - removes the fill (No Fill) so the aurora shows through, and
-'   - sets the font to a light off-white.
+' For every cell in the dashboard range it sets the font colour and
+' clears the fill (so the background shows in the gaps), then paints a
+' card colour behind each section so the background only peeks through
+' the GAPS between sections. The stray "Utilities" label in B16 is
+' blended out (its value is kept).
 '
-' FULLY REVERSIBLE: before touching anything it copies each cell's
-' original fill + font colour to a very-hidden backup sheet (_DarkBak).
-' RemoveDarkCells reads that back and restores every cell exactly, then
-' deletes the backup.
+' FULLY REVERSIBLE: originals are copied to a very-hidden sheet
+' (_DarkBak) first; RemoveDarkCells restores every cell exactly.
 '
-'   ApplyDarkCells   - back up + go dark
-'   RemoveDarkCells  - restore from backup
+'   ApplyDarkCells    - dark cards, light text
+'   ApplyLightCells   - light cards, dark text
+'   RemoveDarkCells   - restore originals
+'   ClearStrayDropdowns - delete the stray row-28 dropdowns
 '
-' >>> RUN ON A COPY first. Only the range below is touched; the hidden
-'     master table (row 37+) and other sheets are never affected. <<<
+' >>> RUN ON A COPY first. Only the range below is touched. <<<
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
-Private Const RANGE_ADDR As String = "A1:U29"     ' the visible dashboard block
+Private Const RANGE_ADDR As String = "A1:U29"
 Private Const BAK_SHEET As String = "_DarkBak"
-Private Const LIGHT_FONT As Long = 16051428        ' RGB(228, 236, 244) off-white
 
 Sub ApplyDarkCells()
+    ApplyThemeCells RGB(18, 29, 45), RGB(228, 236, 244), RGB(14, 22, 34), "Dark"
+End Sub
+
+Sub ApplyLightCells()
+    ApplyThemeCells RGB(255, 255, 255), RGB(40, 54, 78), RGB(255, 255, 255), "Light"
+End Sub
+
+Private Sub ApplyThemeCells(ByVal cardColor As Long, ByVal fontColor As Long, _
+                            ByVal hideColor As Long, ByVal modeName As String)
     Dim ws As Worksheet
     On Error Resume Next
     Set ws = ThisWorkbook.Sheets(SHEET_NAME)
     On Error GoTo 0
     If ws Is Nothing Then MsgBox SHEET_NAME & " not found.", vbCritical: Exit Sub
 
-    ' guard: don't double-apply (would back up the already-dark state)
+    ' guard: don't double-apply (would back up the already-themed state)
     Dim bak As Worksheet
     Set bak = GetBak(False)
     If Not bak Is Nothing Then
         If Len(CStr(bak.Cells(1, 1).Value)) > 0 Then
-            MsgBox "Dark cells already applied (a backup exists)." & vbCrLf & _
-                   "Run RemoveDarkCells first if you want to re-apply.", vbExclamation, "Dark Theme"
+            MsgBox "A theme is already applied (a backup exists)." & vbCrLf & _
+                   "Run RemoveDarkCells first, then apply the one you want.", vbExclamation, "Theme"
             Exit Sub
         End If
     End If
@@ -45,7 +53,7 @@ Sub ApplyDarkCells()
     On Error Resume Next
     wasProt = ws.ProtectContents
     ws.Unprotect Password:="p7ss"
-    wbProt = ThisWorkbook.ProtectStructure        ' structure lock blocks Sheets.Add
+    wbProt = ThisWorkbook.ProtectStructure
     ThisWorkbook.Unprotect Password:="p7ss"
     On Error GoTo 0
 
@@ -59,30 +67,31 @@ Sub ApplyDarkCells()
     For Each c In rng.Cells
         i = i + 1
         bak.Cells(i, 1).Value = c.Address
-        bak.Cells(i, 2).Value = c.Interior.ColorIndex     ' xlNone => was no-fill
+        bak.Cells(i, 2).Value = c.Interior.ColorIndex
         bak.Cells(i, 3).Value = c.Interior.Color
         bak.Cells(i, 4).Value = c.Font.Color
     Next c
 
-    ' go dark: light text everywhere; clear fills as the baseline
-    rng.Font.Color = LIGHT_FONT
+    ' baseline: theme font everywhere, no fill
+    rng.Font.Color = fontColor
     rng.Interior.ColorIndex = xlNone
 
-    ' dark "cards" behind each section, so the aurora only peeks through the
-    ' GAPS between them (like the demo) instead of blaring behind the data
-    Dim cardColor As Long: cardColor = RGB(18, 29, 45)   ' deep navy-slate
+    ' card colour behind each section (background peeks through the gaps)
     ws.Range("G4:T10").Interior.Color = cardColor     ' Alert Related Information
     ws.Range("G12:T14").Interior.Color = cardColor    ' Customer Information
     ws.Range("G16:T23").Interior.Color = cardColor    ' Counterparty Information
     ws.Range("G25:T27").Interior.Color = cardColor    ' Country Risk Rating
+
+    ' blend out the stray "Utilities" label (B16) without deleting it
+    ws.Range("B16").Font.Color = hideColor
 
     bak.Visible = xlSheetVeryHidden
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
 
-    MsgBox "Dark mode applied to " & i & " cells (" & RANGE_ADDR & ")." & vbCrLf & vbCrLf & _
-           "Run RemoveDarkCells to restore the originals exactly.", vbInformation, "Dark Theme"
+    MsgBox modeName & " mode applied to " & i & " cells." & vbCrLf & vbCrLf & _
+           "Run RemoveDarkCells to restore the originals.", vbInformation, "Theme"
 End Sub
 
 Sub RemoveDarkCells()
@@ -95,7 +104,7 @@ Sub RemoveDarkCells()
     Dim bak As Worksheet
     Set bak = GetBak(False)
     If bak Is Nothing Then
-        MsgBox "No backup found - nothing to restore.", vbExclamation, "Dark Theme"
+        MsgBox "No backup found - nothing to restore.", vbExclamation, "Theme"
         Exit Sub
     End If
 
@@ -123,8 +132,6 @@ Sub RemoveDarkCells()
         ws.Range(addr).Font.Color = bak.Cells(i, 4).Value
     Loop
 
-    ' clear the backup rather than DELETE the sheet (deleting a sheet fails
-    ' under workbook structure protection); leave it empty + very hidden.
     bak.Cells.Clear
     On Error Resume Next
     bak.Visible = xlSheetVeryHidden
@@ -133,13 +140,12 @@ Sub RemoveDarkCells()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Dark mode removed; " & (i - 1) & " cells restored to their originals.", _
-           vbInformation, "Dark Theme"
+    MsgBox "Theme removed; " & (i - 1) & " cells restored to their originals.", _
+           vbInformation, "Theme"
 End Sub
 
 ' Removes the stray dropdowns on row 28 (the Country dropdowns' data
-' validation over-extended from row 27 into row 28). Values are left
-' alone; only the row-28 validation is deleted.
+' validation over-extended from row 27 into row 28). Values untouched.
 Sub ClearStrayDropdowns()
     Dim ws As Worksheet
     On Error Resume Next
@@ -154,7 +160,7 @@ Sub ClearStrayDropdowns()
     ws.Range("G28:S28").Validation.Delete
     If wasProt Then ws.Protect Password:="p7ss"
     On Error GoTo 0
-    MsgBox "Stray dropdowns on row 28 (G28:S28) removed.", vbInformation, "Dark Theme"
+    MsgBox "Stray dropdowns on row 28 (G28:S28) removed.", vbInformation, "Theme"
 End Sub
 
 Private Function GetBak(ByVal createIfMissing As Boolean) As Worksheet

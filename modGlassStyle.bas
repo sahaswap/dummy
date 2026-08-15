@@ -1,29 +1,55 @@
 Option Explicit
 '=====================================================================
-' modGlassStyle - DARK frosted-glass restyle for the Sheet1 dashboard,
-' to sit on the dark aurora background (ApplyPearlBackground).
+' modGlassStyle - frosted-glass restyle for the Sheet1 dashboard, in
+' DARK or LIGHT. Buttons/banners are real shapes, restyled in place.
 '
-' Your buttons and banners are real shapes, so it restyles them in
-' place - dark translucent fill (aurora shimmers through), soft edge,
-' and LIGHT text so it reads on the dark theme. Rounds the buttons.
+'   ApplyGlassStyle       - DARK  frosted glass, light text
+'   ApplyGlassStyleLight   - LIGHT frosted glass, dark text
+'   RemoveGlassStyle       - restores every shape EXACTLY (type/fill/
+'                            line/font), from a stash in its AltText
 '
-'   ApplyGlassStyle  - buttons -> rounded dark frosted glass, light text;
-'                      banners/title -> dark frosted, light text;
-'                      "Reset" keeps a soft danger-red label.
-'   RemoveGlassStyle - restores every shape EXACTLY (type, fill, line AND
-'                      font/colour), from a stash in each shape's AltText.
-'
-' Idempotent (never re-stashes). Touches ONLY shape formatting - no
-' cells, values, data or macros.
+' Idempotent (never re-stashes). Only shape formatting - no cells,
+' values, positions or macros.
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "GLASSORIG|"
-Private Const CORNER As Single = 0.35          ' button corner roundness (0..0.5)
-Private Const BTN_TRANS As Single = 0.28       ' button fill transparency
-Private Const PANEL_TRANS As Single = 0.34     ' banner fill transparency
-Private Const TITLE_TRANS As Single = 0.5      ' title box transparency
+Private Const CORNER As Single = 0.35
 
-Sub ApplyGlassStyle()
+' active palette (set per theme before the styling pass)
+Private pBtnFill As Long, pBtnTrans As Single, pBtnLine As Long, pBtnLineTrans As Single
+Private pBtnText As Long, pReset As Long
+Private pPanFill As Long, pPanTrans As Single, pPanLine As Long, pPanLineTrans As Single
+Private pText As Long, pTitleTrans As Single
+
+Sub ApplyGlassStyle()          ' DARK
+    SetDarkPalette
+    RunGlass "Dark"
+End Sub
+
+Sub ApplyGlassStyleLight()     ' LIGHT / white frosted
+    SetLightPalette
+    RunGlass "Light"
+End Sub
+
+Private Sub SetDarkPalette()
+    pBtnFill = RGB(18, 28, 42): pBtnTrans = 0.28
+    pBtnLine = RGB(120, 196, 205): pBtnLineTrans = 0.55
+    pBtnText = RGB(232, 240, 246): pReset = RGB(255, 150, 150)
+    pPanFill = RGB(14, 22, 34): pPanTrans = 0.34
+    pPanLine = RGB(90, 150, 165): pPanLineTrans = 0.6
+    pText = RGB(232, 240, 246): pTitleTrans = 0.5
+End Sub
+
+Private Sub SetLightPalette()
+    pBtnFill = RGB(255, 255, 255): pBtnTrans = 0.32
+    pBtnLine = RGB(176, 192, 216): pBtnLineTrans = 0.25
+    pBtnText = RGB(40, 54, 78): pReset = RGB(176, 42, 42)
+    pPanFill = RGB(255, 255, 255): pPanTrans = 0.42
+    pPanLine = RGB(198, 212, 232): pPanLineTrans = 0.35
+    pText = RGB(40, 54, 78): pTitleTrans = 0.5
+End Sub
+
+Private Sub RunGlass(ByVal modeName As String)
     Dim ws As Worksheet, shp As Shape, n As Long
     On Error Resume Next
     Set ws = ThisWorkbook.Sheets(SHEET_NAME)
@@ -55,9 +81,8 @@ Sub ApplyGlassStyle()
     On Error GoTo 0
     If wasProt Then ws.Protect Password:="p7ss"
 
-    MsgBox "Dark glass style applied to " & n & " shape(s)." & vbCrLf & vbCrLf & _
-           "Run RemoveGlassStyle to undo (restores type, fill, line and font).", _
-           vbInformation, "Glass Style"
+    MsgBox modeName & " glass style applied to " & n & " shape(s)." & vbCrLf & vbCrLf & _
+           "Run RemoveGlassStyle to undo.", vbInformation, "Glass Style"
 End Sub
 
 Sub RemoveGlassStyle()
@@ -91,10 +116,6 @@ End Sub
 
 Private Function IsStylableShape(ByVal shp As Shape) As Boolean
     On Error Resume Next
-    ' Any autoshape / freeform dashboard shape - buttons, banners AND the
-    ' panel container cards (whose geometry isn't a plain rounded-rect, which
-    ' is why they were being skipped and stayed white). Pictures (the shield
-    ' icon) are not autoshapes, so they're left alone.
     IsStylableShape = (shp.Type = msoAutoShape Or shp.Type = msoFreeform)
     On Error GoTo 0
 End Function
@@ -113,7 +134,7 @@ Private Function IsTitle(ByVal shp As Shape) As Boolean
     On Error GoTo 0
 End Function
 
-' ---- styling (dark frosted glass, light text) ----------------------
+' ---- styling (uses the active palette) -----------------------------
 
 Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
@@ -121,26 +142,23 @@ Private Sub StyleButton(ByVal shp As Shape)
     shp.Adjustments(1) = CORNER
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = RGB(18, 28, 42)       ' dark slate
-        .Transparency = BTN_TRANS
+        .ForeColor.RGB = pBtnFill: .Transparency = pBtnTrans
     End With
     With shp.Line
         .Visible = msoTrue
-        .ForeColor.RGB = RGB(120, 196, 205)    ' soft teal edge
-        .Transparency = 0.55
-        .Weight = 1
+        .ForeColor.RGB = pBtnLine: .Transparency = pBtnLineTrans: .Weight = 1
     End With
     shp.SoftEdge.Type = 2
     With shp.Shadow
         .Type = msoShadow25: .Visible = msoTrue
-        .Transparency = 0.65: .Blur = 9: .OffsetX = 0: .OffsetY = 2
+        .Transparency = 0.68: .Blur = 8: .OffsetX = 0: .OffsetY = 2
     End With
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
             If InStr(1, shp.TextFrame.Characters.Text, "Reset", vbTextCompare) > 0 Then
-                .Color = RGB(255, 150, 150)    ' soft danger red
+                .Color = pReset
             Else
-                .Color = RGB(232, 240, 246)    ' light
+                .Color = pBtnText
             End If
         End With
     End If
@@ -151,19 +169,14 @@ Private Sub StylePanel(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = RGB(14, 22, 34)
-        .Transparency = PANEL_TRANS
+        .ForeColor.RGB = pPanFill: .Transparency = pPanTrans
     End With
     With shp.Line
         .Visible = msoTrue
-        .ForeColor.RGB = RGB(90, 150, 165)
-        .Transparency = 0.6
-        .Weight = 0.75
+        .ForeColor.RGB = pPanLine: .Transparency = pPanLineTrans: .Weight = 0.75
     End With
     shp.SoftEdge.Type = 1
-    If shp.TextFrame.HasText Then
-        shp.TextFrame.Characters.Font.Color = RGB(232, 240, 246)
-    End If
+    If shp.TextFrame.HasText Then shp.TextFrame.Characters.Font.Color = pText
     On Error GoTo 0
 End Sub
 
@@ -171,14 +184,11 @@ Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
         .Visible = msoTrue: .Solid
-        .ForeColor.RGB = RGB(14, 22, 34)
-        .Transparency = TITLE_TRANS
+        .ForeColor.RGB = pPanFill: .Transparency = pTitleTrans
     End With
     shp.Line.Visible = msoFalse
     shp.SoftEdge.Type = 1
-    If shp.TextFrame.HasText Then
-        shp.TextFrame.Characters.Font.Color = RGB(236, 243, 249)
-    End If
+    If shp.TextFrame.HasText Then shp.TextFrame.Characters.Font.Color = pText
     On Error GoTo 0
 End Sub
 
@@ -186,7 +196,7 @@ End Sub
 
 Private Sub StashOriginal(ByVal shp As Shape)
     On Error Resume Next
-    If Left$(GetAltText(shp), Len(TAG)) = TAG Then Exit Sub   ' already stashed
+    If Left$(GetAltText(shp), Len(TAG)) = TAG Then Exit Sub
 
     Dim ht As Long, fn As String, fs As Single, fb As Long, fi As Long, fc As Long
     ht = 0: fn = "": fs = 11: fb = 0: fi = 0: fc = 0
@@ -212,10 +222,10 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
     p = Split(GetAltText(shp), "|")
     If UBound(p) < 7 Then Exit Sub
 
-    shp.SoftEdge.Type = 0        ' msoSoftEdgeTypeNone
+    shp.SoftEdge.Type = 0
     shp.Shadow.Visible = msoFalse
 
-    If CLng(p(1)) > 0 Then shp.AutoShapeType = CLng(p(1))   ' skip mixed/freeform (-2)
+    If CLng(p(1)) > 0 Then shp.AutoShapeType = CLng(p(1))
     If CLng(p(2)) = msoTrue Then
         shp.Fill.Visible = msoTrue: shp.Fill.Solid
         shp.Fill.ForeColor.RGB = CLng(p(3))
