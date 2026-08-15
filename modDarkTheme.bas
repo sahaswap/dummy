@@ -123,9 +123,12 @@ Sub RemoveDarkCells()
         ws.Range(addr).Font.Color = bak.Cells(i, 4).Value
     Loop
 
-    Application.DisplayAlerts = False
-    bak.Delete
-    Application.DisplayAlerts = True
+    ' clear the backup rather than DELETE the sheet (deleting a sheet fails
+    ' under workbook structure protection); leave it empty + very hidden.
+    bak.Cells.Clear
+    On Error Resume Next
+    bak.Visible = xlSheetVeryHidden
+    On Error GoTo 0
 
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
