@@ -2,23 +2,25 @@ Option Explicit
 '=====================================================================
 ' modPearlBackground - mother-of-pearl gradient as Sheet1's BACKGROUND.
 '
-' Generates a soft pearlescent gradient image and sets it as the sheet's
-' background picture, so it sits BEHIND all your cells/data/buttons. This
-' is the only way to get a full-sheet backdrop in Excel - worksheet shapes
-' always render above cells, so a shape can't go behind your data.
+' The pearl gradient PNG is EMBEDDED in this module as base64 text and
+' written straight to disk with plain VBA (no chart, no clipboard, no
+' COM objects). The old chart-export route produced a blank white image
+' on this machine (the clipboard->chart paste silently dropped the
+' picture); this route physically cannot come out white.
+'
+' The image is a seamless 200x200 tile, so Excel repeats it across the
+' sheet as soft diagonal iridescent bands (deep nacre: magenta -> gold
+' -> green -> teal -> violet -> rose -> blue -> back).
 '
 ' It touches NO cells, rows, values, formulas, dropdowns or buttons.
 '
 ' Caveats (both fine for a working dashboard):
 '   - Background pictures do NOT print.
-'   - It's a static wash: a flat sheet has no viewing angle, so it can't
+'   - It's static: a flat sheet has no viewing angle, so it can't
 '     actually shift color like real nacre - it just looks pearly.
 '
-'   ApplyPearlBackground  - build the image + set it as the background
+'   ApplyPearlBackground  - decode + write PNG + set it as the background
 '   RemovePearlBackground - clear it and turn gridlines back on
-'
-' >>> Run on a COPY first. Image export can be finicky on locked-down
-'     setups - if the result looks off, tell me and I'll adjust. <<<
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 
@@ -35,54 +37,20 @@ Sub ApplyPearlBackground()
     ws.Unprotect Password:="p7ss"
     On Error GoTo 0
 
-    ws.Activate
-    Application.ScreenUpdating = False
-
     Dim tmp As String
     tmp = Environ$("TEMP") & "\pearl_bg_" & Format(Now, "hhmmss") & ".png"
 
-    Dim shp As Shape, co As ChartObject
     On Error GoTo Fail
+    WriteBytesToFile tmp, Base64Decode(PearlPngB64())
+    If Dir(tmp) = "" Then Err.Raise 53, , "PNG was not written."
 
-    ' 1. Large pearlescent gradient rectangle (soft nacre pastels).
-    Set shp = ws.Shapes.AddShape(msoShapeRectangle, 0, 0, 1600, 1000)
-    With shp.Fill
-        .Visible = msoTrue
-        .ForeColor.RGB = RGB(250, 226, 236)
-        .OneColorGradient msoGradientDiagonalUp, 1, 1
-    End With
-    On Error Resume Next          ' GradientStops.Insert is version-sensitive
-    ' Deep, saturated nacre bands - rich iridescence, not a pale sheen.
-    With shp.Fill.GradientStops
-        .Insert RGB(233, 120, 176), 0#      ' magenta-pink
-        .Insert RGB(240, 176, 96), 0.18     ' amber / gold
-        .Insert RGB(96, 200, 150), 0.36     ' green
-        .Insert RGB(80, 182, 214), 0.54     ' teal
-        .Insert RGB(150, 110, 228), 0.72    ' violet
-        .Insert RGB(224, 110, 178), 0.86    ' deep rose
-        .Insert RGB(96, 160, 228), 1#       ' blue
-    End With
-    On Error GoTo Fail
-    shp.Line.Visible = msoFalse
-
-    ' 2. Export the shape to PNG via a throwaway chart.
-    shp.CopyPicture Appearance:=xlScreen, Format:=xlBitmap
-    Set co = ws.ChartObjects.Add(0, 0, shp.Width, shp.Height)
-    co.Chart.ChartArea.Format.Line.Visible = msoFalse
-    co.Chart.Paste
-    co.Chart.Export fileName:=tmp, FilterName:="PNG"
-    co.Delete: Set co = Nothing
-    shp.Delete: Set shp = Nothing
-
-    ' 3. Set it as the sheet background (sits behind every cell).
+    ws.Activate
     ws.SetBackgroundPicture fileName:=tmp
-
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
-    On Error GoTo 0
+    On Error GoTo Fail
 
     If wasProt Then ws.Protect Password:="p7ss"
-    Application.ScreenUpdating = True
     MsgBox "Mother-of-pearl background applied to " & SHEET_NAME & _
            " (behind your data)." & vbCrLf & vbCrLf & _
            "Run RemovePearlBackground to clear it. It won't print, by design.", _
@@ -92,15 +60,9 @@ Sub ApplyPearlBackground()
 Fail:
     Dim d As String: d = Err.Description
     On Error Resume Next
-    If Not co Is Nothing Then co.Delete
-    If Not shp Is Nothing Then shp.Delete
     If wasProt Then ws.Protect Password:="p7ss"
-    Application.ScreenUpdating = True
     On Error GoTo 0
-    MsgBox "Couldn't apply the pearl background:" & vbCrLf & d & vbCrLf & vbCrLf & _
-           "(Image export can be blocked on some locked-down machines - " & _
-           "tell me and I'll switch to an embedded-image approach instead.)", _
-           vbExclamation, "Pearl Background"
+    MsgBox "Couldn't apply the pearl background:" & vbCrLf & d, vbExclamation, "Pearl Background"
 End Sub
 
 Sub RemovePearlBackground()
@@ -121,3 +83,53 @@ Sub RemovePearlBackground()
     On Error GoTo 0
     MsgBox "Pearl background removed; gridlines restored.", vbInformation, "Pearl Background"
 End Sub
+
+' --- pure-VBA helpers (no COM, cannot be blocked) -------------------
+
+Private Sub WriteBytesToFile(ByVal path As String, ByRef bytes() As Byte)
+    Dim f As Integer
+    f = FreeFile
+    Open path For Binary Access Write As #f
+    Put #f, 1, bytes
+    Close #f
+End Sub
+
+Private Function Base64Decode(ByVal s As String) As Byte()
+    Static tbl(255) As Long
+    Static ready As Boolean
+    Dim i As Long, alpha As String
+    If Not ready Then
+        For i = 0 To 255: tbl(i) = -1: Next
+        alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        For i = 1 To Len(alpha): tbl(Asc(Mid$(alpha, i, 1))) = i - 1: Next
+        ready = True
+    End If
+
+    Dim out() As Byte
+    ReDim out(0 To (Len(s) * 3) \ 4)
+    Dim bitBuf As Long, bits As Long, oi As Long, ch As Long
+    For i = 1 To Len(s)
+        ch = tbl(Asc(Mid$(s, i, 1)))
+        If ch >= 0 Then
+            bitBuf = bitBuf * 64 + ch
+            bits = bits + 6
+            If bits >= 8 Then
+                bits = bits - 8
+                out(oi) = (bitBuf \ CLng(2 ^ bits)) And 255
+                bitBuf = bitBuf Mod CLng(2 ^ bits)   ' drop consumed high bits (else bitBuf overflows Long)
+                oi = oi + 1
+            End If
+        End If
+    Next
+    ReDim Preserve out(0 To oi - 1)
+    Base64Decode = out
+End Function
+
+Private Function PearlPngB64() As String
+    Dim b As String
+    b = ""
+    b = b & "iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAAHaUlEQVR42u3cV1pVBwBF4T3E2EsssUSNmiMWlKKAdPjwCiJCECVosGCnXemXLgEJWJAmiPhCdwg5gzj7bc3h/9bj0krK65W0FytXG1Yznqxm1a9mP1jNrV3Lr1krrF4rrlwrub0eK1svja2XlayXF21U5G9U5mz8lbVxN2PzXvpmbcpmXfLmwwtb9Ulbj//cenp669nJny+O/3x1dPP1kZU3x340/r7YdGK2+dTnltMTLWdHW4OheFLi7YWOtkut7ZfftF953pH6uDP9Qde1e92ZVT3Xy3tyYom8ot6C3L7CzP7itIGS5MFY0mDpmaFbJ4ZvH3l357fhqsPD1YeGag4N1R4crDs48PDAQP2B/ie/9jXs73u+v/flvt43+xJNe3ta9vbE93S37+nq3N3Vvaszsaujb2fH4M724R3tIzvaRre/Hd/+dmJb/MMvrZ+2tUztaPqy+/WXvS+n9z+bPvh05vCjmaP/zB6vmz1ZO/dHzdzZ6vmgcv58xdeLt74m3/yacmMhrXjhWuFiZt5ids633KxvBRlLRelLJanfY5e/l15aLj+/XHHuR1WwXB0s3QsW/w4WHgTz9cHs42C6IfjyIvj8KvjYGEw2BxPxYLw9GOsM/u0J3vUGwwPB4FDQPxL0jgWJ8aB7Muj8GLRPBW0zQXwuaFkImheDxrmk5qkLrR8uxt8nt41c6RhI7UqkdXdeTcQz+pqyBl5mDzXkDNfnjdQVjNYUjlUVj5eXTNyMfSgu/ZRf9vl6+ZdrFTMpd2YvVc2fq144U/PtxP3vR2uXj9Uun7q/dLZm8fzdhcvV8+lVs1mV07kVU0W3P8XKP5aXTVaW/lcTe193Y/RR"
+    b = b & "yciz4nevioaaCwba8vu68xL9OT3D2V1jWR2TmW1TGfG5qy2L6c0/UhuFKlRFriqslVCFqshVhbUSqlAVuaqwVkIVqiJXFdZKqEJV5KrCWglVqIpcVVgroQpVkasKayVUoSpyVWGthCpURa4qrJVQharIVYW1EqpQFbmqsFZCFaoiVxXWSqhCVeSqwloJVaiKXFVYK6EKVZGrCmslVKEqclVhrYQqVEWuKqyVUIWqyFWFtRKqUBW5qrBWQhWqIlcV1kqoQlXkqsJaCVWoilxVWCuhClWRqwprJVShKnJVYa2EKlRFriqslVCFqshVhbUSqlAVuaqwVkIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/"
+    b = b & "DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePfIVShyvHvEKpQ5fh3CFWocvw7hCpUOf4dQhWqHP8OoQpVjn+HUIUqx79DqEKV498hVKHK8e8QqlDl+HcIVahy/DuEKlQ5/h1CFaoc/w6hClWOf4dQhSrHv0OoQpXj3yFUocrx7xCqUOX4dwhVqHL8O4QqVDn+HUIVqhz/DqEKVY5/h1CFKse/Q6hClePf8T94NZvdAVyAHQAAAABJRU5ErkJggg=="
+    PearlPngB64 = b
+End Function
