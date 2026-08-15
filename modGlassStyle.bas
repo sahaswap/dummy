@@ -41,12 +41,14 @@ Private Sub SetDarkPalette()
 End Sub
 
 Private Sub SetLightPalette()
-    pBtnFill = RGB(255, 255, 255): pBtnTrans = 0.32
-    pBtnLine = RGB(176, 192, 216): pBtnLineTrans = 0.25
-    pBtnText = RGB(40, 54, 78): pReset = RGB(176, 42, 42)
-    pPanFill = RGB(255, 255, 255): pPanTrans = 0.42
-    pPanLine = RGB(198, 212, 232): pPanLineTrans = 0.35
-    pText = RGB(40, 54, 78): pTitleTrans = 0.5
+    ' crisp white buttons + defined blue-grey borders so they pop on the
+    ' tinted light background (frost alone has no contrast in Excel)
+    pBtnFill = RGB(255, 255, 255): pBtnTrans = 0.1
+    pBtnLine = RGB(150, 172, 205): pBtnLineTrans = 0.1
+    pBtnText = RGB(31, 45, 66): pReset = RGB(176, 42, 42)
+    pPanFill = RGB(234, 240, 250): pPanTrans = 0.12      ' tinted banner bars
+    pPanLine = RGB(170, 190, 218): pPanLineTrans = 0.15
+    pText = RGB(31, 45, 66): pTitleTrans = 0.25
 End Sub
 
 Private Sub RunGlass(ByVal modeName As String)
