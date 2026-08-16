@@ -500,7 +500,7 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Align Header & Buttons matching Image 1 -----------
+'---- REPOSITION: Align Header & Buttons with Mathematical Precision --
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
     Dim beta As Shape, actLbl As Shape, utlLbl As Shape
@@ -516,53 +516,124 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
         beta.Visible = msoFalse
     End If
 
-    Dim sbLeft As Single, sbWidth As Single
+    Dim sbLeft As Single, sbWidth As Single, btnW As Single, btnH As Single
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
+    btnW = sbWidth - 8
+    btnH = 26                                   ' 100% uniform button height across all 8 buttons
+
+    Dim btnX As Single
+    btnX = sbLeft + 4                           ' perfectly centered inside the card boxes
 
     ' 1. ACTION PANEL badge at Row 3 (Pill badge above the Action button box)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
         actLbl.Visible = msoTrue
-        actLbl.Left = sbLeft + 4
+        actLbl.Left = btnX
         actLbl.Top = ws.Range("A3").Top + 4
-        actLbl.Width = sbWidth - 8
+        actLbl.Width = btnW
         actLbl.Height = 22
     End If
 
-    ' 2. Action Buttons inside the Upper Box (Rows 6, 8, 11, 13)
+    ' 2. Action Buttons inside the Upper Box (Rows 5 to 14) with equal mathematical gaps
+    Dim box1Top As Single, box1Bot As Single, box1H As Single, gap1 As Single
+    box1Top = ws.Range("A5").Top
+    box1Bot = ws.Range("A14").Top + ws.Range("A14").Height
+    box1H = box1Bot - box1Top
+    gap1 = (box1H - (4 * btnH)) / 5
+
     Dim btnStart As Shape, btnExp As Shape, btnOsdd As Shape, btnNarr As Shape
     Set btnStart = FindButton(ws, "Start")
     Set btnExp = FindButton(ws, "Export")
     Set btnOsdd = FindButton(ws, "OSDD")
     Set btnNarr = FindButton(ws, "Narrat")
 
-    If Not btnStart Is Nothing Then PosBackup ws, btnStart: btnStart.Left = sbLeft: btnStart.Top = ws.Range("A6").Top + 2: btnStart.Width = sbWidth: btnStart.Height = 24
-    If Not btnExp Is Nothing Then PosBackup ws, btnExp: btnExp.Left = sbLeft: btnExp.Top = ws.Range("A8").Top + 2: btnExp.Width = sbWidth: btnExp.Height = 24
-    If Not btnOsdd Is Nothing Then PosBackup ws, btnOsdd: btnOsdd.Left = sbLeft: btnOsdd.Top = ws.Range("A11").Top + 2: btnOsdd.Width = sbWidth: btnOsdd.Height = 24
-    If Not btnNarr Is Nothing Then PosBackup ws, btnNarr: btnNarr.Left = sbLeft: btnNarr.Top = ws.Range("A13").Top + 2: btnNarr.Width = sbWidth: btnNarr.Height = 24
+    If Not btnStart Is Nothing Then
+        PosBackup ws, btnStart
+        btnStart.Left = btnX
+        btnStart.Top = box1Top + gap1
+        btnStart.Width = btnW
+        btnStart.Height = btnH
+    End If
+
+    If Not btnExp Is Nothing Then
+        PosBackup ws, btnExp
+        btnExp.Left = btnX
+        btnExp.Top = box1Top + gap1 + (btnH + gap1) * 1
+        btnExp.Width = btnW
+        btnExp.Height = btnH
+    End If
+
+    If Not btnOsdd Is Nothing Then
+        PosBackup ws, btnOsdd
+        btnOsdd.Left = btnX
+        btnOsdd.Top = box1Top + gap1 + (btnH + gap1) * 2
+        btnOsdd.Width = btnW
+        btnOsdd.Height = btnH
+    End If
+
+    If Not btnNarr Is Nothing Then
+        PosBackup ws, btnNarr
+        btnNarr.Left = btnX
+        btnNarr.Top = box1Top + gap1 + (btnH + gap1) * 3
+        btnNarr.Width = btnW
+        btnNarr.Height = btnH
+    End If
 
     ' 3. UTILITY PANEL badge at Row 16 (Pill badge above the Utility button box)
     If Not utlLbl Is Nothing Then
         PosBackup ws, utlLbl
         utlLbl.Visible = msoTrue
-        utlLbl.Left = sbLeft + 4
+        utlLbl.Left = btnX
         utlLbl.Top = ws.Range("A16").Top + 4
-        utlLbl.Width = sbWidth - 8
+        utlLbl.Width = btnW
         utlLbl.Height = 22
     End If
 
-    ' 4. Utility Buttons inside the Lower Box (Rows 19, 22, 24, 26)
+    ' 4. Utility Buttons inside the Lower Box (Rows 18 to 27) with equal mathematical gaps
+    Dim box2Top As Single, box2Bot As Single, box2H As Single, gap2 As Single
+    box2Top = ws.Range("A18").Top
+    box2Bot = ws.Range("A27").Top + ws.Range("A27").Height
+    box2H = box2Bot - box2Top
+    gap2 = (box2H - (4 * btnH)) / 5
+
     Dim btnRen As Shape, btnPdf As Shape, btnWarm As Shape, btnRst As Shape
     Set btnRen = FindButton(ws, "Rename")
     Set btnPdf = FindButton(ws, "PDF")
     Set btnWarm = FindButton(ws, "Warm")
     Set btnRst = FindButton(ws, "Reset")
 
-    If Not btnRen Is Nothing Then PosBackup ws, btnRen: btnRen.Left = sbLeft: btnRen.Top = ws.Range("A19").Top + 2: btnRen.Width = sbWidth: btnRen.Height = 24
-    If Not btnPdf Is Nothing Then PosBackup ws, btnPdf: btnPdf.Left = sbLeft: btnPdf.Top = ws.Range("A22").Top + 2: btnPdf.Width = sbWidth: btnPdf.Height = 24
-    If Not btnWarm Is Nothing Then PosBackup ws, btnWarm: btnWarm.Left = sbLeft: btnWarm.Top = ws.Range("A24").Top + 2: btnWarm.Width = sbWidth: btnWarm.Height = 24
-    If Not btnRst Is Nothing Then PosBackup ws, btnRst: btnRst.Left = sbLeft: btnRst.Top = ws.Range("A26").Top + 2: btnRst.Width = sbWidth: btnRst.Height = 24
+    If Not btnRen Is Nothing Then
+        PosBackup ws, btnRen
+        btnRen.Left = btnX
+        btnRen.Top = box2Top + gap2
+        btnRen.Width = btnW
+        btnRen.Height = btnH
+    End If
+
+    If Not btnPdf Is Nothing Then
+        PosBackup ws, btnPdf
+        btnPdf.Left = btnX
+        btnPdf.Top = box2Top + gap2 + (btnH + gap2) * 1
+        btnPdf.Width = btnW
+        btnPdf.Height = btnH
+    End If
+
+    If Not btnWarm Is Nothing Then
+        PosBackup ws, btnWarm
+        btnWarm.Left = btnX
+        btnWarm.Top = box2Top + gap2 + (btnH + gap2) * 2
+        btnWarm.Width = btnW
+        btnWarm.Height = btnH
+    End If
+
+    If Not btnRst Is Nothing Then
+        PosBackup ws, btnRst
+        btnRst.Left = btnX
+        btnRst.Top = box2Top + gap2 + (btnH + gap2) * 3
+        btnRst.Width = btnW
+        btnRst.Height = btnH
+    End If
     On Error GoTo 0
 End Sub
 
