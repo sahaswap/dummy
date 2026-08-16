@@ -71,6 +71,7 @@ Sub ApplyNavyGold()
     StyleShapes ws
     RepositionBeta ws
     AddFolds ws
+    AddIcons ws
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
@@ -110,6 +111,28 @@ Sub RemoveNavyGold()
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
     MsgBox "Navy & Gold theme removed; everything restored.", vbInformation, "Navy & Gold"
+End Sub
+
+' One-shot: strip the leftover aurora/pearl BACKGROUND PICTURE off every
+' sheet (Sheet1 and ConsolidatedData still had one, which the Export Trx
+' File macro copies into the exported workbook). Cosmetic only - no data
+' is touched. Run this once.
+Sub ClearAllSheetBackgrounds()
+    Dim ws As Worksheet, prev As Object
+    Set prev = ActiveSheet
+    Application.ScreenUpdating = False
+    For Each ws In ThisWorkbook.Worksheets
+        On Error Resume Next
+        ws.Activate
+        Application.CommandBars.ExecuteMso "SheetBackgroundDelete"
+        On Error GoTo 0
+    Next ws
+    On Error Resume Next
+    prev.Activate
+    On Error GoTo 0
+    Application.ScreenUpdating = True
+    MsgBox "Removed leftover background pictures from all sheets." & vbCrLf & _
+           "Re-run Export Trx File - it'll come out clean now.", vbInformation, "Backgrounds cleared"
 End Sub
 
 '---- CELLS: pearl canvas + warm-white zebra content ----------------
@@ -301,6 +324,55 @@ Private Sub AddFolds(ByVal ws As Worksheet)
             t.Line.Visible = msoFalse
         End If
     Next shp
+End Sub
+
+'---- ICONS: Segoe MDL2 glyphs on banners + buttons -----------------
+' Each icon is a separate borderless textbox (tagged NGADD_) so it's
+' removed cleanly and never alters the banner/button text.
+' Glyph codes are Segoe MDL2 Assets; change any hex here if one renders
+' as the wrong picture on your build.
+Private Sub AddIcons(ByVal ws As Worksheet)
+    AddIconAt ws, FindByText(ws, "Alert Related"), ChrW(&HE7BA), cGold, True    ' warning
+    AddIconAt ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B), cGold, True     ' contact
+    AddIconAt ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716), cGold, True ' people
+    AddIconAt ws, FindByText(ws, "Country Risk"), ChrW(&HE774), cGold, True     ' globe
+    AddIconAt ws, FindButton(ws, "Start"), ChrW(&HE768), cNavy, False           ' play
+    AddIconAt ws, FindButton(ws, "Export Trx"), ChrW(&HE898), cCream, False     ' upload
+    AddIconAt ws, FindButton(ws, "OSDD"), ChrW(&HE721), cCream, False           ' search
+    AddIconAt ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F), cCream, False  ' edit
+    AddIconAt ws, FindButton(ws, "Rename"), ChrW(&HE8AC), cCream, False         ' rename
+    AddIconAt ws, FindButton(ws, "PDF Merge"), ChrW(&HE8A5), cCream, False      ' document
+    AddIconAt ws, FindButton(ws, "Profile Warm"), ChrW(&HE945), cCream, False   ' lightbulb
+    AddIconAt ws, FindButton(ws, "Reset"), ChrW(&HE72C), cCream, False          ' refresh
+End Sub
+
+Private Sub AddIconAt(ByVal ws As Worksheet, ByVal host As Shape, ByVal glyph As String, _
+                      ByVal clr As Long, ByVal isBanner As Boolean)
+    On Error Resume Next
+    If host Is Nothing Then Exit Sub
+    Static cnt As Long: cnt = cnt + 1
+    Dim w As Single, h As Single, leftPad As Single, fsz As Single
+    If isBanner Then
+        w = 26: h = 26: leftPad = 12: fsz = 15
+    Else
+        w = 22: h = 18: leftPad = 12: fsz = 11
+    End If
+    Dim ic As Shape
+    Set ic = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, _
+             host.Left + leftPad, host.Top + (host.Height - h) / 2, w, h)
+    ic.Name = ADD_PFX & "ICON_" & cnt
+    ic.Fill.Visible = msoFalse
+    ic.Line.Visible = msoFalse
+    With ic.TextFrame
+        .Characters.Text = glyph
+        .Characters.Font.Name = "Segoe MDL2 Assets"
+        .Characters.Font.Size = fsz
+        .Characters.Font.Color = clr
+        .HorizontalAlignment = xlHAlignCenter
+        .VerticalAlignment = xlVAlignCenter
+        .MarginLeft = 0: .MarginRight = 0: .MarginTop = 0: .MarginBottom = 0
+    End With
+    On Error GoTo 0
 End Sub
 
 Private Sub RemoveAdded(ByVal ws As Worksheet)
