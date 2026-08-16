@@ -3,23 +3,20 @@ Option Explicit
 '=====================================================================
 ' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
 '
-'   ApplyNavyGold   - pearl canvas, navy sidebar/panels, gold-bordered
-'                     buttons (Start = gold, Reset = crimson), navy+gold
-'                     banners with gold corner folds, warm-white zebra cards
+'   ApplyNavyGold   - pearl canvas, floating rounded sidebar card,
+'                     gold-bordered buttons (Start = gold, Reset = crimson),
+'                     navy+gold banners with gold corner folds, warm-white zebra
 '   RemoveNavyGold  - restores everything (shapes, cells, removes folds)
 '
 ' FULLY REVERSIBLE: shape styles are stashed in each shape's AltText;
 ' cell fills/fonts are backed up to a very-hidden sheet (_NGBak); the
-' added gold folds are named NGADD_* and deleted on remove.
+' added gold folds and cards are named NGADD_* and deleted on remove.
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "NGORIG|"
 Private Const ADD_PFX As String = "NGADD_"
 Private Const BAK As String = "_NGBak"
 Private Const CANVAS As String = "A1:AC30"       ' pearl canvas
-Private Const CONTENT_FIRST As Long = 4
-Private Const CONTENT_LAST As Long = 27
-Private Const CONTENT_COLS As String = "G:T"
 
 ' palette (set by InitPalette; RGB() is used so no hand-computed Longs)
 Private cNavy As Long, cSoftNavy As Long, cPearl As Long, cWarmWhite As Long
@@ -38,8 +35,8 @@ Private Sub InitPalette()
     '   cBtnNavy   = RGB(24, 32, 63)   ' #18203F Soft Navy
     '
     ' [PRESET 2 - ACTIVE: SOFT SLATE NAVY] (Lighter, warmer, less dark):
-    cSidebarBg = RGB(30, 48, 78)       ' #1E304E Rich Slate Navy
-    cBtnNavy   = RGB(42, 64, 102)      ' #2A4066 Elevated Button Navy
+    cSidebarBg = RGB(24, 36, 62)       ' #18243E Rich Slate Navy
+    cBtnNavy   = RGB(34, 52, 86)       ' #223456 Elevated Button Navy
     ' =================================================================
 
     cNavy = RGB(17, 25, 54)              ' #111936 Deep Navy
@@ -85,9 +82,12 @@ Sub ApplyNavyGold()
 
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws
+    AddSidebarCard ws                                          ' floating rounded navbar card
     StyleShapes ws
     RepositionBeta ws
+    RemoveStraySidebarIcons ws                                 ' permanently remove all stray icons/graphics in sidebar
     AddFolds ws
+    AddPanelDecor ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
 
     On Error Resume Next
@@ -148,7 +148,7 @@ Sub ClearAllSheetBackgrounds()
     MsgBox "Removed leftover background pictures from all sheets.", vbInformation, "Backgrounds cleared"
 End Sub
 
-'---- CELLS: pearl canvas + data cards only on real input rows -----
+'---- CELLS: pearl base canvas + zebra data rows --------------------
 Private Sub ApplyCells(ByVal ws As Worksheet)
     Dim bak As Worksheet: Set bak = GetBak(True)
     If Len(CStr(bak.Cells(1, 1).Value)) = 0 Then
@@ -163,20 +163,13 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End If
     bak.Visible = xlSheetVeryHidden
 
-    ' 1. Paint entire canvas in Pearl base and clear all grid lines / borders
+    ' 1. Paint entire canvas (including cols A-E) in Pearl base
+    '    (This allows the floating rounded sidebar card to show its curved corners)
     ws.Range(CANVAS).Interior.Color = cPearl
     ws.Range(CANVAS).Borders(xlEdgeBottom).LineStyle = xlNone
     ws.Range(CANVAS).Borders(xlInsideHorizontal).LineStyle = xlNone
 
-    ' 2. Paint sidebar strip (cols A-E)
-    ws.Range("A1:E29").Interior.Color = cSidebarBg
-
-    ' 3. Paint data rows ONLY for genuine section rows:
-    '    - Alert Information:      G5:T10  (Decision -> Alert ID)
-    '    - Customer Information:   G13:T14 (Cust Name -> Cust Address)
-    '    - Counterparty Info:      G17:T23 (Headers -> CP6)
-    '    - Country Risk Rating:    G26:T27 (Headers -> Risk Row)
-    '    (Gap rows 11, 15, 24, 28+ remain seamless pearl with no borders)
+    ' 2. Paint data rows ONLY for genuine section rows:
     Dim dataRowRanges As Variant, rngAddr As Variant
     dataRowRanges = Array("G5:T10", "G13:T14", "G17:T23", "G26:T27")
 
@@ -204,6 +197,8 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     Dim i As Long, addr As String
     ws.Range(CANVAS).Borders(xlEdgeBottom).LineStyle = xlNone
     ws.Range(CANVAS).Borders(xlInsideHorizontal).LineStyle = xlNone
+    ws.Range(CANVAS).Borders(xlEdgeLeft).LineStyle = xlNone
+    ws.Range(CANVAS).Borders(xlEdgeRight).LineStyle = xlNone
     i = 0
     Do
         i = i + 1
@@ -219,6 +214,38 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     bak.Cells.Clear
     On Error Resume Next
     bak.Visible = xlSheetVeryHidden
+    On Error GoTo 0
+End Sub
+
+'---- FLOATING ROUNDED SIDEBAR CARD ---------------------------------
+Private Sub AddSidebarCard(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim rTop As Range, rBot As Range, rRight As Range
+    Set rTop = ws.Range("A2")
+    Set rBot = ws.Range("A25")
+    Set rRight = ws.Range("E2")
+
+    Dim x As Single, y As Single, w As Single, h As Single
+    x = rTop.Left + 8
+    y = rTop.Top + 4
+    w = (rRight.Left + rRight.Width) - x - 8
+    h = (rBot.Top + rBot.Height) - y + 10
+
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, y, w, h)
+    shp.Name = ADD_PFX & "SIDEBAR_CARD"
+    shp.Adjustments(1) = 0.05                   ' smooth 4-corner rounded curve
+    With shp.Fill
+        .Visible = msoTrue
+        .Solid
+        .ForeColor.RGB = cSidebarBg             ' Soft Slate Navy
+    End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold                  ' Champagne Gold border
+        .Weight = 1.25
+    End With
+    shp.ZOrder msoSendToBack                    ' behind buttons and labels
     On Error GoTo 0
 End Sub
 
@@ -273,7 +300,7 @@ End Function
 Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
     shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.28                   ' soft pill-shaped modern rounded rectangle
+    shp.Adjustments(1) = 0.22                   ' soft pill-shaped modern rounded rectangle
     Dim txt As String: txt = ""
     If shp.TextFrame.HasText Then txt = shp.TextFrame.Characters.Text
     With shp.Fill: .Visible = msoTrue: .Solid: End With
@@ -296,6 +323,13 @@ Private Sub StyleButton(ByVal shp As Shape)
         shp.Line.Transparency = 0.3
         SetText shp, cCream, True
     End If
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 9.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
@@ -307,31 +341,27 @@ End Sub
 
 Private Sub StylePanelCard(ByVal shp As Shape)
     On Error Resume Next
-    shp.Fill.Visible = msoFalse                 ' transparent card showing navy cells underneath
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
+    shp.Visible = msoFalse                      ' hide redundant inner freeform shapes
     On Error GoTo 0
 End Sub
 
 Private Sub StylePanelLabel(ByVal shp As Shape)
     On Error Resume Next
-    shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.3
-    With shp.Fill
-        .Visible = msoTrue
-        .Solid
-        .ForeColor.RGB = cBtnNavy               ' matching button navy for pill badge
-    End With
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cGold
-        .Weight = 1
-        .Transparency = 0.15
-    End With
+    shp.Visible = msoTrue
+    shp.Fill.Visible = msoFalse
+    shp.Line.Visible = msoFalse
+    Dim txt As String: txt = ""
+    If shp.TextFrame.HasText Then txt = UCase$(Trim$(shp.TextFrame.Characters.Text))
+    If InStr(1, txt, "ACTION", vbTextCompare) > 0 Then
+        shp.TextFrame.Characters.Text = "ACTION PANEL"
+    ElseIf InStr(1, txt, "UT", vbTextCompare) > 0 Then
+        shp.TextFrame.Characters.Text = "UTILITY PANEL"
+    End If
     SetText shp, cGold, True
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
             .Bold = True
-            .Size = 9.5
+            .Size = 8.5
             .Name = "Segoe UI"
         End With
     End If
@@ -392,7 +422,7 @@ Private Sub AddFolds(ByVal ws As Worksheet)
     Next shp
 End Sub
 
-'---- ICONS: Segoe MDL2 glyphs on banners + buttons -----------------
+'---- ICONS: Segoe MDL2 glyphs on buttons ---------------------------
 Private Sub AddIconsInline(ByVal ws As Worksheet)
     PrependIcon ws, FindByText(ws, "Alert Related"), ChrW(&HE7BA&), cGold     ' warning
     PrependIcon ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B&), cGold      ' contact
@@ -454,14 +484,27 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: removed (avoids floating shape misalignments) -
-Private Sub AddContentFrames(ByVal ws As Worksheet)
-    ' Intentionally empty: section banners have integrated gold borders, cells have aligned borders
+'---- PANEL DECOR: thin flanking lines around section dividers ------
+Private Sub AddPanelDecor(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim actLbl As Shape, utlLbl As Shape
+    Set actLbl = FindByText(ws, "ACTION")
+    Set utlLbl = FindByText(ws, "UTILITY")
+    AddFlank ws, actLbl
+    AddFlank ws, utlLbl
+    On Error GoTo 0
 End Sub
 
-'---- PANEL DECOR: disabled to prevent stray lines across badges ---
-Private Sub AddPanelDecor(ByVal ws As Worksheet)
-    ' Intentionally empty: avoids stray horizontal lines above/through Utility Panel
+Private Sub AddFlank(ByVal ws As Worksheet, ByVal lbl As Shape)
+    On Error Resume Next
+    If lbl Is Nothing Then Exit Sub
+    Dim y As Single, sbL As Single, sbR As Single
+    y = lbl.Top + lbl.Height / 2
+    sbL = ws.Range("A1").Left + 18
+    sbR = ws.Range("E1").Left + ws.Range("E1").Width - 18
+    If lbl.Left - 8 > sbL Then AddGoldLine ws, sbL, y, lbl.Left - 8, y, 0.75
+    If sbR > lbl.Left + lbl.Width + 8 Then AddGoldLine ws, lbl.Left + lbl.Width + 8, y, sbR, y, 0.75
+    On Error GoTo 0
 End Sub
 
 Private Sub AddGoldLine(ByVal ws As Worksheet, ByVal x1 As Single, ByVal y1 As Single, _
@@ -483,44 +526,102 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Align Action Panel & Utility Panel badges, hide Beta 3.5
+'---- REPOSITION: Align Header & Buttons inside Floating Navbar -----
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim beta As Shape, actLbl As Shape, utlLbl As Shape, shield As Shape
+    Dim bak As Worksheet: Set bak = GetBak(False)
+    If Not bak Is Nothing Then
+        If Len(CStr(bak.Cells(1, "G").Value)) > 0 Then Exit Sub    ' already repositioned
+    End If
+
+    Dim beta As Shape, actLbl As Shape, utlLbl As Shape
     Set beta = FindByText(ws, "Beta")
-    Set actLbl = FindByText(ws, "Action Panel")
-    Set utlLbl = FindByText(ws, "Utl")
-    Set shield = FindPicture(ws)
+    Set actLbl = FindByText(ws, "ACTION")
+    Set utlLbl = FindByText(ws, "UTILITY")
 
-    ' Hide Beta 3.5 title and shield image completely
-    If Not beta Is Nothing Then
-        PosBackup ws, beta
-        beta.Visible = msoFalse
-    End If
-    If Not shield Is Nothing Then
-        PosBackup ws, shield
-        shield.Visible = msoFalse
-    End If
+    ' Permanently remove all stray pictures, graphics, or orphan shapes in sidebar
+    RemoveStraySidebarIcons ws
 
-    ' Position Action Panel badge at row 3 inside the upper panel card
+    Dim sbLeft As Single, sbWidth As Single
+    sbLeft = ws.Range("A1").Left + 16
+    sbWidth = ws.Range("A1:E1").Width - 32
+
+    ' 1. ACTION PANEL divider at Row 3 (top of the card)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
-        actLbl.Visible = msoTrue
-        actLbl.Left = ws.Range("A3").Left + 14
-        actLbl.Top = ws.Range("A3").Top + 2
-        actLbl.Width = ws.Range("A3:E3").Width - 28
-        actLbl.Height = 22
+        actLbl.Left = sbLeft + 16
+        actLbl.Top = ws.Range("A3").Top + 4
+        actLbl.Width = sbWidth - 32
+        actLbl.Height = 18
     End If
 
-    ' Position Utility Panel badge at row 16 inside the lower panel card
+    ' 2. Action Buttons (Rows 5 to 11)
+    Dim actBtns As Variant, nm As Variant, s As Shape, rBtn As Long
+    actBtns = Array("Start", "Export Trx File", "OSDD Search", "Generate Narrative")
+    rBtn = 5
+    For Each nm In actBtns
+        Set s = FindButton(ws, CStr(nm))
+        If Not s Is Nothing Then
+            PosBackup ws, s
+            s.Left = sbLeft
+            s.Top = ws.Range("A" & rBtn).Top + 2
+            s.Width = sbWidth
+            s.Height = 24
+        End If
+        rBtn = rBtn + 2
+    Next nm
+
+    ' 3. UTILITY PANEL divider at Row 14
     If Not utlLbl Is Nothing Then
         PosBackup ws, utlLbl
-        utlLbl.Visible = msoTrue
-        utlLbl.Left = ws.Range("A16").Left + 14
-        utlLbl.Top = ws.Range("A16").Top + 2
-        utlLbl.Width = ws.Range("A16:E16").Width - 28
-        utlLbl.Height = 22
+        utlLbl.Left = sbLeft + 16
+        utlLbl.Top = ws.Range("A14").Top + 4
+        utlLbl.Width = sbWidth - 32
+        utlLbl.Height = 18
     End If
+
+    ' 4. Utility Buttons (Rows 16 to 22)
+    Dim utlBtns As Variant
+    utlBtns = Array("Rename", "PDF Merge", "Profile Warm-Up", "Reset")
+    rBtn = 16
+    For Each nm In utlBtns
+        Set s = FindButton(ws, CStr(nm))
+        If Not s Is Nothing Then
+            PosBackup ws, s
+            s.Left = sbLeft
+            s.Top = ws.Range("A" & rBtn).Top + 2
+            s.Width = sbWidth
+            s.Height = 24
+        End If
+        rBtn = rBtn + 2
+    Next nm
+    On Error GoTo 0
+End Sub
+
+'---- REMOVE STRAY ICONS / PICTURES IN SIDEBAR ---------------------
+Private Sub RemoveStraySidebarIcons(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim i As Long, shp As Shape, sbRight As Single
+    sbRight = ws.Range("F1").Left
+    For i = ws.Shapes.count To 1 Step -1
+        Set shp = ws.Shapes(i)
+        ' Check if shape is inside the sidebar area (Cols A-E) and not dynamically generated
+        If shp.Left < sbRight And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            ' Delete pictures, vector graphics (msoGraphic), OLE objects, or orphan shapes without macros
+            If shp.Type = msoPicture Or shp.Type = 28 Or shp.Type = msoLinkedPicture _
+               Or shp.Type = msoOLEControlObject Then
+                shp.Delete
+            ElseIf Len(shp.OnAction) = 0 Then
+                Dim txt As String: txt = ""
+                If shp.TextFrame.HasText Then txt = Trim$(shp.TextFrame.Characters.Text)
+                ' If it's not a panel label, delete it
+                If InStr(1, txt, "ACTION", vbTextCompare) = 0 And _
+                   InStr(1, txt, "UTILITY", vbTextCompare) = 0 Then
+                    shp.Delete
+                End If
+            End If
+        End If
+    Next i
     On Error GoTo 0
 End Sub
 
@@ -666,26 +767,4 @@ Private Function FindPicture(ByVal ws As Worksheet) As Shape
     For Each shp In ws.Shapes
         If shp.Type = msoPicture Then Set FindPicture = shp: Exit Function
     Next shp
-End Function
-
-Private Function FindUpperBlank(ByVal ws As Worksheet) As Shape
-    Dim shp As Shape, best As Shape, blank As Boolean
-    For Each shp In ws.Shapes
-        On Error Resume Next
-        blank = True
-        If shp.TextFrame.HasText Then
-            If Len(Trim$(shp.TextFrame.Characters.Text)) > 0 Then blank = False
-        End If
-        If Len(shp.OnAction) > 0 Then blank = False
-        If (shp.Type = msoAutoShape Or shp.Type = msoFreeform) And blank _
-           And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-            If best Is Nothing Then
-                Set best = shp
-            ElseIf shp.Top < best.Top Then
-                Set best = shp
-            End If
-        End If
-        On Error GoTo 0
-    Next shp
-    Set FindUpperBlank = best
 End Function
