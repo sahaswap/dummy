@@ -3,7 +3,9 @@ Sub ClearForm()
 Dim ws As Worksheet
 Dim restoreErrNum As Long, restoreErrDesc As String
 
-Set ws = ActiveSheet
+' Bind to Sheet1 by name so Reset always clears the form sheet,
+' regardless of which sheet happens to be active when it's clicked.
+Set ws = ThisWorkbook.Sheets("Sheet1")
 
 ' Mute Excel for speed during the clear.
 Application.ScreenUpdating = False
@@ -16,10 +18,17 @@ On Error GoTo Restore
 ' ConsolidatedData is intentionally left intact - Sheet7's
 ' formulas pull from there.
 ws.Unprotect Password:="p7ss"
-' G27 = country; L27:N27 = ISO2 (full merge); O27 = ISO3. ISO2/ISO3 are
-' input cells now (no longer XLOOKUP formulas), so they must be cleared
-' explicitly - clearing the country alone no longer blanks them.
-ws.Range("J6:J11, J14:J15, J19:J24, T19:T24, G27, L27:N27, O27").Value = ""
+' Input map on Sheet1:
+'   J5        = Decision (RFI/Escalation/...)   - now cleared too
+'   J6:J11    = case header fields (ECM J9, Alert J10, etc.)
+'   J13       = Customer Name  (was being SKIPPED before)
+'   J14:J15   = Customer Address block
+'   J18:J23   = Counterparty names   (matches GetCounterpartyList)
+'   T18:T23   = Counterparty second field (addresses)
+'   G27       = country; L27:N27 = ISO2 (full merge); O27 = ISO3.
+' ISO2/ISO3 are input cells now (no longer XLOOKUP formulas), so they
+' must be cleared explicitly - clearing the country alone won't blank them.
+ws.Range("J5:J11, J13:J15, J18:J23, T18:T23, G27, L27:N27, O27").Value = ""
 ws.Protect Password:="p7ss"
 Restore:
 restoreErrNum = Err.Number
@@ -53,4 +62,5 @@ Else
     MsgBox "Form cleared.", vbInformation
 End If
 End Sub
+
 
