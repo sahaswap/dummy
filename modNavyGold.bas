@@ -27,8 +27,21 @@ Private cGold As Long, cSoftGold As Long, cWarmBorder As Long
 Private cText As Long, cText2 As Long, cMutedNavy As Long
 Private cCrimson As Long, cCream As Long, cWhite As Long
 Private cBannerNavy As Long, cBannerSoftNavy As Long
+Private cSidebarBg As Long, cBtnNavy As Long
 
 Private Sub InitPalette()
+    ' =================================================================
+    ' SIDEBAR COLOR PRESETS (Saved in memory for instant switching):
+    '
+    ' [PRESET 1 - ORIGINAL HEAVY DARK]:
+    '   cSidebarBg = RGB(17, 25, 54)   ' #111936 Pitch-Dark Navy
+    '   cBtnNavy   = RGB(24, 32, 63)   ' #18203F Soft Navy
+    '
+    ' [PRESET 2 - ACTIVE: SOFT SLATE NAVY] (Lighter, warmer, less dark):
+    cSidebarBg = RGB(30, 48, 78)       ' #1E304E Rich Slate Navy
+    cBtnNavy   = RGB(42, 64, 102)      ' #2A4066 Elevated Button Navy
+    ' =================================================================
+
     cNavy = RGB(17, 25, 54)              ' #111936 Deep Navy
     cSoftNavy = RGB(24, 32, 63)          ' #18203F Soft Navy
     cBannerNavy = RGB(28, 48, 86)        ' #1C3056 Rich Executive Slate Navy (lighter & softer)
@@ -75,6 +88,7 @@ Sub ApplyNavyGold()
     StyleShapes ws
     RepositionBeta ws
     AddFolds ws
+    AddContentFrames ws                                        ' individual click-through section cards with gold borders
     AddPanelDecor ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
 
@@ -136,7 +150,7 @@ Sub ClearAllSheetBackgrounds()
     MsgBox "Removed leftover background pictures from all sheets.", vbInformation, "Backgrounds cleared"
 End Sub
 
-'---- CELLS: pearl canvas + warm-white zebra content ----------------
+'---- CELLS: pearl canvas + data cards only on real input rows -----
 Private Sub ApplyCells(ByVal ws As Worksheet)
     Dim bak As Worksheet: Set bak = GetBak(True)
     If Len(CStr(bak.Cells(1, 1).Value)) = 0 Then
@@ -151,18 +165,35 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End If
     bak.Visible = xlSheetVeryHidden
 
-    ws.Range(CANVAS).Interior.Color = cPearl                 ' pearl base
-    ws.Range("A1:E29").Interior.Color = cNavy                ' navy sidebar strip (cols A-E)
+    ' 1. Paint entire canvas in Pearl base and clear all grid lines / borders
+    ws.Range(CANVAS).Interior.Color = cPearl
+    ws.Range(CANVAS).Borders(xlEdgeBottom).LineStyle = xlNone
+    ws.Range(CANVAS).Borders(xlInsideHorizontal).LineStyle = xlNone
 
-    Dim r As Long
-    For r = CONTENT_FIRST To CONTENT_LAST
-        Dim rr As Range
-        Set rr = ws.Range(Split(CONTENT_COLS, ":")(0) & r & ":" & Split(CONTENT_COLS, ":")(1) & r)
-        If r Mod 2 = 1 Then rr.Interior.Color = cWarmWhite Else rr.Interior.Color = cPearl  ' zebra
-        rr.Font.Color = cText
-        rr.Borders(xlEdgeBottom).Color = cWarmBorder
-        rr.Borders(xlEdgeBottom).Weight = xlThin
-    Next r
+    ' 2. Paint sidebar strip (cols A-E)
+    ws.Range("A1:E29").Interior.Color = cSidebarBg
+
+    ' 3. Paint data rows ONLY for genuine section rows:
+    '    - Alert Information:      G5:T10  (Decision -> Alert ID)
+    '    - Customer Information:   G13:T14 (Cust Name -> Cust Address)
+    '    - Counterparty Info:      G17:T23 (Headers -> CP6)
+    '    - Country Risk Rating:    G26:T27 (Headers -> Risk Row)
+    '    (Gap rows 11, 15, 24, 28+ remain seamless pearl with no borders)
+    Dim dataRowRanges As Variant, rngAddr As Variant
+    dataRowRanges = Array("G5:T10", "G13:T14", "G17:T23", "G26:T27")
+
+    Dim secRng As Range, r As Long, rr As Range
+    For Each rngAddr In dataRowRanges
+        Set secRng = ws.Range(CStr(rngAddr))
+        For r = secRng.Row To secRng.Row + secRng.Rows.count - 1
+            Set rr = ws.Range("G" & r & ":T" & r)
+            If r Mod 2 = 1 Then rr.Interior.Color = cWarmWhite Else rr.Interior.Color = cPearl
+            rr.Font.Color = cText
+            rr.Font.Name = "Segoe UI"
+            rr.Borders(xlEdgeBottom).Color = cWarmBorder
+            rr.Borders(xlEdgeBottom).Weight = xlThin
+        Next r
+    Next rngAddr
 End Sub
 
 Private Sub RestoreCells(ByVal ws As Worksheet)
@@ -257,7 +288,7 @@ Private Sub StyleButton(ByVal shp As Shape)
         shp.Line.Transparency = 0.2
         SetText shp, cCream, True
     Else
-        shp.Fill.ForeColor.RGB = cSoftNavy
+        shp.Fill.ForeColor.RGB = cBtnNavy       ' harmonized button navy
         shp.Line.ForeColor.RGB = cGold
         shp.Line.Weight = 1
         shp.Line.Transparency = 0.3
@@ -286,7 +317,7 @@ Private Sub StylePanelLabel(ByVal shp As Shape)
     With shp.Fill
         .Visible = msoTrue
         .Solid
-        .ForeColor.RGB = cSoftNavy
+        .ForeColor.RGB = cBtnNavy               ' matching button navy for pill badge
     End With
     With shp.Line
         .Visible = msoTrue
@@ -421,32 +452,38 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: removed (outer gold ring removed) -------------
+'---- CONTENT FRAMES: rounded card containers around each individual section
+' Boundary: 85-100% opaque gold line (Weight = 1.25pt)
+' Fill: No fill (msoFalse) -> 100% click-through so underlying cells are fully accessible!
 Private Sub AddContentFrames(ByVal ws As Worksheet)
-    ' Intentionally empty - outer gold frame removed
+    AddSectionCard ws, "G3:T10"    ' Alert Information Card
+    AddSectionCard ws, "G12:T14"   ' Customer Information Card
+    AddSectionCard ws, "G16:T23"   ' Counterparty Information Card
+    AddSectionCard ws, "G25:T27"   ' Country Risk Rating Card
 End Sub
 
-'---- PANEL DECOR: flanking lines for Action & Utility badges ---
+Private Sub AddSectionCard(ByVal ws As Worksheet, ByVal addr As String)
+    On Error Resume Next
+    Static c As Long: c = c + 1
+    Dim r As Range: Set r = ws.Range(addr)
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 1, r.Top - 1, r.Width + 2, r.Height + 2)
+    shp.Name = ADD_PFX & "SECCARD_" & c
+    shp.Fill.Visible = msoFalse                 ' NO FILL -> 100% click-through, cells beneath are directly editable!
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold                  ' Champagne Gold border
+        .Weight = 1.25                          ' 1.25pt clean border
+        .Transparency = 0.15                    ' 85% opaque gold line
+    End With
+    shp.Adjustments(1) = 0.03                    ' soft rounded corner radius
+    shp.ZOrder msoSendToBack                     ' behind banners, wraps the section
+    On Error GoTo 0
+End Sub
+
+'---- PANEL DECOR: disabled to prevent stray lines across badges ---
 Private Sub AddPanelDecor(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim actLbl As Shape, utlLbl As Shape
-    Set actLbl = FindByText(ws, "Action Panel")
-    Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel" / "Utility Panel"
-    AddFlank ws, actLbl
-    AddFlank ws, utlLbl
-    On Error GoTo 0
-End Sub
-
-Private Sub AddFlank(ByVal ws As Worksheet, ByVal lbl As Shape)
-    On Error Resume Next
-    If lbl Is Nothing Then Exit Sub
-    Dim y As Single, sbL As Single, sbR As Single
-    y = lbl.Top + lbl.Height / 2
-    sbL = ws.Range("A1").Left + 14
-    sbR = ws.Range("E1").Left + ws.Range("E1").Width - 14
-    If lbl.Left - 8 > sbL Then AddGoldLine ws, sbL, y, lbl.Left - 8, y, 0.75
-    If sbR > lbl.Left + lbl.Width + 8 Then AddGoldLine ws, lbl.Left + lbl.Width + 8, y, sbR, y, 0.75
-    On Error GoTo 0
+    ' Intentionally empty: avoids stray horizontal lines above/through Utility Panel
 End Sub
 
 Private Sub AddGoldLine(ByVal ws As Worksheet, ByVal x1 As Single, ByVal y1 As Single, _
