@@ -49,6 +49,11 @@ Application.ScreenUpdating = True
 
 On Error Resume Next
 Application.CalculateFull
+' Reset runs with events OFF, so Worksheet_Change never fires and the
+' Search Matrix "Open URL" hyperlinks (macro-built, static objects) would
+' otherwise keep pointing at the previous case. Rebuild them now: column C
+' is blank post-reset, so this wipes E and adds nothing back - clean slate.
+RefreshSearchMatrixHyperlinks
 On Error GoTo 0
 
 DoEvents
