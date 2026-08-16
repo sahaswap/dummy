@@ -242,34 +242,53 @@ End Function
 Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
     shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.28
+    shp.Adjustments(1) = 0.2
     Dim txt As String: txt = ""
     If shp.TextFrame.HasText Then txt = shp.TextFrame.Characters.Text
     With shp.Fill: .Visible = msoTrue: .Solid: End With
     If InStr(1, txt, "Start", vbTextCompare) > 0 Then
         shp.Fill.ForeColor.RGB = cGold
         shp.Line.ForeColor.RGB = cSoftGold
+        shp.Line.Weight = 1.25
+        shp.Line.Transparency = 0
         SetText shp, cNavy, True
     ElseIf InStr(1, txt, "Reset", vbTextCompare) > 0 Then
         shp.Fill.ForeColor.RGB = cCrimson
-        shp.Line.ForeColor.RGB = RGB(196, 106, 96)
-        SetText shp, cCream, False
+        shp.Line.ForeColor.RGB = RGB(210, 110, 100)
+        shp.Line.Weight = 1
+        shp.Line.Transparency = 0.2
+        SetText shp, cCream, True
     Else
         shp.Fill.ForeColor.RGB = cSoftNavy
         shp.Line.ForeColor.RGB = cGold
-        SetText shp, cCream, False
+        shp.Line.Weight = 1
+        shp.Line.Transparency = 0.25
+        SetText shp, cCream, True
     End If
-    shp.Line.Weight = 1
-    shp.Line.Transparency = 0.3
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 9.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
     shp.AutoShapeType = msoShapeRoundedRectangle
+    shp.Adjustments(1) = 0.22
     With shp.Fill: .Visible = msoTrue: .Solid: .ForeColor.RGB = cNavy: End With
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
+    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.5: End With
     SetText shp, cWhite, True
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 10.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
@@ -284,9 +303,27 @@ End Sub
 
 Private Sub StylePanelLabel(ByVal shp As Shape)
     On Error Resume Next
-    With shp.Fill: .Visible = msoFalse: End With
-    With shp.Line: .Visible = msoFalse: End With
+    shp.AutoShapeType = msoShapeRoundedRectangle
+    shp.Adjustments(1) = 0.3
+    With shp.Fill
+        .Visible = msoTrue
+        .Solid
+        .ForeColor.RGB = cSoftNavy
+    End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold
+        .Weight = 1
+        .Transparency = 0.15
+    End With
     SetText shp, cGold, True
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 9.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
@@ -300,6 +337,13 @@ Private Sub StyleBanner(ByVal shp As Shape)
     End With
     With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
     SetText shp, cWhite, True
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 11
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
@@ -307,7 +351,11 @@ Private Sub SetText(ByVal shp As Shape, ByVal clr As Long, ByVal center As Boole
     On Error Resume Next
     If shp.TextFrame.HasText Then
         shp.TextFrame.Characters.Font.Color = clr
-        If center Then shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        shp.TextFrame.Characters.Font.Name = "Segoe UI"
+        If center Then
+            shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End If
+        shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
     End If
     On Error GoTo 0
 End Sub
