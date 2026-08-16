@@ -73,7 +73,7 @@ Sub ApplyNavyGold()
     AddFolds ws
     AddPanelDecor ws
     AddContentFrames ws
-    ' AddIcons ws   ' re-enabled once IconDiagnostic confirms the glyph codes
+    AddIconsInline ws   ' glyphs prepended into the shape text (confirmed codes)
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
@@ -102,6 +102,7 @@ Sub RemoveNavyGold()
 
     Application.ScreenUpdating = False
     RemoveAdded ws
+    RestoreText ws
     RestorePositions ws
     RestoreShapes ws
     RestoreCells ws
@@ -333,47 +334,68 @@ End Sub
 ' removed cleanly and never alters the banner/button text.
 ' Glyph codes are Segoe MDL2 Assets; change any hex here if one renders
 ' as the wrong picture on your build.
-Private Sub AddIcons(ByVal ws As Worksheet)
-    AddIconAt ws, FindByText(ws, "Alert Related"), ChrW(&HE7BA), cGold, True    ' warning
-    AddIconAt ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B), cGold, True     ' contact
-    AddIconAt ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716), cGold, True ' people
-    AddIconAt ws, FindByText(ws, "Country Risk"), ChrW(&HE774), cGold, True     ' globe
-    AddIconAt ws, FindButton(ws, "Start"), ChrW(&HE768), cNavy, False           ' play
-    AddIconAt ws, FindButton(ws, "Export Trx"), ChrW(&HE898), cCream, False     ' upload
-    AddIconAt ws, FindButton(ws, "OSDD"), ChrW(&HE721), cCream, False           ' search
-    AddIconAt ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F), cCream, False  ' edit
-    AddIconAt ws, FindButton(ws, "Rename"), ChrW(&HE8AC), cCream, False         ' rename
-    AddIconAt ws, FindButton(ws, "PDF Merge"), ChrW(&HE8A5), cCream, False      ' document
-    AddIconAt ws, FindButton(ws, "Profile Warm"), ChrW(&HE945), cCream, False   ' lightbulb
-    AddIconAt ws, FindButton(ws, "Reset"), ChrW(&HE72C), cCream, False          ' refresh
+' Glyph codes CONFIRMED from the _IconTest diagnostic. Rather than float
+' separate textbox shapes (which mis-placed), we PREPEND the glyph into the
+' shape's own text - guaranteed to render, and fully reversible (original
+' text is backed up to _NGBak cols M/N, restored by RestoreText).
+Private Sub AddIconsInline(ByVal ws As Worksheet)
+    PrependIcon ws, FindByText(ws, "Alert Related"), ChrW(&HE7BA&), cGold     ' warning
+    PrependIcon ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B&), cGold      ' contact
+    PrependIcon ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716&), cGold  ' people
+    PrependIcon ws, FindByText(ws, "Country Risk"), ChrW(&HE774&), cGold      ' globe
+    PrependIcon ws, FindButton(ws, "Start"), ChrW(&HE768&), cNavy            ' play
+    PrependIcon ws, FindButton(ws, "Export Trx"), ChrW(&HE898&), cGold       ' upload
+    PrependIcon ws, FindButton(ws, "OSDD"), ChrW(&HE721&), cGold             ' search
+    PrependIcon ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F&), cGold    ' edit
+    PrependIcon ws, FindButton(ws, "Rename"), ChrW(&HE8AC&), cGold           ' rename
+    PrependIcon ws, FindButton(ws, "PDF Merge"), ChrW(&HEA90&), cGold        ' PDF
+    PrependIcon ws, FindButton(ws, "Profile Warm"), ChrW(&HE945&), cGold     ' lightning
+    PrependIcon ws, FindButton(ws, "Reset"), ChrW(&HE72C&), cCream           ' refresh
 End Sub
 
-Private Sub AddIconAt(ByVal ws As Worksheet, ByVal host As Shape, ByVal glyph As String, _
-                      ByVal clr As Long, ByVal isBanner As Boolean)
+Private Sub PrependIcon(ByVal ws As Worksheet, ByVal shp As Shape, ByVal glyph As String, ByVal clr As Long)
     On Error Resume Next
-    If host Is Nothing Then Exit Sub
-    Static cnt As Long: cnt = cnt + 1
-    Dim w As Single, h As Single, leftPad As Single, fsz As Single
-    If isBanner Then
-        w = 26: h = 26: leftPad = 12: fsz = 15
-    Else
-        w = 22: h = 18: leftPad = 12: fsz = 11
-    End If
-    Dim ic As Shape
-    Set ic = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, _
-             host.Left + leftPad, host.Top + (host.Height - h) / 2, w, h)
-    ic.Name = ADD_PFX & "ICON_" & cnt
-    ic.Fill.Visible = msoFalse
-    ic.Line.Visible = msoFalse
-    With ic.TextFrame
-        .Characters.Text = glyph
-        .Characters.Font.Name = "Segoe MDL2 Assets"
-        .Characters.Font.Size = fsz
-        .Characters.Font.Color = clr
-        .HorizontalAlignment = xlHAlignCenter
-        .VerticalAlignment = xlVAlignCenter
-        .MarginLeft = 0: .MarginRight = 0: .MarginTop = 0: .MarginBottom = 0
+    If shp Is Nothing Then Exit Sub
+    If Not shp.TextFrame.HasText Then Exit Sub
+    Dim orig As String: orig = shp.TextFrame.Characters.Text
+    If AscW(Left$(orig, 1)) < 0 Then Exit Sub          ' already carries a glyph
+    TextBackup ws, shp.Name, orig
+    shp.TextFrame.Characters.Text = glyph & "  " & orig
+    With shp.TextFrame.Characters(1, 1).Font
+        .Name = "Segoe MDL2 Assets"
+        .Color = clr
     End With
+    On Error GoTo 0
+End Sub
+
+Private Sub TextBackup(ByVal ws As Worksheet, ByVal nm As String, ByVal txt As String)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(True)
+    Dim r As Long
+    r = bak.Cells(bak.Rows.count, "M").End(xlUp).Row
+    If Len(CStr(bak.Cells(1, "M").Value)) = 0 And r = 1 Then r = 0
+    bak.Cells(r + 1, "M").Value = nm
+    bak.Cells(r + 1, "N").Value = txt
+    On Error GoTo 0
+End Sub
+
+Private Sub RestoreText(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(False)
+    If bak Is Nothing Then Exit Sub
+    Dim r As Long, nm As String, shp As Shape
+    r = 0
+    Do
+        r = r + 1
+        nm = CStr(bak.Cells(r, "M").Value)
+        If Len(nm) = 0 Then Exit Do
+        Set shp = Nothing
+        Set shp = ws.Shapes(nm)
+        If Not shp Is Nothing Then
+            If shp.TextFrame.HasText Then shp.TextFrame.Characters.Text = CStr(bak.Cells(r, "N").Value)
+        End If
+    Loop
+    bak.Range("M:N").Clear
     On Error GoTo 0
 End Sub
 
