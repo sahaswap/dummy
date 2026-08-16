@@ -685,35 +685,70 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- TITLE: Beta 3.5 with Protect Shield icon (Sleek Borderless Header) -
+'---- TITLE: Beta 3.5 with True Vector Protect Shield & Checkmark ---
 Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single)
     On Error Resume Next
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, x, y, w, h)
-    shp.Name = ADD_PFX & "TITLE_BETA"
-    
-    ' Transparent & borderless so it sits cleanly with zero visual clutter/overflow
-    shp.Fill.Visible = msoFalse
-    shp.Line.Visible = msoFalse
+    Dim iconSz As Single: iconSz = 20
+    Dim iconX As Single, iconY As Single
+    iconX = x + 12
+    iconY = y + (h - iconSz) / 2
 
-    ' Set text with Protect Shield glyph + Beta 3.5
-    shp.TextFrame.Characters.Text = ChrW(&HE8D7&) & "  Beta 3.5"
-    With shp.TextFrame.Characters(1, 1).Font
-        .Name = "Segoe MDL2 Assets"
-        .Color = cGold
-        .Size = 14                              ' crisp 14pt shield icon
+    ' 1. Draw True Vector Shield Contour
+    Dim bld As FreeformBuilder
+    Set bld = ws.Shapes.BuildFreeform(msoEditingCorner, iconX + iconSz * 0.5, iconY + iconSz * 0.05)
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.05, iconY + iconSz * 0.18
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.05, iconY + iconSz * 0.55
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.5, iconY + iconSz * 0.98
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.95, iconY + iconSz * 0.55
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.95, iconY + iconSz * 0.18
+    bld.AddNodes msoSegmentCurve, msoEditingCorner, iconX + iconSz * 0.5, iconY + iconSz * 0.05
+
+    Dim shpShield As Shape
+    Set shpShield = bld.ConvertToShape
+    shpShield.Name = ADD_PFX & "SHIELD_OUTER"
+    shpShield.Fill.Visible = msoFalse
+    With shpShield.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold
+        .Weight = 1.25
     End With
-    If Len(shp.TextFrame.Characters.Text) > 1 Then
-        With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
-            .Name = "Segoe UI"
-            .Color = cGold
-            .Bold = True
-            .Size = 12                          ' clean 12pt bold title
-        End With
-    End If
-    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
-    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
-    shp.ZOrder msoBringToFront
+
+    ' 2. Draw Checkmark inside Shield
+    Dim bldChk As FreeformBuilder
+    Set bldChk = ws.Shapes.BuildFreeform(msoEditingCorner, iconX + iconSz * 0.28, iconY + iconSz * 0.48)
+    bldChk.AddNodes msoSegmentLine, msoEditingCorner, iconX + iconSz * 0.46, iconY + iconSz * 0.68
+    bldChk.AddNodes msoSegmentLine, msoEditingCorner, iconX + iconSz * 0.74, iconY + iconSz * 0.36
+
+    Dim shpChk As Shape
+    Set shpChk = bldChk.ConvertToShape
+    shpChk.Name = ADD_PFX & "SHIELD_CHK"
+    shpChk.Fill.Visible = msoFalse
+    With shpChk.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold
+        .Weight = 1.5
+    End With
+
+    ' 3. Add "Beta 3.5" Text next to Shield
+    Dim textX As Single, textW As Single
+    textX = iconX + iconSz + 8
+    textW = (x + w) - textX
+    Dim shpTxt As Shape
+    Set shpTxt = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, textX, y - 2, textW, h + 4)
+    shpTxt.Name = ADD_PFX & "TITLE_TXT"
+    shpTxt.Fill.Visible = msoFalse
+    shpTxt.Line.Visible = msoFalse
+    shpTxt.TextFrame.Characters.Text = "Beta 3.5"
+    With shpTxt.TextFrame.Characters.Font
+        .Name = "Segoe UI"
+        .Color = cGold
+        .Bold = True
+        .Size = 13.5
+    End With
+    shpTxt.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignLeft
+    shpTxt.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    shpTxt.ZOrder msoBringToFront
+
     On Error GoTo 0
 End Sub
 
