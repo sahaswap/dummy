@@ -26,21 +26,24 @@ Private cNavy As Long, cSoftNavy As Long, cPearl As Long, cWarmWhite As Long
 Private cGold As Long, cSoftGold As Long, cWarmBorder As Long
 Private cText As Long, cText2 As Long, cMutedNavy As Long
 Private cCrimson As Long, cCream As Long, cWhite As Long
+Private cBannerNavy As Long, cBannerSoftNavy As Long
 
 Private Sub InitPalette()
-    cNavy = RGB(17, 25, 54)          ' #111936 Deep Navy
-    cSoftNavy = RGB(24, 32, 63)      ' #18203F Soft Navy
-    cPearl = RGB(243, 241, 236)      ' #F3F1EC Pearl
-    cWarmWhite = RGB(255, 253, 248)  ' #FFFDF8 Warm White
-    cGold = RGB(217, 164, 65)        ' #D9A441 Champagne Gold
-    cSoftGold = RGB(229, 194, 122)   ' #E5C27A Soft Gold
-    cWarmBorder = RGB(217, 212, 200) ' #D9D4C8 Warm Border
-    cText = RGB(37, 37, 37)          ' #252525 Primary Text
-    cText2 = RGB(107, 107, 107)      ' #6B6B6B Secondary Text
-    cMutedNavy = RGB(58, 66, 97)     ' #3A4261 Muted Navy
-    cCrimson = RGB(158, 69, 60)      ' Reset danger
-    cCream = RGB(251, 237, 234)      ' light text on dark buttons
-    cWhite = RGB(244, 241, 234)      ' banner/title text
+    cNavy = RGB(17, 25, 54)              ' #111936 Deep Navy
+    cSoftNavy = RGB(24, 32, 63)          ' #18203F Soft Navy
+    cBannerNavy = RGB(28, 48, 86)        ' #1C3056 Rich Executive Slate Navy (lighter & softer)
+    cBannerSoftNavy = RGB(42, 68, 115)   ' #2A4473 Soft Cobalt-Slate gradient highlight
+    cPearl = RGB(243, 241, 236)          ' #F3F1EC Pearl Base Canvas
+    cWarmWhite = RGB(255, 253, 248)      ' #FFFDF8 Warm White
+    cGold = RGB(217, 164, 65)            ' #D9A441 Champagne Gold
+    cSoftGold = RGB(229, 194, 122)       ' #E5C27A Soft Gold
+    cWarmBorder = RGB(217, 212, 200)     ' #D9D4C8 Warm Border
+    cText = RGB(37, 37, 37)              ' #252525 Primary Text
+    cText2 = RGB(107, 107, 107)          ' #6B6B6B Secondary Text
+    cMutedNavy = RGB(58, 66, 97)         ' #3A4261 Muted Navy
+    cCrimson = RGB(158, 69, 60)          ' #9E453C Reset Danger
+    cCream = RGB(251, 237, 234)          ' #FBEDEA Light text on dark buttons
+    cWhite = RGB(255, 255, 255)          ' #FFFFFF Pure White
 End Sub
 
 '--------------------------------------------------------------------
@@ -309,11 +312,22 @@ Private Sub StyleBanner(ByVal shp As Shape)
     With shp.Fill
         .Visible = msoTrue
         .TwoColorGradient msoGradientHorizontal, 1
-        .ForeColor.RGB = cNavy
-        .BackColor.RGB = cSoftNavy
+        .ForeColor.RGB = cBannerNavy            ' #1C3056 Rich Slate Navy (softer & lighter)
+        .BackColor.RGB = cBannerSoftNavy        ' #2A4473 Soft Cobalt-Slate
     End With
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold                  ' Champagne Gold border
+        .Weight = 1.25
+    End With
     SetText shp, cWhite, True
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 10.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
