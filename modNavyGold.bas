@@ -1,28 +1,30 @@
+Attribute VB_Name = "modNavyGold"
 Option Explicit
 '=====================================================================
-' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
+' modNavyGold - Executive NAVY & GOLD theme for the Sheet1 dashboard.
+' Matches the HTML Demo design:
+'   - Floating rounded dark navy sidebar container card (A2:E28)
+'   - Top brand header with Gold Shield glyph + "Beta 3.5" in bold white
+'   - Symmetrical "◆ ACTION PANEL ◆" and "◆ UTILITY PANEL ◆" flanked dividers
+'   - Standardized modern rounded buttons with dedicated left-aligned icons
+'   - Deep navy section banners with gold corner wedges & icon badges
+'   - Pearl canvas with warm white data card rows
 '
-'   ApplyNavyGold   - pearl canvas, navy sidebar/panels, gold-bordered
-'                     buttons (Start = gold, Reset = crimson), navy+gold
-'                     banners with gold corner folds, warm-white zebra cards
-'   RemoveNavyGold  - restores everything (shapes, cells, removes folds)
-'
-' FULLY REVERSIBLE: shape styles are stashed in each shape's AltText;
-' cell fills/fonts are backed up to a very-hidden sheet (_NGBak); the
-' added gold folds are named NGADD_* and deleted on remove.
-'
-' Icons (Segoe MDL2) come in the next pass. RUN ON A COPY first.
+' FULLY REVERSIBLE:
+'   - Shape styles stashed in AlternativeText (NGORIG|...)
+'   - Cell fills/fonts backed up to very-hidden sheet (_NGBak)
+'   - Added shapes tagged with NGADD_* and deleted on RemoveNavyGold
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "NGORIG|"
 Private Const ADD_PFX As String = "NGADD_"
 Private Const BAK As String = "_NGBak"
-Private Const CANVAS As String = "A1:AC30"       ' pearl canvas
+Private Const CANVAS As String = "A1:AC30"
 Private Const CONTENT_FIRST As Long = 4
 Private Const CONTENT_LAST As Long = 27
 Private Const CONTENT_COLS As String = "G:T"
 
-' palette (set by InitPalette; RGB() is used so no hand-computed Longs)
+' Color Palette
 Private cNavy As Long, cSoftNavy As Long, cPearl As Long, cWarmWhite As Long
 Private cGold As Long, cSoftGold As Long, cWarmBorder As Long
 Private cText As Long, cText2 As Long, cMutedNavy As Long
@@ -31,7 +33,7 @@ Private cCrimson As Long, cCream As Long, cWhite As Long
 Private Sub InitPalette()
     cNavy = RGB(17, 25, 54)          ' #111936 Deep Navy
     cSoftNavy = RGB(24, 32, 63)      ' #18203F Soft Navy
-    cPearl = RGB(243, 241, 236)      ' #F3F1EC Pearl
+    cPearl = RGB(243, 241, 236)      ' #F3F1EC Pearl Base Canvas
     cWarmWhite = RGB(255, 253, 248)  ' #FFFDF8 Warm White
     cGold = RGB(217, 164, 65)        ' #D9A441 Champagne Gold
     cSoftGold = RGB(229, 194, 122)   ' #E5C27A Soft Gold
@@ -39,11 +41,13 @@ Private Sub InitPalette()
     cText = RGB(37, 37, 37)          ' #252525 Primary Text
     cText2 = RGB(107, 107, 107)      ' #6B6B6B Secondary Text
     cMutedNavy = RGB(58, 66, 97)     ' #3A4261 Muted Navy
-    cCrimson = RGB(158, 69, 60)      ' Reset danger
-    cCream = RGB(251, 237, 234)      ' light text on dark buttons
-    cWhite = RGB(244, 241, 234)      ' banner/title text
+    cCrimson = RGB(158, 69, 60)      ' #9E453C Reset Danger
+    cCream = RGB(251, 237, 234)      ' #FBEDEA Cream Button Text
+    cWhite = RGB(255, 255, 255)      ' #FFFFFF Pure White
 End Sub
 
+'--------------------------------------------------------------------
+' PUBLIC ENTRY POINTS
 '--------------------------------------------------------------------
 Sub ApplyNavyGold()
     Dim ws As Worksheet
@@ -65,15 +69,30 @@ Sub ApplyNavyGold()
     Application.ScreenUpdating = False
     ws.Activate
     On Error Resume Next
-    Application.CommandBars.ExecuteMso "SheetBackgroundDelete"   ' clear any leftover aurora/pearl bg image
+    Application.CommandBars.ExecuteMso "SheetBackgroundDelete"   ' clear leftover background image
     On Error GoTo 0
-    RemoveAdded ws                                             ' clear existing decorators before restyling
+
+    ' 1. Clear any previously added decorator shapes
+    RemoveAdded ws
+
+    ' 2. Apply pearl canvas & zebra data cells
     ApplyCells ws
+
+    ' 3. Create the floating rounded sidebar card
+    AddSidebarCard ws
+
+    ' 4. Style all existing shapes (brand title, buttons, banners, labels)
     StyleShapes ws
-    RepositionBeta ws
+
+    ' 5. Add 45-degree gold corner wedges to section banners
     AddFolds ws
+
+    ' 6. Add flanking divider lines for Action Panel & Utility Panel
     AddPanelDecor ws
-    AddIconsInline ws   ' glyphs prepended into the shape text (confirmed codes)
+
+    ' 7. Prepend Segoe MDL2 icon glyphs
+    AddIconsInline ws
+
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
@@ -81,7 +100,7 @@ Sub ApplyNavyGold()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Navy & Gold theme applied. Run RemoveNavyGold to undo.", vbInformation, "Navy & Gold"
+    MsgBox "Navy & Gold executive theme applied successfully.", vbInformation, "Navy & Gold Theme"
 End Sub
 
 Sub RemoveNavyGold()
@@ -112,32 +131,12 @@ Sub RemoveNavyGold()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Navy & Gold theme removed; everything restored.", vbInformation, "Navy & Gold"
+    MsgBox "Navy & Gold theme removed; original layout restored.", vbInformation, "Navy & Gold Theme"
 End Sub
 
-' One-shot: strip the leftover aurora/pearl BACKGROUND PICTURE off every
-' sheet (Sheet1 and ConsolidatedData still had one, which the Export Trx
-' File macro copies into the exported workbook). Cosmetic only - no data
-' is touched. Run this once.
-Sub ClearAllSheetBackgrounds()
-    Dim ws As Worksheet, prev As Object
-    Set prev = ActiveSheet
-    Application.ScreenUpdating = False
-    For Each ws In ThisWorkbook.Worksheets
-        On Error Resume Next
-        ws.Activate
-        Application.CommandBars.ExecuteMso "SheetBackgroundDelete"
-        On Error GoTo 0
-    Next ws
-    On Error Resume Next
-    prev.Activate
-    On Error GoTo 0
-    Application.ScreenUpdating = True
-    MsgBox "Removed leftover background pictures from all sheets." & vbCrLf & _
-           "Re-run Export Trx File - it'll come out clean now.", vbInformation, "Backgrounds cleared"
-End Sub
-
-'---- CELLS: pearl canvas + warm-white zebra content ----------------
+'--------------------------------------------------------------------
+' 1. CELLS: Pearl Canvas + Warm-White Zebra Data Area
+'--------------------------------------------------------------------
 Private Sub ApplyCells(ByVal ws As Worksheet)
     Dim bak As Worksheet: Set bak = GetBak(True)
     ' back up canvas cells (skip if already backed up)
@@ -153,15 +152,20 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End If
     bak.Visible = xlSheetVeryHidden
 
-    ws.Range(CANVAS).Interior.Color = cPearl                 ' pearl base
-    ws.Range("A1:E29").Interior.Color = cNavy                ' navy sidebar strip (cols A-E)
+    ' Paint entire base canvas in pearl
+    ws.Range(CANVAS).Interior.Color = cPearl
 
+    ' Clear sidebar cell backgrounds so the floating rounded card stands out
+    ws.Range("A1:E29").Interior.Color = cPearl
+
+    ' Format content data rows
     Dim r As Long
     For r = CONTENT_FIRST To CONTENT_LAST
         Dim rr As Range
         Set rr = ws.Range(Split(CONTENT_COLS, ":")(0) & r & ":" & Split(CONTENT_COLS, ":")(1) & r)
-        If r Mod 2 = 1 Then rr.Interior.Color = cWarmWhite Else rr.Interior.Color = cPearl  ' zebra
+        If r Mod 2 = 1 Then rr.Interior.Color = cWarmWhite Else rr.Interior.Color = cPearl
         rr.Font.Color = cText
+        rr.Font.Name = "Segoe UI"
         rr.Borders(xlEdgeBottom).Color = cWarmBorder
         rr.Borders(xlEdgeBottom).Weight = xlThin
     Next r
@@ -191,7 +195,43 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- SHAPES: restyle existing --------------------------------------
+'--------------------------------------------------------------------
+' 2. FLOATING ROUNDED SIDEBAR CARD
+'--------------------------------------------------------------------
+Private Sub AddSidebarCard(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim rTop As Range, rBtm As Range
+    Set rTop = ws.Range("A2")
+    Set rBtm = ws.Range("E28")
+
+    Dim x As Single, y As Single, w As Single, h As Single
+    x = rTop.Left + 8
+    y = rTop.Top + 4
+    w = (rBtm.Left + rBtm.Width) - x - 8
+    h = (rBtm.Top + rBtm.Height) - y - 4
+
+    Dim card As Shape
+    Set card = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, y, w, h)
+    card.Name = ADD_PFX & "SIDEBAR_CARD"
+    card.Adjustments(1) = 0.04                   ' smooth modern rounded corners
+    With card.Fill
+        .Visible = msoTrue
+        .Solid
+        .ForeColor.RGB = cNavy                  ' deep navy #111936
+    End With
+    With card.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold                  ' gold border
+        .Weight = 1.25
+        .Transparency = 0.2
+    End With
+    card.ZOrder msoSendToBack                    ' sits behind buttons and text
+    On Error GoTo 0
+End Sub
+
+'--------------------------------------------------------------------
+' 3. SHAPE STYLING: Brand Header, Buttons, Dividers, Banners
+'--------------------------------------------------------------------
 Private Sub StyleShapes(ByVal ws As Worksheet)
     Dim shp As Shape, k As String
     For Each shp In ws.Shapes
@@ -199,8 +239,8 @@ Private Sub StyleShapes(ByVal ws As Worksheet)
         If k <> "skip" Then
             StashOriginal shp
             Select Case k
+                Case "title":      StyleTitle shp, ws
                 Case "button":     StyleButton shp
-                Case "title":      StyleTitle shp
                 Case "panelcard":  StylePanelCard shp
                 Case "panellabel": StylePanelLabel shp
                 Case "banner":     StyleBanner shp
@@ -239,173 +279,182 @@ Private Function ShapeKind(ByVal shp As Shape) As String
     On Error GoTo 0
 End Function
 
-Private Sub StyleButton(ByVal shp As Shape)
+' Brand Header (Shield Glyph + "Beta 3.5")
+Private Sub StyleTitle(ByVal shp As Shape, ByVal ws As Worksheet)
     On Error Resume Next
-    shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.2
-    Dim txt As String: txt = ""
-    If shp.TextFrame.HasText Then txt = shp.TextFrame.Characters.Text
-    With shp.Fill: .Visible = msoTrue: .Solid: End With
-    If InStr(1, txt, "Start", vbTextCompare) > 0 Then
-        shp.Fill.ForeColor.RGB = cGold
-        shp.Line.ForeColor.RGB = cSoftGold
-        shp.Line.Weight = 1.25
-        shp.Line.Transparency = 0
-        SetText shp, cNavy, True
-    ElseIf InStr(1, txt, "Reset", vbTextCompare) > 0 Then
-        shp.Fill.ForeColor.RGB = cCrimson
-        shp.Line.ForeColor.RGB = RGB(210, 110, 100)
-        shp.Line.Weight = 1
-        shp.Line.Transparency = 0.2
-        SetText shp, cCream, True
-    Else
-        shp.Fill.ForeColor.RGB = cSoftNavy
-        shp.Line.ForeColor.RGB = cGold
-        shp.Line.Weight = 1
-        shp.Line.Transparency = 0.25
-        SetText shp, cCream, True
-    End If
+    shp.Visible = msoTrue
+    shp.AutoShapeType = msoShapeRectangle
+    shp.Fill.Visible = msoFalse                 ' transparent, floating inside sidebar card
+    shp.Line.Visible = msoFalse
+
+    ' Position at top of sidebar
+    Dim rTop As Range: Set rTop = ws.Range("A2:E3")
+    shp.Left = rTop.Left + 12
+    shp.Top = rTop.Top + 8
+    shp.Width = rTop.Width - 24
+    shp.Height = 28
+
     If shp.TextFrame.HasText Then
+        shp.TextFrame.Characters.Text = "Beta 3.5"
         With shp.TextFrame.Characters.Font
-            .Bold = True
-            .Size = 9.5
             .Name = "Segoe UI"
+            .Size = 14
+            .Bold = True
+            .Color = cWhite
         End With
+        shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
     End If
     On Error GoTo 0
 End Sub
 
-Private Sub StyleTitle(ByVal shp As Shape)
+' Sidebar Buttons
+Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
     shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.22
-    With shp.Fill: .Visible = msoTrue: .Solid: .ForeColor.RGB = cNavy: End With
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.5: End With
-    SetText shp, cWhite, True
+    shp.Adjustments(1) = 0.18                   ' sleek rounded rectangle
+    Dim txt As String: txt = ""
+    If shp.TextFrame.HasText Then txt = shp.TextFrame.Characters.Text
+    With shp.Fill: .Visible = msoTrue: .Solid: End With
+
+    If InStr(1, txt, "Start", vbTextCompare) > 0 Then
+        shp.Fill.ForeColor.RGB = cGold          ' champagne gold #D9A441
+        shp.Line.ForeColor.RGB = cSoftGold
+        shp.Line.Weight = 1.25
+        shp.Line.Transparency = 0
+        SetText shp, cNavy, True, 10
+    ElseIf InStr(1, txt, "Reset", vbTextCompare) > 0 Then
+        shp.Fill.ForeColor.RGB = cCrimson        ' muted crimson #9E453C
+        shp.Line.ForeColor.RGB = RGB(210, 110, 100)
+        shp.Line.Weight = 1
+        shp.Line.Transparency = 0.2
+        SetText shp, cCream, True, 9.5
+    Else
+        shp.Fill.ForeColor.RGB = cSoftNavy       ' soft navy #18203F
+        shp.Line.ForeColor.RGB = cGold
+        shp.Line.Weight = 1
+        shp.Line.Transparency = 0.25
+        SetText shp, cCream, True, 9.5
+    End If
+    On Error GoTo 0
+End Sub
+
+' Transparent Panel Label (ACTION PANEL / UTILITY PANEL)
+Private Sub StylePanelLabel(ByVal shp As Shape)
+    On Error Resume Next
+    shp.Fill.Visible = msoFalse
+    shp.Line.Visible = msoFalse
     If shp.TextFrame.HasText Then
+        Dim s As String: s = UCase$(Trim$(shp.TextFrame.Characters.Text))
+        If InStr(1, s, "ACTION", vbTextCompare) > 0 Then
+            shp.TextFrame.Characters.Text = "ACTION PANEL"
+        ElseIf InStr(1, s, "UTL", vbTextCompare) > 0 Or InStr(1, s, "UTILITY", vbTextCompare) > 0 Then
+            shp.TextFrame.Characters.Text = "UTILITY PANEL"
+        End If
         With shp.TextFrame.Characters.Font
-            .Bold = True
-            .Size = 10.5
             .Name = "Segoe UI"
+            .Size = 8.5
+            .Bold = True
+            .Color = cGold                      ' gold uppercase text
         End With
+        shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
     End If
     On Error GoTo 0
 End Sub
 
 Private Sub StylePanelCard(ByVal shp As Shape)
     On Error Resume Next
-    ' transparent so the navy sidebar CELLS show through; just a gold outline
-    ' (filling a custom-geometry freeform directly is unreliable)
     shp.Fill.Visible = msoFalse
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
+    shp.Line.Visible = msoFalse
     On Error GoTo 0
 End Sub
 
-Private Sub StylePanelLabel(ByVal shp As Shape)
+' Main Section Banners
+Private Sub StyleBanner(ByVal shp As Shape)
     On Error Resume Next
-    shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.3
+    shp.AutoShapeType = msoShapeRectangle
     With shp.Fill
         .Visible = msoTrue
         .Solid
-        .ForeColor.RGB = cSoftNavy
+        .ForeColor.RGB = cNavy                  ' deep navy #111936
     End With
     With shp.Line
         .Visible = msoTrue
         .ForeColor.RGB = cGold
-        .Weight = 1
-        .Transparency = 0.15
+        .Weight = 1.25
     End With
-    SetText shp, cGold, True
-    If shp.TextFrame.HasText Then
-        With shp.TextFrame.Characters.Font
-            .Bold = True
-            .Size = 9.5
-            .Name = "Segoe UI"
-        End With
-    End If
+    SetText shp, cWhite, True, 10.5
     On Error GoTo 0
 End Sub
 
-Private Sub StyleBanner(ByVal shp As Shape)
+Private Sub SetText(ByVal shp As Shape, ByVal clr As Long, ByVal center As Boolean, ByVal sz As Single)
     On Error Resume Next
-    With shp.Fill
-        .Visible = msoTrue
-        .TwoColorGradient msoGradientHorizontal, 1
-        .ForeColor.RGB = cNavy
-        .BackColor.RGB = cSoftNavy
-    End With
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
-    SetText shp, cWhite, True
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
-            .Bold = True
-            .Size = 11
+            .Color = clr
             .Name = "Segoe UI"
+            .Size = sz
+            .Bold = True
         End With
-    End If
-    On Error GoTo 0
-End Sub
-
-Private Sub SetText(ByVal shp As Shape, ByVal clr As Long, ByVal center As Boolean)
-    On Error Resume Next
-    If shp.TextFrame.HasText Then
-        shp.TextFrame.Characters.Font.Color = clr
-        shp.TextFrame.Characters.Font.Name = "Segoe UI"
-        If center Then
-            shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
-        End If
+        If center Then shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
         shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
     End If
     On Error GoTo 0
 End Sub
 
-'---- FOLDS: gold corner triangle on each banner --------------------
+'--------------------------------------------------------------------
+' 4. 45-DEGREE GOLD CORNER WEDGES (Section Banners)
+'--------------------------------------------------------------------
 Private Sub AddFolds(ByVal ws As Worksheet)
     Dim shp As Shape, n As Long
     For Each shp In ws.Shapes
         If ShapeKind(shp) = "banner" Then
             n = n + 1
-            Dim sz As Single: sz = 26
+            Dim sz As Single: sz = shp.Height
             Dim t As Shape
             Set t = ws.Shapes.AddShape(msoShapeRightTriangle, shp.Left + shp.Width - sz, shp.Top, sz, sz)
             t.Name = ADD_PFX & "FOLD_" & n
-            t.Rotation = 90
-            With t.Fill: .Visible = msoTrue: .Solid: .ForeColor.RGB = cGold: End With
+            t.Rotation = 90                     ' 45-degree corner wedge
+            With t.Fill
+                .Visible = msoTrue
+                .Solid
+                .ForeColor.RGB = cGold
+            End With
             t.Line.Visible = msoFalse
         End If
     Next shp
 End Sub
 
-'---- ICONS: Segoe MDL2 glyphs on banners + buttons -----------------
-' Each icon is a separate borderless textbox (tagged NGADD_) so it's
-' removed cleanly and never alters the banner/button text.
-' Glyph codes are Segoe MDL2 Assets; change any hex here if one renders
-' as the wrong picture on your build.
-' Glyph codes CONFIRMED from the _IconTest diagnostic. Rather than float
-' separate textbox shapes (which mis-placed), we PREPEND the glyph into the
-' shape's own text - guaranteed to render, and fully reversible (original
-' text is backed up to _NGBak cols M/N, restored by RestoreText).
+'--------------------------------------------------------------------
+' 5. ICONS: Segoe MDL2 Glyphs on Brand Header, Banners & Buttons
+'--------------------------------------------------------------------
 Private Sub AddIconsInline(ByVal ws As Worksheet)
-    PrependIcon ws, FindByText(ws, "Alert Related"), ChrW(&HE7BA&), cGold     ' warning
-    PrependIcon ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B&), cGold      ' contact
-    PrependIcon ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716&), cGold  ' people
+    ' Brand Header Shield Icon
+    PrependIcon ws, FindByText(ws, "Beta 3.5"), ChrW(&HE734&), cGold          ' shield
+
+    ' Section Banners
+    PrependIcon ws, FindByText(ws, "Alert Related"), ChrW(&HE734&), cGold     ' shield / alert
+    PrependIcon ws, FindByText(ws, "Customer Inf"), ChrW(&HE77B&), cGold      ' user / contact
+    PrependIcon ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716&), cGold  ' group / building
     PrependIcon ws, FindByText(ws, "Country Risk"), ChrW(&HE774&), cGold      ' globe
+
+    ' Buttons
     PrependIcon ws, FindButton(ws, "Start"), ChrW(&HE768&), cNavy            ' play
     PrependIcon ws, FindButton(ws, "Export Trx"), ChrW(&HE898&), cGold       ' upload
     PrependIcon ws, FindButton(ws, "OSDD"), ChrW(&HE721&), cGold             ' search
-    PrependIcon ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F&), cGold    ' edit
-    PrependIcon ws, FindButton(ws, "Rename"), ChrW(&HE8AC&), cGold           ' rename
-    PrependIcon ws, FindButton(ws, "PDF Merge"), ChrW(&HEA90&), cGold        ' PDF
-    PrependIcon ws, FindButton(ws, "Profile Warm"), ChrW(&HE945&), cGold     ' lightning
-    PrependIcon ws, FindButton(ws, "Reset"), ChrW(&HE72C&), cCream           ' refresh
+    PrependIcon ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F&), cGold    ' edit / pencil
+    PrependIcon ws, FindButton(ws, "Rename"), ChrW(&HE8AC&), cGold           ' tag / rename
+    PrependIcon ws, FindButton(ws, "PDF Merge"), ChrW(&HEA90&), cGold        ' document / pdf
+    PrependIcon ws, FindButton(ws, "Profile Warm"), ChrW(&HE945&), cGold     ' flame / lightning
+    PrependIcon ws, FindButton(ws, "Reset"), ChrW(&HE72C&), cCream           ' refresh / undo
 End Sub
 
 Private Sub PrependIcon(ByVal ws As Worksheet, ByVal shp As Shape, ByVal glyph As String, ByVal clr As Long)
     On Error Resume Next
     If shp Is Nothing Then Exit Sub
     If Not shp.TextFrame.HasText Then Exit Sub
-    Dim orig As String: orig = shp.TextFrame.Characters.Text
+    Dim orig As String: orig = Trim$(shp.TextFrame.Characters.Text)
     If AscW(Left$(orig, 1)) < 0 Then Exit Sub          ' already carries a glyph
     TextBackup ws, shp.Name, orig
     shp.TextFrame.Characters.Text = glyph & "  " & orig
@@ -416,6 +465,53 @@ Private Sub PrependIcon(ByVal ws As Worksheet, ByVal shp As Shape, ByVal glyph A
     On Error GoTo 0
 End Sub
 
+'--------------------------------------------------------------------
+' 6. PANEL DECOR: Flanking Lines for ACTION PANEL & UTILITY PANEL
+'--------------------------------------------------------------------
+Private Sub AddPanelDecor(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim actLbl As Shape, utlLbl As Shape
+    Set actLbl = FindByText(ws, "ACTION PANEL")
+    Set utlLbl = FindByText(ws, "UTILITY PANEL")
+    AddFlank ws, actLbl
+    AddFlank ws, utlLbl
+    On Error GoTo 0
+End Sub
+
+Private Sub AddFlank(ByVal ws As Worksheet, ByVal lbl As Shape)
+    On Error Resume Next
+    If lbl Is Nothing Then Exit Sub
+    Dim y As Single, sbL As Single, sbR As Single
+    y = lbl.Top + lbl.Height / 2
+    sbL = ws.Range("A1").Left + 20
+    sbR = ws.Range("E1").Left + ws.Range("E1").Width - 20
+    If lbl.Left - 8 > sbL Then AddGoldLine ws, sbL, y, lbl.Left - 8, y, 0.75
+    If sbR > lbl.Left + lbl.Width + 8 Then AddGoldLine ws, lbl.Left + lbl.Width + 8, y, sbR, y, 0.75
+    On Error GoTo 0
+End Sub
+
+Private Sub AddGoldLine(ByVal ws As Worksheet, ByVal x1 As Single, ByVal y1 As Single, _
+                        ByVal x2 As Single, ByVal y2 As Single, ByVal wt As Single)
+    On Error Resume Next
+    Static c As Long: c = c + 1
+    Dim ln As Shape
+    Set ln = ws.Shapes.AddLine(x1, y1, x2, y2)
+    ln.Name = ADD_PFX & "LINE_" & c
+    ln.Line.ForeColor.RGB = cGold
+    ln.Line.Weight = wt
+    On Error GoTo 0
+End Sub
+
+Private Sub RemoveAdded(ByVal ws As Worksheet)
+    Dim i As Long
+    For i = ws.Shapes.count To 1 Step -1
+        If Left$(ws.Shapes(i).Name, Len(ADD_PFX)) = ADD_PFX Then ws.Shapes(i).Delete
+    Next i
+End Sub
+
+'--------------------------------------------------------------------
+' 7. BACKUP & RESTORATION SERVICES
+'--------------------------------------------------------------------
 Private Sub TextBackup(ByVal ws As Worksheet, ByVal nm As String, ByVal txt As String)
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(True)
@@ -447,113 +543,6 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: removed for clean borderless card layout -----
-Private Sub AddContentFrames(ByVal ws As Worksheet)
-    ' Intentionally empty: outer wireframe removed
-End Sub
-
-'---- PANEL DECOR: flanking lines for Action & Utility badges ---
-Private Sub AddPanelDecor(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim actLbl As Shape, utlLbl As Shape
-    Set actLbl = FindByText(ws, "Action Panel")
-    Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel" / "Utility Panel"
-    AddFlank ws, actLbl
-    AddFlank ws, utlLbl
-    On Error GoTo 0
-End Sub
-
-Private Sub AddFlank(ByVal ws As Worksheet, ByVal lbl As Shape)
-    On Error Resume Next
-    If lbl Is Nothing Then Exit Sub
-    Dim y As Single, sbL As Single, sbR As Single
-    y = lbl.Top + lbl.Height / 2
-    sbL = ws.Range("A1").Left + 14
-    sbR = ws.Range("E1").Left + ws.Range("E1").Width - 14
-    If lbl.Left - 8 > sbL Then AddGoldLine ws, sbL, y, lbl.Left - 8, y, 0.75
-    If sbR > lbl.Left + lbl.Width + 8 Then AddGoldLine ws, lbl.Left + lbl.Width + 8, y, sbR, y, 0.75
-    On Error GoTo 0
-End Sub
-
-Private Sub AddGoldLine(ByVal ws As Worksheet, ByVal x1 As Single, ByVal y1 As Single, _
-                        ByVal x2 As Single, ByVal y2 As Single, ByVal wt As Single)
-    On Error Resume Next
-    Static c As Long: c = c + 1
-    Dim ln As Shape
-    Set ln = ws.Shapes.AddLine(x1, y1, x2, y2)
-    ln.Name = ADD_PFX & "LINE_" & c
-    ln.Line.ForeColor.RGB = cGold
-    ln.Line.Weight = wt
-    On Error GoTo 0
-End Sub
-
-Private Sub RemoveAdded(ByVal ws As Worksheet)
-    Dim i As Long
-    For i = ws.Shapes.count To 1 Step -1
-        If Left$(ws.Shapes(i).Name, Len(ADD_PFX)) = ADD_PFX Then ws.Shapes(i).Delete
-    Next i
-End Sub
-
-'---- REPOSITION: align Action Panel with Alert Banner & hide redundant Beta 3.5 box
-Private Sub RepositionBeta(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim beta As Shape, actLbl As Shape, utlLbl As Shape, shield As Shape
-    Set beta = FindByText(ws, "Beta")
-    Set actLbl = FindByText(ws, "Action Panel")
-    Set utlLbl = FindByText(ws, "Utl")
-    Set shield = FindPicture(ws)
-
-    ' Hide redundant Beta 3.5 shape to achieve clean, symmetrical headers
-    If Not beta Is Nothing Then
-        PosBackup ws, beta
-        beta.Visible = msoFalse
-    End If
-    If Not shield Is Nothing Then
-        PosBackup ws, shield
-        shield.Visible = msoFalse
-    End If
-
-    ' Deterministically position Action Panel badge at row 3 (level with Alert banner)
-    If Not actLbl Is Nothing Then
-        PosBackup ws, actLbl
-        actLbl.Visible = msoTrue
-        actLbl.Left = ws.Range("A3").Left + 14
-        actLbl.Top = ws.Range("A3").Top + 2
-        actLbl.Width = ws.Range("A3:E3").Width - 28
-        actLbl.Height = 22
-    End If
-
-    ' Position Utility Panel badge cleanly at row 16
-    If Not utlLbl Is Nothing Then
-        PosBackup ws, utlLbl
-        utlLbl.Visible = msoTrue
-        utlLbl.Left = ws.Range("A16").Left + 14
-        utlLbl.Top = ws.Range("A16").Top + 2
-        utlLbl.Width = ws.Range("A16:E16").Width - 28
-        utlLbl.Height = 22
-    End If
-    On Error GoTo 0
-End Sub
-
-Private Sub PosBackup(ByVal ws As Worksheet, ByVal shp As Shape)
-    On Error Resume Next
-    Dim bak As Worksheet: Set bak = GetBak(True)
-    Dim r As Long
-    ' Check if shape is already backed up
-    For r = 1 To bak.Cells(bak.Rows.count, "G").End(xlUp).Row
-        If CStr(bak.Cells(r, "G").Value) = shp.Name Then Exit Sub
-    Next r
-    r = bak.Cells(bak.Rows.count, "G").End(xlUp).Row
-    If Len(CStr(bak.Cells(1, "G").Value)) = 0 Then r = 0
-    r = r + 1
-    bak.Cells(r, "G").Value = shp.Name
-    bak.Cells(r, "H").Value = shp.Left
-    bak.Cells(r, "I").Value = shp.Top
-    bak.Cells(r, "J").Value = shp.Width
-    bak.Cells(r, "K").Value = shp.Height
-    On Error GoTo 0
-End Sub
-
 Private Sub RestorePositions(ByVal ws As Worksheet)
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(False)
@@ -577,62 +566,6 @@ Private Sub RestorePositions(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-Private Function FindByText(ByVal ws As Worksheet, ByVal t As String) As Shape
-    Dim shp As Shape
-    For Each shp In ws.Shapes
-        On Error Resume Next
-        If shp.TextFrame.HasText Then
-            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
-                Set FindByText = shp: Exit Function
-            End If
-        End If
-        On Error GoTo 0
-    Next shp
-End Function
-
-Private Function FindButton(ByVal ws As Worksheet, ByVal t As String) As Shape
-    Dim shp As Shape
-    For Each shp In ws.Shapes
-        On Error Resume Next
-        If Len(shp.OnAction) > 0 And shp.TextFrame.HasText Then
-            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
-                Set FindButton = shp: Exit Function
-            End If
-        End If
-        On Error GoTo 0
-    Next shp
-End Function
-
-Private Function FindPicture(ByVal ws As Worksheet) As Shape
-    Dim shp As Shape
-    For Each shp In ws.Shapes
-        If shp.Type = msoPicture Then Set FindPicture = shp: Exit Function
-    Next shp
-End Function
-
-Private Function FindUpperBlank(ByVal ws As Worksheet) As Shape
-    Dim shp As Shape, best As Shape, blank As Boolean
-    For Each shp In ws.Shapes
-        On Error Resume Next
-        blank = True
-        If shp.TextFrame.HasText Then
-            If Len(Trim$(shp.TextFrame.Characters.Text)) > 0 Then blank = False
-        End If
-        If Len(shp.OnAction) > 0 Then blank = False
-        If (shp.Type = msoAutoShape Or shp.Type = msoFreeform) And blank _
-           And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-            If best Is Nothing Then
-                Set best = shp
-            ElseIf shp.Top < best.Top Then
-                Set best = shp
-            End If
-        End If
-        On Error GoTo 0
-    Next shp
-    Set FindUpperBlank = best
-End Function
-
-'---- stash / restore (shape AltText) -------------------------------
 Private Sub StashOriginal(ByVal shp As Shape)
     On Error Resume Next
     If Left$(GetAlt(shp), Len(TAG)) = TAG Then Exit Sub
@@ -686,6 +619,7 @@ Private Function GetAlt(ByVal shp As Shape) As String
     GetAlt = shp.AlternativeText
     On Error GoTo 0
 End Function
+
 Private Sub SetAlt(ByVal shp As Shape, ByVal s As String)
     On Error Resume Next
     shp.AlternativeText = s
@@ -700,4 +634,30 @@ Private Function GetBak(ByVal createIfMissing As Boolean) As Worksheet
         Set GetBak = ThisWorkbook.Sheets.Add
         GetBak.Name = BAK
     End If
+End Function
+
+Private Function FindByText(ByVal ws As Worksheet, ByVal t As String) As Shape
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        On Error Resume Next
+        If shp.TextFrame.HasText Then
+            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
+                Set FindByText = shp: Exit Function
+            End If
+        End If
+        On Error GoTo 0
+    Next shp
+End Function
+
+Private Function FindButton(ByVal ws As Worksheet, ByVal t As String) As Shape
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        On Error Resume Next
+        If Len(shp.OnAction) > 0 And shp.TextFrame.HasText Then
+            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
+                Set FindButton = shp: Exit Function
+            End If
+        End If
+        On Error GoTo 0
+    Next shp
 End Function
