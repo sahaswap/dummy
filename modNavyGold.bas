@@ -73,7 +73,6 @@ Sub ApplyNavyGold()
     RepositionBeta ws
     AddFolds ws
     AddPanelDecor ws
-    AddContentFrames ws                                        ' rounded gold card frame around content
     AddIconsInline ws                                          ' glyphs prepended into shape text
 
     On Error Resume Next
@@ -266,11 +265,7 @@ End Sub
 
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
-    shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.25
-    With shp.Fill: .Visible = msoTrue: .Solid: .ForeColor.RGB = cNavy: End With
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
-    SetText shp, cWhite, True
+    shp.Visible = msoFalse                      ' completely hide Beta 3.5 shape
     On Error GoTo 0
 End Sub
 
@@ -283,9 +278,27 @@ End Sub
 
 Private Sub StylePanelLabel(ByVal shp As Shape)
     On Error Resume Next
-    With shp.Fill: .Visible = msoFalse: End With
-    With shp.Line: .Visible = msoFalse: End With
+    shp.AutoShapeType = msoShapeRoundedRectangle
+    shp.Adjustments(1) = 0.3
+    With shp.Fill
+        .Visible = msoTrue
+        .Solid
+        .ForeColor.RGB = cSoftNavy
+    End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold
+        .Weight = 1
+        .Transparency = 0.15
+    End With
     SetText shp, cGold, True
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Bold = True
+            .Size = 9.5
+            .Name = "Segoe UI"
+        End With
+    End If
     On Error GoTo 0
 End Sub
 
@@ -394,37 +407,17 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: rounded gold outline around content area ------
+'---- CONTENT FRAMES: removed (outer gold ring removed) -------------
 Private Sub AddContentFrames(ByVal ws As Worksheet)
-    AddFrame2 ws, "F3:T28"
+    ' Intentionally empty - outer gold frame removed
 End Sub
 
-Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
-    On Error Resume Next
-    Static c As Long: c = c + 1
-    Dim r As Range: Set r = ws.Range(addr)
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 2, r.Top - 2, r.Width + 4, r.Height + 4)
-    shp.Name = ADD_PFX & "CFRAME_" & c
-    shp.Fill.Visible = msoFalse                 ' no fill -> click-through, cells show
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
-    shp.Adjustments(1) = 0.05                    ' smooth rounded corners
-    shp.ZOrder msoSendToBack                     ' behind banners; wraps the section
-    On Error GoTo 0
-End Sub
-
-'---- PANEL DECOR: gold underline + flanking lines -----------------
+'---- PANEL DECOR: flanking lines for Action & Utility badges ---
 Private Sub AddPanelDecor(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim beta As Shape, actLbl As Shape, utlLbl As Shape
-    Set beta = FindByText(ws, "Beta")
+    Dim actLbl As Shape, utlLbl As Shape
     Set actLbl = FindByText(ws, "Action Panel")
     Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel" / "Utility Panel"
-    ' gold underline just under Beta 3.5 title
-    If Not beta Is Nothing Then
-        Dim by As Single: by = beta.Top + beta.Height - 2
-        AddGoldLine ws, beta.Left + beta.Width * 0.2, by, beta.Left + beta.Width * 0.8, by, 1.25
-    End If
     AddFlank ws, actLbl
     AddFlank ws, utlLbl
     On Error GoTo 0
@@ -461,57 +454,43 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Beta 3.5 at top, Action Panel cleanly below it ---
+'---- REPOSITION: Align Action Panel & Utility Panel badges, hide Beta 3.5
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim bak As Worksheet: Set bak = GetBak(False)
-    If Not bak Is Nothing Then
-        If Len(CStr(bak.Cells(1, "G").Value)) > 0 Then Exit Sub    ' already repositioned
-    End If
-
-    Dim beta As Shape, actLbl As Shape, shield As Shape, actCard As Shape
+    Dim beta As Shape, actLbl As Shape, utlLbl As Shape, shield As Shape
     Set beta = FindByText(ws, "Beta")
     Set actLbl = FindByText(ws, "Action Panel")
+    Set utlLbl = FindByText(ws, "Utl")
     Set shield = FindPicture(ws)
-    Set actCard = FindUpperBlank(ws)
-    If beta Is Nothing Or actLbl Is Nothing Then Exit Sub
 
-    Dim sbLeft As Single, sbWidth As Single, newTop As Single, newH As Single, shift As Single
-    sbLeft = ws.Range("A1").Left + 6
-    sbWidth = ws.Range("A1:E1").Width - 12
-    newTop = ws.Range("A2").Top + 4             ' row 2 top
-    newH = ws.Range("A2:A3").Height - 6
-
-    ' Shift Action Panel and upper buttons down to avoid overlap
-    shift = newH + 10
-    PosBackup ws, actLbl
-    actLbl.Top = actLbl.Top + shift
-
-    Dim nm As Variant, s As Shape
-    For Each nm In Array("Start", "Export Trx File", "OSDD Search", "Generate Narrative")
-        Set s = FindButton(ws, CStr(nm))
-        If Not s Is Nothing Then
-            PosBackup ws, s
-            s.Top = s.Top + shift
-        End If
-    Next nm
-
-    If Not actCard Is Nothing Then
-        PosBackup ws, actCard
-        actCard.Top = actCard.Top + shift
+    ' Hide Beta 3.5 title and shield image completely
+    If Not beta Is Nothing Then
+        PosBackup ws, beta
+        beta.Visible = msoFalse
     End If
-
-    ' Place Beta 3.5 title pill cleanly at the top of the sidebar
-    PosBackup ws, beta
-    beta.Left = sbLeft
-    beta.Top = newTop
-    beta.Width = sbWidth
-    beta.Height = newH
-
     If Not shield Is Nothing Then
         PosBackup ws, shield
-        shield.Top = newTop + (newH - shield.Height) / 2
-        shield.Left = sbLeft + 8
+        shield.Visible = msoFalse
+    End If
+
+    ' Position Action Panel badge at row 3 inside the upper panel card
+    If Not actLbl Is Nothing Then
+        PosBackup ws, actLbl
+        actLbl.Visible = msoTrue
+        actLbl.Left = ws.Range("A3").Left + 14
+        actLbl.Top = ws.Range("A3").Top + 2
+        actLbl.Width = ws.Range("A3:E3").Width - 28
+        actLbl.Height = 22
+    End If
+
+    ' Position Utility Panel badge at row 16 inside the lower panel card
+    If Not utlLbl Is Nothing Then
+        PosBackup ws, utlLbl
+        utlLbl.Visible = msoTrue
+        utlLbl.Left = ws.Range("A16").Left + 14
+        utlLbl.Top = ws.Range("A16").Top + 2
+        utlLbl.Width = ws.Range("A16:E16").Width - 28
+        utlLbl.Height = 22
     End If
     On Error GoTo 0
 End Sub
