@@ -67,6 +67,7 @@ Sub ApplyNavyGold()
     On Error Resume Next
     Application.CommandBars.ExecuteMso "SheetBackgroundDelete"   ' clear any leftover aurora/pearl bg image
     On Error GoTo 0
+    RemoveAdded ws                                             ' clear existing decorators before restyling
     ApplyCells ws
     StyleShapes ws
     RepositionBeta ws
@@ -81,8 +82,7 @@ Sub ApplyNavyGold()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Navy & Gold theme applied. Run RemoveNavyGold to undo." & vbCrLf & _
-           "(Icons come in the next pass.)", vbInformation, "Navy & Gold"
+    MsgBox "Navy & Gold theme applied. Run RemoveNavyGold to undo.", vbInformation, "Navy & Gold"
 End Sub
 
 Sub RemoveNavyGold()
@@ -227,7 +227,7 @@ Private Function ShapeKind(ByVal shp As Shape) As String
     If shp.TextFrame.HasText Then txt = Trim$(shp.TextFrame.Characters.Text)
     If hasMac Then
         ShapeKind = "button"
-    ElseIf InStr(1, txt, "Beta", vbTextCompare) = 1 Then
+    ElseIf InStr(1, txt, "Beta", vbTextCompare) > 0 Then
         ShapeKind = "title"
     ElseIf Len(txt) = 0 Then
         ShapeKind = "panelcard"
