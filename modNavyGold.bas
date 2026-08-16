@@ -71,7 +71,7 @@ Sub ApplyNavyGold()
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws                                              ' solid white cards + full-height slate sidebar
     StyleShapes ws
-    RepositionBeta ws                                          ' position buttons and panel cards with precision
+    RepositionBeta ws                                          ' position buttons and badges with precision
     AddPanelCards ws                                           ' perfectly fitted upper & lower rounded gold boxes
     RemoveStraySidebarIcons ws                                 ' permanently delete stray icons in sidebar
     AddFolds ws
@@ -210,14 +210,14 @@ End Sub
 Private Sub AddPanelCards(ByVal ws As Worksheet)
     On Error Resume Next
     Dim sbLeft As Single, sbWidth As Single
-    sbLeft = ws.Range("A1").Left + 10
-    sbWidth = ws.Range("A1:E1").Width - 20
+    sbLeft = ws.Range("A1").Left + 14
+    sbWidth = ws.Range("A1:E1").Width - 28
 
-    ' 1. Upper Rounded Box enclosing Action Group (Rows 3 to 12)
+    ' 1. Upper Rounded Box enclosing Action Group (Rows 3 to 11)
     Dim y1 As Single, h1 As Single, c1 As Shape
     y1 = ws.Range("A3").Top
-    h1 = (ws.Range("A11").Top + ws.Range("A11").Height) - y1 + 8
-    Set c1 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft, y1, sbWidth, h1)
+    h1 = (ws.Range("A11").Top + ws.Range("A11").Height) - y1 + 6
+    Set c1 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y1, sbWidth + 8, h1)
     c1.Name = ADD_PFX & "PANELCARD_ACT"
     c1.Adjustments(1) = 0.08
     c1.Fill.Visible = msoFalse                 ' transparent -> deep navy sidebar shows through
@@ -228,11 +228,11 @@ Private Sub AddPanelCards(ByVal ws As Worksheet)
     End With
     c1.ZOrder msoSendToBack
 
-    ' 2. Lower Rounded Box enclosing Utility Group (Rows 14 to 23)
+    ' 2. Lower Rounded Box enclosing Utility Group (Rows 14 to 22)
     Dim y2 As Single, h2 As Single, c2 As Shape
     y2 = ws.Range("A14").Top
-    h2 = (ws.Range("A22").Top + ws.Range("A22").Height) - y2 + 8
-    Set c2 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft, y2, sbWidth, h2)
+    h2 = (ws.Range("A22").Top + ws.Range("A22").Height) - y2 + 6
+    Set c2 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y2, sbWidth + 8, h2)
     c2.Name = ADD_PFX & "PANELCARD_UTL"
     c2.Adjustments(1) = 0.08
     c2.Fill.Visible = msoFalse                 ' transparent -> deep navy sidebar shows through
@@ -281,10 +281,18 @@ Private Function ShapeKind(ByVal shp As Shape) As String
     ShapeKind = "skip"
     If shp.Type <> msoAutoShape And shp.Type <> msoFreeform Then Exit Function
     If Left$(shp.Name, Len(ADD_PFX)) = ADD_PFX Then Exit Function
-    Dim hasMac As Boolean, txt As String
-    hasMac = (Len(shp.OnAction) > 0)
+    Dim txt As String: txt = ""
     If shp.TextFrame.HasText Then txt = Trim$(shp.TextFrame.Characters.Text)
-    If hasMac Then
+    
+    If InStr(1, txt, "Start", vbTextCompare) > 0 Or _
+       InStr(1, txt, "Export", vbTextCompare) > 0 Or _
+       InStr(1, txt, "OSDD", vbTextCompare) > 0 Or _
+       InStr(1, txt, "Narrat", vbTextCompare) > 0 Or _
+       InStr(1, txt, "Rename", vbTextCompare) > 0 Or _
+       InStr(1, txt, "PDF", vbTextCompare) > 0 Or _
+       InStr(1, txt, "Warm", vbTextCompare) > 0 Or _
+       InStr(1, txt, "Reset", vbTextCompare) > 0 Or _
+       Len(shp.OnAction) > 0 Then
         ShapeKind = "button"
     ElseIf InStr(1, txt, "Beta", vbTextCompare) > 0 Then
         ShapeKind = "title"
@@ -434,12 +442,12 @@ Private Sub AddIconsInline(ByVal ws As Worksheet)
     PrependIcon ws, FindByText(ws, "Counterparty Inf"), ChrW(&HE716&), cGold  ' people
     PrependIcon ws, FindByText(ws, "Country Risk"), ChrW(&HE774&), cGold      ' globe
     PrependIcon ws, FindButton(ws, "Start"), ChrW(&HE768&), cNavy            ' play
-    PrependIcon ws, FindButton(ws, "Export Trx"), ChrW(&HE898&), cGold       ' upload
+    PrependIcon ws, FindButton(ws, "Export"), ChrW(&HE898&), cGold           ' upload
     PrependIcon ws, FindButton(ws, "OSDD"), ChrW(&HE721&), cGold             ' search
-    PrependIcon ws, FindButton(ws, "Generate Narr"), ChrW(&HE70F&), cGold    ' edit
+    PrependIcon ws, FindButton(ws, "Narrat"), ChrW(&HE70F&), cGold           ' edit
     PrependIcon ws, FindButton(ws, "Rename"), ChrW(&HE8AC&), cGold           ' rename
-    PrependIcon ws, FindButton(ws, "PDF Merge"), ChrW(&HEA90&), cGold        ' PDF
-    PrependIcon ws, FindButton(ws, "Profile Warm"), ChrW(&HE945&), cGold     ' lightning
+    PrependIcon ws, FindButton(ws, "PDF"), ChrW(&HEA90&), cGold              ' PDF
+    PrependIcon ws, FindButton(ws, "Warm"), ChrW(&HE945&), cGold             ' lightning
     PrependIcon ws, FindButton(ws, "Reset"), ChrW(&HE72C&), cCream           ' refresh
 End Sub
 
@@ -499,8 +507,6 @@ End Sub
 '---- REPOSITION: Align Header & Buttons inside Sidebar -------------
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim bak As Worksheet: Set bak = GetBak(False)
-
     Dim beta As Shape, actLbl As Shape, utlLbl As Shape
     Set beta = FindByText(ws, "Beta")
     Set actLbl = FindByText(ws, "Action Panel")
@@ -529,20 +535,16 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     End If
 
     ' 2. Action Buttons (Rows 5, 7, 9, 11)
-    Dim actBtns As Variant, nm As Variant, s As Shape, rBtn As Long
-    actBtns = Array("Start", "Export Trx File", "OSDD Search", "Generate Narrative")
-    rBtn = 5
-    For Each nm In actBtns
-        Set s = FindButton(ws, CStr(nm))
-        If Not s Is Nothing Then
-            PosBackup ws, s
-            s.Left = sbLeft
-            s.Top = ws.Range("A" & rBtn).Top + 2
-            s.Width = sbWidth
-            s.Height = 24
-        End If
-        rBtn = rBtn + 2
-    Next nm
+    Dim btnStart As Shape, btnExp As Shape, btnOsdd As Shape, btnNarr As Shape
+    Set btnStart = FindButton(ws, "Start")
+    Set btnExp = FindButton(ws, "Export")
+    Set btnOsdd = FindButton(ws, "OSDD")
+    Set btnNarr = FindButton(ws, "Narrat")
+
+    If Not btnStart Is Nothing Then PosBackup ws, btnStart: btnStart.Left = sbLeft: btnStart.Top = ws.Range("A5").Top + 2: btnStart.Width = sbWidth: btnStart.Height = 24
+    If Not btnExp Is Nothing Then PosBackup ws, btnExp: btnExp.Left = sbLeft: btnExp.Top = ws.Range("A7").Top + 2: btnExp.Width = sbWidth: btnExp.Height = 24
+    If Not btnOsdd Is Nothing Then PosBackup ws, btnOsdd: btnOsdd.Left = sbLeft: btnOsdd.Top = ws.Range("A9").Top + 2: btnOsdd.Width = sbWidth: btnOsdd.Height = 24
+    If Not btnNarr Is Nothing Then PosBackup ws, btnNarr: btnNarr.Left = sbLeft: btnNarr.Top = ws.Range("A11").Top + 2: btnNarr.Width = sbWidth: btnNarr.Height = 24
 
     ' 3. UTILITY PANEL badge at Row 14 (inside the lower box)
     If Not utlLbl Is Nothing Then
@@ -555,20 +557,16 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     End If
 
     ' 4. Utility Buttons (Rows 16, 18, 20, 22)
-    Dim utlBtns As Variant
-    utlBtns = Array("Rename", "PDF Merge", "Profile Warm-Up", "Reset")
-    rBtn = 16
-    For Each nm In utlBtns
-        Set s = FindButton(ws, CStr(nm))
-        If Not s Is Nothing Then
-            PosBackup ws, s
-            s.Left = sbLeft
-            s.Top = ws.Range("A" & rBtn).Top + 2
-            s.Width = sbWidth
-            s.Height = 24
-        End If
-        rBtn = rBtn + 2
-    Next nm
+    Dim btnRen As Shape, btnPdf As Shape, btnWarm As Shape, btnRst As Shape
+    Set btnRen = FindButton(ws, "Rename")
+    Set btnPdf = FindButton(ws, "PDF")
+    Set btnWarm = FindButton(ws, "Warm")
+    Set btnRst = FindButton(ws, "Reset")
+
+    If Not btnRen Is Nothing Then PosBackup ws, btnRen: btnRen.Left = sbLeft: btnRen.Top = ws.Range("A16").Top + 2: btnRen.Width = sbWidth: btnRen.Height = 24
+    If Not btnPdf Is Nothing Then PosBackup ws, btnPdf: btnPdf.Left = sbLeft: btnPdf.Top = ws.Range("A18").Top + 2: btnPdf.Width = sbWidth: btnPdf.Height = 24
+    If Not btnWarm Is Nothing Then PosBackup ws, btnWarm: btnWarm.Left = sbLeft: btnWarm.Top = ws.Range("A20").Top + 2: btnWarm.Width = sbWidth: btnWarm.Height = 24
+    If Not btnRst Is Nothing Then PosBackup ws, btnRst: btnRst.Left = sbLeft: btnRst.Top = ws.Range("A22").Top + 2: btnRst.Width = sbWidth: btnRst.Height = 24
     On Error GoTo 0
 End Sub
 
@@ -700,7 +698,7 @@ Private Sub SetAlt(ByVal shp As Shape, ByVal s As String)
     On Error Resume Next
     shp.AlternativeText = s
     On Error GoTo 0
-End Sub
+End Function
 
 Private Function GetBak(ByVal createIfMissing As Boolean) As Worksheet
     On Error Resume Next
@@ -726,11 +724,12 @@ Private Function FindByText(ByVal ws As Worksheet, ByVal t As String) As Shape
 End Function
 
 Private Function FindButton(ByVal ws As Worksheet, ByVal t As String) As Shape
-    Dim shp As Shape
+    Dim shp As Shape, txt As String
     For Each shp In ws.Shapes
         On Error Resume Next
-        If Len(shp.OnAction) > 0 And shp.TextFrame.HasText Then
-            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
+        If shp.TextFrame.HasText Then
+            txt = shp.TextFrame.Characters.Text
+            If InStr(1, txt, t, vbTextCompare) > 0 Then
                 Set FindButton = shp: Exit Function
             End If
         End If
