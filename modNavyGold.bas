@@ -347,14 +347,14 @@ Private Sub StyleTitle(ByVal shp As Shape)
     With shp.TextFrame.Characters(1, 1).Font
         .Name = "Segoe MDL2 Assets"
         .Color = cGold
-        .Size = 12
+        .Size = 16                              ' prominent gold icon
     End With
     If Len(shp.TextFrame.Characters.Text) > 1 Then
         With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
             .Name = "Segoe UI"
             .Color = cGold
             .Bold = True
-            .Size = 11
+            .Size = 14                          ' prominent, larger Beta 3.5 title
         End With
     End If
     shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
@@ -537,28 +537,28 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     Dim btnX As Single
     btnX = sbLeft + 4                           ' perfectly centered inside the card boxes
 
-    ' 1. BETA 3.5 Header Title above Action Panel (Rows 1-2)
+    ' 1. BETA 3.5 Header Title above Action Panel (Rows 1-3)
     If beta Is Nothing Then
-        Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, ws.Range("A1").Top + 4, btnW, 24)
+        Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, ws.Range("A2").Top - 6, btnW, 30)
         beta.Name = ADD_PFX & "TITLE_BETA"
     Else
         PosBackup ws, beta
         beta.Visible = msoTrue
         beta.Left = btnX
-        beta.Top = ws.Range("A1").Top + 4
+        beta.Top = ws.Range("A2").Top - 6
         beta.Width = btnW
-        beta.Height = 24
+        beta.Height = 30
     End If
     StyleTitle beta
 
-    ' 2. ACTION PANEL badge at Row 3 (Pill badge above the Action button box)
+    ' 2. ACTION PANEL badge at Row 4 (Exact parallel symmetry with Alert Related Information banner G4:T4)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
         actLbl.Visible = msoTrue
         actLbl.Left = btnX
-        actLbl.Top = ws.Range("A3").Top + 4
+        actLbl.Top = ws.Range("G4").Top
         actLbl.Width = btnW
-        actLbl.Height = 22
+        actLbl.Height = 24
     End If
 
     ' 2. Action Buttons inside the Upper Box (Rows 5 to 14) with equal mathematical gaps
