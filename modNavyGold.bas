@@ -72,6 +72,7 @@ Sub ApplyNavyGold()
     RepositionBeta ws
     AddFolds ws
     AddIcons ws
+    AddContentFrames ws
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
@@ -375,6 +376,28 @@ Private Sub AddIconAt(ByVal ws As Worksheet, ByVal host As Shape, ByVal glyph As
     On Error GoTo 0
 End Sub
 
+'---- CONTENT FRAMES: rounded gold outline around each section ------
+Private Sub AddContentFrames(ByVal ws As Worksheet)
+    AddFrame2 ws, "G3:T10"     ' Alert Related Information
+    AddFrame2 ws, "G12:T14"    ' Customer Information
+    AddFrame2 ws, "G16:T23"    ' Counterparty Information
+    AddFrame2 ws, "G25:T28"    ' Country Risk Rating
+End Sub
+
+Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
+    On Error Resume Next
+    Static c As Long: c = c + 1
+    Dim r As Range: Set r = ws.Range(addr)
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 2, r.Top - 2, r.Width + 4, r.Height + 4)
+    shp.Name = ADD_PFX & "CFRAME_" & c
+    shp.Fill.Visible = msoFalse                 ' no fill -> click-through, cells show
+    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
+    shp.Adjustments(1) = 0.05                    ' rounded corners
+    shp.ZOrder msoSendToBack                     ' behind banners; wraps the section
+    On Error GoTo 0
+End Sub
+
 Private Sub RemoveAdded(ByVal ws As Worksheet)
     Dim i As Long
     For i = ws.Shapes.count To 1 Step -1
@@ -390,19 +413,18 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
         If Len(CStr(bak.Cells(1, "G").Value)) > 0 Then Exit Sub    ' already repositioned
     End If
 
-    Dim beta As Shape, alertB As Shape, actLbl As Shape, shield As Shape, actCard As Shape
+    Dim beta As Shape, actLbl As Shape, shield As Shape, actCard As Shape
     Set beta = FindByText(ws, "Beta")
-    Set alertB = FindByText(ws, "Alert")
     Set actLbl = FindByText(ws, "Action Panel")
     Set shield = FindPicture(ws)
     Set actCard = FindUpperBlank(ws)
-    If beta Is Nothing Or alertB Is Nothing Or actLbl Is Nothing Then Exit Sub
+    If beta Is Nothing Or actLbl Is Nothing Then Exit Sub
 
     Dim sbLeft As Single, sbWidth As Single, newTop As Single, newH As Single, shift As Single
     sbLeft = ws.Range("A1").Left
     sbWidth = ws.Range("A1:E1").Width
-    newTop = alertB.Top
-    newH = alertB.Height
+    newTop = ws.Range("A3").Top          ' deterministic: row 3 (level with the Alert banner)
+    newH = ws.Range("A3:A4").Height       ' ~2 rows tall
     shift = newH + 8
 
     ' shift the Action group DOWN to make room for Beta on top
