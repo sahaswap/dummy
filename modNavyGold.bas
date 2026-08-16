@@ -152,8 +152,8 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End If
     bak.Visible = xlSheetVeryHidden
 
-    ' 1. Paint entire canvas in Pearl base
-    ws.Range(CANVAS).Interior.Color = cPearl
+    ' 1. Clear background canvas (no Pearl fill - clean default transparent/white)
+    ws.Range(CANVAS).Interior.ColorIndex = xlNone
     ws.Range(CANVAS).Borders(xlEdgeBottom).LineStyle = xlNone
     ws.Range(CANVAS).Borders(xlInsideHorizontal).LineStyle = xlNone
 
