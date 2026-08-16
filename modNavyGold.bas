@@ -688,9 +688,13 @@ End Sub
 '---- TITLE: Beta 3.5 with True Vector Protect Shield & Checkmark ---
 Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single)
     On Error Resume Next
-    Dim iconSz As Single: iconSz = 20
+    Dim iconSz As Single: iconSz = 24           ' enlarged prominent shield icon (24pt)
+    Dim totalUnitW As Single: totalUnitW = 102  ' combined width of icon + gap + text
+    Dim startX As Single
+    startX = x + (w - totalUnitW) / 2           ' mathematically center-aligned lockup
+
     Dim iconX As Single, iconY As Single
-    iconX = x + 12
+    iconX = startX
     iconY = y + (h - iconSz) / 2
 
     ' 1. Draw True Vector Shield Contour
@@ -710,7 +714,7 @@ Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Si
     With shpShield.Line
         .Visible = msoTrue
         .ForeColor.RGB = cGold
-        .Weight = 1.25
+        .Weight = 1.5
     End With
 
     ' 2. Draw Checkmark inside Shield
@@ -726,15 +730,16 @@ Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Si
     With shpChk.Line
         .Visible = msoTrue
         .ForeColor.RGB = cGold
-        .Weight = 1.5
+        .Weight = 1.75
     End With
 
     ' 3. Add "Beta 3.5" Text next to Shield
-    Dim textX As Single, textW As Single
+    Dim textX As Single, textW As Single, textY As Single
     textX = iconX + iconSz + 8
     textW = (x + w) - textX
+    textY = y + (h - 26) / 2
     Dim shpTxt As Shape
-    Set shpTxt = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, textX, y - 2, textW, h + 4)
+    Set shpTxt = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, textX, textY, textW, 26)
     shpTxt.Name = ADD_PFX & "TITLE_TXT"
     shpTxt.Fill.Visible = msoFalse
     shpTxt.Line.Visible = msoFalse
@@ -743,7 +748,7 @@ Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Si
         .Name = "Segoe UI"
         .Color = cGold
         .Bold = True
-        .Size = 13.5
+        .Size = 15                              ' enlarged prominent 15pt bold font
     End With
     shpTxt.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignLeft
     shpTxt.TextFrame2.VerticalAnchor = msoAnchorMiddle
