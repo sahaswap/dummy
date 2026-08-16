@@ -32,7 +32,7 @@ Sub ApplyGlassStyleLight()     ' LIGHT / white frosted
 End Sub
 
 Private Sub SetDarkPalette()
-    pBtnFill = RGB(18, 28, 42): pBtnTrans = 0.28
+    pBtnFill = RGB(18, 28, 42): pBtnTrans = 0.45      ' semi-transparent
     pBtnLine = RGB(120, 196, 205): pBtnLineTrans = 0.55
     pBtnText = RGB(232, 240, 246): pReset = RGB(255, 150, 150)
     pPanFill = RGB(14, 22, 34): pPanTrans = 0.34
@@ -43,7 +43,7 @@ End Sub
 Private Sub SetLightPalette()
     ' crisp white buttons + defined blue-grey borders so they pop on the
     ' tinted light background (frost alone has no contrast in Excel)
-    pBtnFill = RGB(255, 255, 255): pBtnTrans = 0.1
+    pBtnFill = RGB(255, 255, 255): pBtnTrans = 0.38     ' semi-transparent
     pBtnLine = RGB(150, 172, 205): pBtnLineTrans = 0.1
     pBtnText = RGB(31, 45, 66): pReset = RGB(176, 42, 42)
     pPanFill = RGB(234, 240, 250): pPanTrans = 0.12      ' tinted banner bars
@@ -157,6 +157,8 @@ Private Sub StyleButton(ByVal shp As Shape)
     End With
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
+            .Bold = False       ' lighter weight
+            .Size = 9           ' smaller
             If InStr(1, shp.TextFrame.Characters.Text, "Reset", vbTextCompare) > 0 Then
                 .Color = pReset
             Else
@@ -184,12 +186,9 @@ End Sub
 
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
-    With shp.Fill
-        .Visible = msoTrue: .Solid
-        .ForeColor.RGB = pPanFill: .Transparency = pTitleTrans
-    End With
+    shp.Fill.Visible = msoFalse        ' just the title text, no frosted box (like the demo)
     shp.Line.Visible = msoFalse
-    shp.SoftEdge.Type = 1
+    shp.SoftEdge.Type = 0
     If shp.TextFrame.HasText Then shp.TextFrame.Characters.Font.Color = pText
     On Error GoTo 0
 End Sub

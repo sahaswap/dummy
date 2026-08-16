@@ -29,11 +29,11 @@ Sub AddSectionFrames()
 
     RemoveFrames ws                       ' idempotent
 
-    AddFrame ws, "B2:U28", PFX & "Outer", 0.02, 0.6      ' outer box
-    AddFrame ws, "G4:T10", PFX & "Alert", 0.06, 0.45
-    AddFrame ws, "G12:T14", PFX & "Customer", 0.09, 0.45
-    AddFrame ws, "G16:T23", PFX & "Counterparty", 0.05, 0.45
-    AddFrame ws, "G25:T27", PFX & "Country", 0.09, 0.45
+    AddFrame ws, "B2:U28", PFX & "Outer", 0.02, 0.3      ' outer box
+    AddFrame ws, "G4:T10", PFX & "Alert", 0.06, 0.12
+    AddFrame ws, "G12:T14", PFX & "Customer", 0.09, 0.12
+    AddFrame ws, "G16:T23", PFX & "Counterparty", 0.05, 0.12
+    AddFrame ws, "G25:T27", PFX & "Country", 0.09, 0.12
 
     If wasProt Then ws.Protect Password:="p7ss"
     MsgBox "Section frames added." & vbCrLf & vbCrLf & _
@@ -70,13 +70,12 @@ Private Sub AddFrame(ByVal ws As Worksheet, ByVal addr As String, ByVal nm As St
     shp.Fill.Visible = msoFalse            ' NO fill -> interior is click-through
     With shp.Line
         .Visible = msoTrue
-        .ForeColor.RGB = RGB(120, 196, 205) ' soft teal edge
+        .ForeColor.RGB = RGB(120, 145, 180) ' blue-grey edge (reads on light & dark)
         .Transparency = lineTrans
-        .Weight = 1.25
+        .Weight = 1.5
     End With
     On Error Resume Next
     shp.Adjustments(1) = rnd               ' corner roundness
-    shp.SoftEdge.Type = 1
     On Error GoTo 0
     shp.ZOrder msoSendToBack               ' behind banners/buttons, above cells
 End Sub
