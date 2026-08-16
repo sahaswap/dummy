@@ -4,10 +4,11 @@ Option Explicit
 ' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
 '
 '   ApplyNavyGold   - pearl canvas, full-height slate navy sidebar (#18243E),
-'                     separate ACTION/UTILITY pill badges, separate rounded
-'                     gold-bordered button container boxes, gold-bordered
-'                     buttons (Start = gold, Reset = crimson), navy+gold
-'                     banners with gold corner folds, solid white data cards
+'                     prominent Beta 3.5 with Protect Shield icon,
+'                     ACTION/UTILITY pill badges in exact parallel symmetry
+'                     with section banners, rounded gold-bordered button boxes,
+'                     gold-bordered buttons (Start = gold, Reset = crimson),
+'                     navy+gold banners with gold corner folds, solid white cards
 '   RemoveNavyGold  - restores everything (shapes, cells, removes folds/frames)
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
@@ -25,7 +26,7 @@ Private cBannerNavy As Long, cBannerSoftNavy As Long
 Private cSidebarBg As Long, cBtnNavy As Long
 
 Private Sub InitPalette()
-    cNavy = RGB(24, 36, 62)              ' #18243E Rich Slate Navy (sidebar background from image)
+    cNavy = RGB(24, 36, 62)              ' #18243E Rich Slate Navy (sidebar background)
     cSoftNavy = RGB(34, 52, 86)          ' #223456 Button & Badge Navy
     cSidebarBg = cNavy                   ' #18243E Full-Height Sidebar Background
     cBtnNavy = cSoftNavy                 ' #223456 Elevated Button Tone
@@ -72,8 +73,8 @@ Sub ApplyNavyGold()
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws                                              ' solid white cards + full-height slate sidebar
     StyleShapes ws
-    RepositionBeta ws                                          ' position buttons and badges matching Image 1
-    AddPanelCards ws                                           ' separate gold boxes for Action (Rows 5-14) and Utility (Rows 18-27)
+    RepositionBeta ws                                          ' position buttons and badges with banner alignment
+    AddPanelCards ws                                           ' dynamic gold boxes fitting below badges
     RemoveStraySidebarIcons ws                                 ' permanently delete stray icons in sidebar
     AddFolds ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
@@ -207,16 +208,26 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- PANEL CARDS: rounded gold boxes enclosing button groups (Matching Image 1)
+'---- PANEL CARDS: rounded gold boxes dynamically placed below badges
 Private Sub AddPanelCards(ByVal ws As Worksheet)
     On Error Resume Next
     Dim sbLeft As Single, sbWidth As Single
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
 
-    ' 1. Upper Rounded Box enclosing Action Buttons (Rows 5 to 14)
+    Dim actLbl As Shape, utlLbl As Shape
+    Set actLbl = FindByText(ws, "Action Panel")
+    If actLbl Is Nothing Then Set actLbl = FindByText(ws, "ACTION")
+    Set utlLbl = FindByText(ws, "Utility Panel")
+    If utlLbl Is Nothing Then Set utlLbl = FindByText(ws, "UTILITY")
+
+    ' 1. Upper Rounded Box enclosing Action Buttons (below actLbl to bottom of Row 14)
     Dim y1 As Single, h1 As Single, c1 As Shape
-    y1 = ws.Range("A5").Top - 1
+    If Not actLbl Is Nothing Then
+        y1 = actLbl.Top + actLbl.Height + 5
+    Else
+        y1 = ws.Range("A5").Top - 1
+    End If
     h1 = (ws.Range("A14").Top + ws.Range("A14").Height) - y1 + 1
     Set c1 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y1, sbWidth + 8, h1)
     c1.Name = ADD_PFX & "PANELCARD_ACT"
@@ -229,9 +240,13 @@ Private Sub AddPanelCards(ByVal ws As Worksheet)
     End With
     c1.ZOrder msoSendToBack
 
-    ' 2. Lower Rounded Box enclosing Utility Buttons (Rows 18 to 27)
+    ' 2. Lower Rounded Box enclosing Utility Buttons (below utlLbl to bottom of Row 27)
     Dim y2 As Single, h2 As Single, c2 As Shape
-    y2 = ws.Range("A18").Top - 1
+    If Not utlLbl Is Nothing Then
+        y2 = utlLbl.Top + utlLbl.Height + 5
+    Else
+        y2 = ws.Range("A18").Top - 1
+    End If
     h2 = (ws.Range("A27").Top + ws.Range("A27").Height) - y2 + 1
     Set c2 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y2, sbWidth + 8, h2)
     c2.Name = ADD_PFX & "PANELCARD_UTL"
@@ -343,18 +358,18 @@ Private Sub StyleTitle(ByVal shp As Shape)
     shp.Visible = msoTrue
     shp.Fill.Visible = msoFalse                 ' transparent background
     shp.Line.Visible = msoFalse                 ' clean borderless title
-    shp.TextFrame.Characters.Text = ChrW(&HEA18&) & "  Beta 3.5"
+    shp.TextFrame.Characters.Text = ChrW(&HE8D7&) & "  Beta 3.5"   ' Official Protect Shield icon
     With shp.TextFrame.Characters(1, 1).Font
         .Name = "Segoe MDL2 Assets"
         .Color = cGold
-        .Size = 16                              ' prominent gold icon
+        .Size = 18                              ' large, prominent Protect Shield icon
     End With
     If Len(shp.TextFrame.Characters.Text) > 1 Then
         With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
             .Name = "Segoe UI"
             .Color = cGold
             .Bold = True
-            .Size = 14                          ' prominent, larger Beta 3.5 title
+            .Size = 15                          ' large, prominent Beta 3.5 title
         End With
     End If
     shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
@@ -518,15 +533,20 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Align Header & Buttons with Mathematical Precision --
+'---- REPOSITION: Align Header & Buttons with Banner Symmetry -------
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
     Dim beta As Shape, actLbl As Shape, utlLbl As Shape
+    Dim alertBanner As Shape, cpBanner As Shape
+
     Set beta = FindByText(ws, "Beta")
     Set actLbl = FindByText(ws, "Action Panel")
     If actLbl Is Nothing Then Set actLbl = FindByText(ws, "ACTION")
     Set utlLbl = FindByText(ws, "Utility Panel")
     If utlLbl Is Nothing Then Set utlLbl = FindByText(ws, "UTILITY")
+
+    Set alertBanner = FindByText(ws, "Alert Related")
+    Set cpBanner = FindByText(ws, "Counterparty Inf")
 
     Dim sbLeft As Single, sbWidth As Single, btnW As Single, btnH As Single
     sbLeft = ws.Range("A1").Left + 14
@@ -537,33 +557,47 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     Dim btnX As Single
     btnX = sbLeft + 4                           ' perfectly centered inside the card boxes
 
-    ' 1. BETA 3.5 Header Title above Action Panel (Rows 1-3)
+    ' 1. ACTION PANEL badge - Exact dynamic parallel match with Alert Related Information banner
+    If Not actLbl Is Nothing Then
+        PosBackup ws, actLbl
+        actLbl.Visible = msoTrue
+        actLbl.Left = btnX
+        actLbl.Width = btnW
+        If Not alertBanner Is Nothing Then
+            actLbl.Top = alertBanner.Top        ' 100% exact pixel baseline match
+            actLbl.Height = alertBanner.Height  ' 100% exact height match
+        Else
+            actLbl.Top = ws.Range("G3").Top + 4
+            actLbl.Height = 24
+        End If
+    End If
+
+    ' 2. BETA 3.5 Title with Protect Shield Icon (Centered in space above Action Panel)
     If beta Is Nothing Then
-        Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, ws.Range("A2").Top - 6, btnW, 30)
+        Dim bH As Single, bTop As Single
+        bTop = ws.Range("A1").Top + 4
+        If Not actLbl Is Nothing Then bH = (actLbl.Top - bTop) - 6 Else bH = 34
+        If bH < 26 Then bH = 26
+        Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, bTop, btnW, bH)
         beta.Name = ADD_PFX & "TITLE_BETA"
     Else
         PosBackup ws, beta
         beta.Visible = msoTrue
         beta.Left = btnX
-        beta.Top = ws.Range("A2").Top - 6
+        beta.Top = ws.Range("A1").Top + 4
+        If Not actLbl Is Nothing Then beta.Height = (actLbl.Top - beta.Top) - 6 Else beta.Height = 34
+        if beta.Height < 26 Then beta.Height = 26
         beta.Width = btnW
-        beta.Height = 30
     End If
     StyleTitle beta
 
-    ' 2. ACTION PANEL badge at Row 4 (Exact parallel symmetry with Alert Related Information banner G4:T4)
-    If Not actLbl Is Nothing Then
-        PosBackup ws, actLbl
-        actLbl.Visible = msoTrue
-        actLbl.Left = btnX
-        actLbl.Top = ws.Range("G4").Top
-        actLbl.Width = btnW
-        actLbl.Height = 24
-    End If
-
-    ' 2. Action Buttons inside the Upper Box (Rows 5 to 14) with equal mathematical gaps
+    ' 3. Action Buttons inside the Upper Box (below actLbl to bottom of Row 14)
     Dim box1Top As Single, box1Bot As Single, box1H As Single, gap1 As Single
-    box1Top = ws.Range("A5").Top
+    If Not actLbl Is Nothing Then
+        box1Top = actLbl.Top + actLbl.Height + 5
+    Else
+        box1Top = ws.Range("A5").Top
+    End If
     box1Bot = ws.Range("A14").Top + ws.Range("A14").Height
     box1H = box1Bot - box1Top
     gap1 = (box1H - (4 * btnH)) / 5
@@ -606,19 +640,28 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
         btnNarr.Height = btnH
     End If
 
-    ' 3. UTILITY PANEL badge at Row 16 (Pill badge above the Utility button box)
+    ' 4. UTILITY PANEL badge - Exact dynamic parallel match with Counterparty Information banner
     If Not utlLbl Is Nothing Then
         PosBackup ws, utlLbl
         utlLbl.Visible = msoTrue
         utlLbl.Left = btnX
-        utlLbl.Top = ws.Range("A16").Top + 4
         utlLbl.Width = btnW
-        utlLbl.Height = 22
+        If Not cpBanner Is Nothing Then
+            utlLbl.Top = cpBanner.Top           ' 100% exact pixel baseline match
+            utlLbl.Height = cpBanner.Height     ' 100% exact height match
+        Else
+            utlLbl.Top = ws.Range("G16").Top
+            utlLbl.Height = 24
+        End If
     End If
 
-    ' 4. Utility Buttons inside the Lower Box (Rows 18 to 27) with equal mathematical gaps
+    ' 5. Utility Buttons inside the Lower Box (below utlLbl to bottom of Row 27)
     Dim box2Top As Single, box2Bot As Single, box2H As Single, gap2 As Single
-    box2Top = ws.Range("A18").Top
+    If Not utlLbl Is Nothing Then
+        box2Top = utlLbl.Top + utlLbl.Height + 5
+    Else
+        box2Top = ws.Range("A18").Top
+    End If
     box2Bot = ws.Range("A27").Top + ws.Range("A27").Height
     box2H = box2Bot - box2Top
     gap2 = (box2H - (4 * btnH)) / 5
