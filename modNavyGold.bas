@@ -71,8 +71,9 @@ Sub ApplyNavyGold()
     StyleShapes ws
     RepositionBeta ws
     AddFolds ws
-    AddIcons ws
+    AddPanelDecor ws
     AddContentFrames ws
+    ' AddIcons ws   ' re-enabled once IconDiagnostic confirms the glyph codes
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
@@ -378,10 +379,9 @@ End Sub
 
 '---- CONTENT FRAMES: rounded gold outline around each section ------
 Private Sub AddContentFrames(ByVal ws As Worksheet)
-    AddFrame2 ws, "G3:T10"     ' Alert Related Information
-    AddFrame2 ws, "G12:T14"    ' Customer Information
-    AddFrame2 ws, "G16:T23"    ' Counterparty Information
-    AddFrame2 ws, "G25:T28"    ' Country Risk Rating
+    ' ONE rounded gold outline around the whole content area (left edge at
+    ' column F) - no messy per-section internal lines.
+    AddFrame2 ws, "F3:T28"
 End Sub
 
 Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
@@ -395,6 +395,47 @@ Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
     With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
     shp.Adjustments(1) = 0.05                    ' rounded corners
     shp.ZOrder msoSendToBack                     ' behind banners; wraps the section
+    On Error GoTo 0
+End Sub
+
+'---- PANEL DECOR: gold underline + flanking lines (from the demo) ---
+Private Sub AddPanelDecor(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim beta As Shape, actLbl As Shape, utlLbl As Shape
+    Set beta = FindByText(ws, "Beta")
+    Set actLbl = FindByText(ws, "Action Panel")
+    Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel"
+    ' gold underline just under Beta 3.5
+    If Not beta Is Nothing Then
+        Dim by As Single: by = beta.Top + beta.Height - 2
+        AddGoldLine ws, beta.Left + beta.Width * 0.2, by, beta.Left + beta.Width * 0.8, by, 1.25
+    End If
+    AddFlank ws, actLbl
+    AddFlank ws, utlLbl
+    On Error GoTo 0
+End Sub
+
+Private Sub AddFlank(ByVal ws As Worksheet, ByVal lbl As Shape)
+    On Error Resume Next
+    If lbl Is Nothing Then Exit Sub
+    Dim y As Single, sbL As Single, sbR As Single
+    y = lbl.Top + lbl.Height / 2
+    sbL = ws.Range("A1").Left + 14
+    sbR = ws.Range("E1").Left + ws.Range("E1").Width - 14
+    If lbl.Left - 8 > sbL Then AddGoldLine ws, sbL, y, lbl.Left - 8, y, 0.75
+    If sbR > lbl.Left + lbl.Width + 8 Then AddGoldLine ws, lbl.Left + lbl.Width + 8, y, sbR, y, 0.75
+    On Error GoTo 0
+End Sub
+
+Private Sub AddGoldLine(ByVal ws As Worksheet, ByVal x1 As Single, ByVal y1 As Single, _
+                        ByVal x2 As Single, ByVal y2 As Single, ByVal wt As Single)
+    On Error Resume Next
+    Static c As Long: c = c + 1
+    Dim ln As Shape
+    Set ln = ws.Shapes.AddLine(x1, y1, x2, y2)
+    ln.Name = ADD_PFX & "LINE_" & c
+    ln.Line.ForeColor.RGB = cGold
+    ln.Line.Weight = wt
     On Error GoTo 0
 End Sub
 
@@ -425,7 +466,7 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     sbWidth = ws.Range("A1:E1").Width
     newTop = ws.Range("A3").Top          ' deterministic: row 3 (level with the Alert banner)
     newH = ws.Range("A3:A4").Height       ' ~2 rows tall
-    shift = newH + 8
+    shift = newH + 16                     ' extra gap so Action Panel isn't cramped under Beta
 
     ' shift the Action group DOWN to make room for Beta on top
     PosBackup ws, actLbl
