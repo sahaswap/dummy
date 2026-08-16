@@ -65,10 +65,8 @@ Sub ApplyNavyGold()
     On Error GoTo 0
 
     Application.ScreenUpdating = False
+    PurgeAllSheetBackgroundImages ThisWorkbook                 ' clear leftover background image from ALL sheets (including ConsolidatedData)
     ws.Activate
-    On Error Resume Next
-    Application.CommandBars.ExecuteMso "SheetBackgroundDelete"   ' clear leftover background image
-    On Error GoTo 0
 
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws                                              ' solid white cards + full-height slate sidebar
@@ -105,6 +103,7 @@ Sub RemoveNavyGold()
     On Error GoTo 0
 
     Application.ScreenUpdating = False
+    PurgeAllSheetBackgroundImages ThisWorkbook
     RemoveAdded ws
     RestoreText ws
     RestorePositions ws
@@ -120,21 +119,20 @@ Sub RemoveNavyGold()
     MsgBox "Navy & Gold theme removed; everything restored.", vbInformation, "Navy & Gold"
 End Sub
 
-Sub ClearAllSheetBackgrounds()
-    Dim ws As Worksheet, prev As Object
-    Set prev = ActiveSheet
-    Application.ScreenUpdating = False
-    For Each ws In ThisWorkbook.Worksheets
-        On Error Resume Next
-        ws.Activate
-        Application.CommandBars.ExecuteMso "SheetBackgroundDelete"
-        On Error GoTo 0
-    Next ws
+Private Sub PurgeAllSheetBackgroundImages(ByVal wb As Workbook)
     On Error Resume Next
-    prev.Activate
+    Dim wSheet As Worksheet, prev As Object
+    Set prev = ActiveSheet
+    For Each wSheet In wb.Worksheets
+        Dim wasP As Boolean
+        wasP = wSheet.ProtectContents
+        wSheet.Unprotect Password:="p7ss"
+        wSheet.Activate
+        Application.CommandBars.ExecuteMso "SheetBackgroundDelete"
+        If wasP Then wSheet.Protect Password:="p7ss"
+    Next wSheet
+    If Not prev Is Nothing Then prev.Activate
     On Error GoTo 0
-    Application.ScreenUpdating = True
-    MsgBox "Removed leftover background pictures from all sheets.", vbInformation, "Backgrounds cleared"
 End Sub
 
 '---- CELLS: solid white cards (NO zebra) + full-height sidebar ----
