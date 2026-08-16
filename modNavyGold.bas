@@ -3,11 +3,15 @@ Option Explicit
 '=====================================================================
 ' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
 '
-'   ApplyNavyGold   - pearl canvas, floating rounded deep navy sidebar card
-'                     (flush with Country Risk), gold-bordered buttons
-'                     (Start = gold, Reset = crimson), navy+gold banners
-'                     with gold corner folds, warm-white zebra data cards
-'   RemoveNavyGold  - restores everything (shapes, cells, removes folds)
+'   ApplyNavyGold   - pearl canvas, full-height slate navy sidebar (#18243E),
+'                     dual rounded gold-bordered panel cards, gold-bordered
+'                     buttons (Start = gold, Reset = crimson), navy+gold
+'                     banners with gold corner folds, rounded outer content frame
+'   RemoveNavyGold  - restores everything (shapes, cells, removes folds/frames)
+'
+' FULLY REVERSIBLE: shape styles are stashed in each shape's AltText;
+' cell fills/fonts are backed up to a very-hidden sheet (_NGBak); the
+' added gold folds and frames are named NGADD_* and deleted on remove.
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "NGORIG|"
@@ -24,12 +28,12 @@ Private cBannerNavy As Long, cBannerSoftNavy As Long
 Private cSidebarBg As Long, cBtnNavy As Long
 
 Private Sub InitPalette()
-    cNavy = RGB(17, 25, 54)              ' #111936 Original Deep Pitch Navy
-    cSoftNavy = RGB(24, 32, 63)          ' #18203F Original Soft Navy
-    cSidebarBg = cNavy                   ' #111936 Deep Navy for Sidebar Card
-    cBtnNavy = cSoftNavy                 ' #18203F Soft Navy for Buttons
+    cNavy = RGB(24, 36, 62)              ' #18243E Rich Slate Navy (sidebar background from image)
+    cSoftNavy = RGB(34, 52, 86)          ' #223456 Button & Badge Navy
+    cSidebarBg = cNavy                   ' #18243E Full-Height Sidebar Background
+    cBtnNavy = cSoftNavy                 ' #223456 Elevated Button Tone
 
-    cBannerNavy = RGB(28, 48, 86)        ' #1C3056 Rich Executive Slate Navy (lighter & softer for headers)
+    cBannerNavy = RGB(28, 48, 86)        ' #1C3056 Rich Executive Slate Navy (headers)
     cBannerSoftNavy = RGB(42, 68, 115)   ' #2A4473 Soft Cobalt-Slate gradient highlight
     cPearl = RGB(243, 241, 236)          ' #F3F1EC Pearl Base Canvas
     cWarmWhite = RGB(255, 253, 248)      ' #FFFDF8 Warm White
@@ -69,9 +73,9 @@ Sub ApplyNavyGold()
     On Error GoTo 0
 
     RemoveAdded ws                                             ' clear existing decorators
-    ApplyCells ws                                              ' pearl canvas on entire sheet
-    AddSidebarCard ws                                          ' floating rounded navbar card (A2:E28)
-    AddPanelCards ws                                           ' upper & lower rounded gold boxes around button groups!
+    ApplyCells ws                                              ' pearl canvas + full-height slate navy sidebar
+    AddPanelCards ws                                           ' upper & lower rounded gold boxes around buttons
+    AddContentFrames ws                                        ' rounded gold outline around content area
     StyleShapes ws
     RepositionBeta ws
     RemoveStraySidebarIcons ws                                 ' permanently delete stray icons in sidebar
@@ -136,7 +140,7 @@ Sub ClearAllSheetBackgrounds()
     MsgBox "Removed leftover background pictures from all sheets.", vbInformation, "Backgrounds cleared"
 End Sub
 
-'---- CELLS: uniform pearl canvas (cols A-AC) + data rows -----------
+'---- CELLS: pearl base canvas + full-height sidebar + data rows ----
 Private Sub ApplyCells(ByVal ws As Worksheet)
     Dim bak As Worksheet: Set bak = GetBak(True)
     If Len(CStr(bak.Cells(1, 1).Value)) = 0 Then
@@ -151,12 +155,15 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End If
     bak.Visible = xlSheetVeryHidden
 
-    ' 1. Paint entire canvas in Pearl base (no dark cells in A-E -> enables floating rounded card)
+    ' 1. Paint entire canvas in Pearl base
     ws.Range(CANVAS).Interior.Color = cPearl
     ws.Range(CANVAS).Borders(xlEdgeBottom).LineStyle = xlNone
     ws.Range(CANVAS).Borders(xlInsideHorizontal).LineStyle = xlNone
 
-    ' 2. Paint data rows ONLY for genuine section rows:
+    ' 2. Full-height sidebar strip (cols A-E, Rows 1 to 29) - aligns flush with Country Risk
+    ws.Range("A1:E29").Interior.Color = cSidebarBg
+
+    ' 3. Paint data rows ONLY for genuine section rows:
     Dim dataRowRanges As Variant, rngAddr As Variant
     dataRowRanges = Array("G5:T10", "G13:T14", "G17:T23", "G26:T27")
 
@@ -204,38 +211,6 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- FLOATING ROUNDED SIDEBAR CARD (A2:E28 - FLUSH WITH COUNTRY RISK)
-Private Sub AddSidebarCard(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim rTop As Range, rBot As Range, rRight As Range
-    Set rTop = ws.Range("A2")
-    Set rBot = ws.Range("A28")               ' extends down to row 28 flush with Country Risk Rating
-    Set rRight = ws.Range("E2")
-
-    Dim x As Single, y As Single, w As Single, h As Single
-    x = rTop.Left + 6
-    y = rTop.Top + 2
-    w = (rRight.Left + rRight.Width) - x - 6
-    h = (rBot.Top + rBot.Height) - y + 4
-
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, y, w, h)
-    shp.Name = ADD_PFX & "SIDEBAR_CARD"
-    shp.Adjustments(1) = 0.04                   ' smooth 4-corner rounded curve
-    With shp.Fill
-        .Visible = msoTrue
-        .Solid
-        .ForeColor.RGB = cNavy                  ' #111936 Original Deep Navy
-    End With
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cGold                  ' #D9A441 Champagne Gold border
-        .Weight = 1.25
-    End With
-    shp.ZOrder msoSendToBack                    ' behind buttons and labels
-    On Error GoTo 0
-End Sub
-
 '---- PANEL CARDS: rounded gold boxes enclosing Action & Utility groups
 Private Sub AddPanelCards(ByVal ws As Worksheet)
     On Error Resume Next
@@ -272,6 +247,29 @@ Private Sub AddPanelCards(ByVal ws As Worksheet)
         .Weight = 1.25                          ' 1.25pt clean border
     End With
     c2.ZOrder msoSendToBack
+    On Error GoTo 0
+End Sub
+
+'---- CONTENT FRAMES: rounded gold outline around the content area --
+Private Sub AddContentFrames(ByVal ws As Worksheet)
+    AddFrame2 ws, "F3:T28"
+End Sub
+
+Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
+    On Error Resume Next
+    Static c As Long: c = c + 1
+    Dim r As Range: Set r = ws.Range(addr)
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 2, r.Top - 2, r.Width + 4, r.Height + 4)
+    shp.Name = ADD_PFX & "CFRAME_" & c
+    shp.Fill.Visible = msoFalse                 ' transparent interior -> click-through to cells
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cGold                  ' Champagne Gold border
+        .Weight = 1.25                          ' 1.25pt clean border
+    End With
+    shp.Adjustments(1) = 0.05                   ' smooth rounded corners
+    shp.ZOrder msoSendToBack                    ' behind banners
     On Error GoTo 0
 End Sub
 
@@ -326,7 +324,7 @@ End Function
 Private Sub StyleButton(ByVal shp As Shape)
     On Error Resume Next
     shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = 0.22                   ' soft pill-shaped modern rounded rectangle
+    shp.Adjustments(1) = 0.28                   ' soft pill-shaped modern rounded rectangle
     Dim txt As String: txt = ""
     If shp.TextFrame.HasText Then txt = shp.TextFrame.Characters.Text
     With shp.Fill: .Visible = msoTrue: .Solid: End With
@@ -343,7 +341,7 @@ Private Sub StyleButton(ByVal shp As Shape)
         shp.Line.Transparency = 0.2
         SetText shp, cCream, True
     Else
-        shp.Fill.ForeColor.RGB = cBtnNavy       ' #18203F Soft Navy
+        shp.Fill.ForeColor.RGB = cBtnNavy       ' #223456 Button Navy
         shp.Line.ForeColor.RGB = cGold
         shp.Line.Weight = 1
         shp.Line.Transparency = 0.3
@@ -367,7 +365,7 @@ End Sub
 
 Private Sub StylePanelCard(ByVal shp As Shape)
     On Error Resume Next
-    shp.Visible = msoFalse                      ' hide redundant inner freeform shapes
+    shp.Visible = msoFalse                      ' superseded by AddPanelCards
     On Error GoTo 0
 End Sub
 
@@ -379,7 +377,7 @@ Private Sub StylePanelLabel(ByVal shp As Shape)
     With shp.Fill
         .Visible = msoTrue
         .Solid
-        .ForeColor.RGB = cBtnNavy               ' #18203F Soft Navy fill
+        .ForeColor.RGB = cBtnNavy               ' #223456 Button Navy fill
     End With
     With shp.Line
         .Visible = msoTrue
@@ -521,7 +519,7 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Align Header & Buttons inside Floating Navbar -----
+'---- REPOSITION: Align Header & Buttons inside Sidebar -------------
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(False)
@@ -546,7 +544,7 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
 
-    ' 1. ACTION PANEL badge at Row 3 (top of the rounded card)
+    ' 1. ACTION PANEL badge at Row 3 (top of the upper box)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
         actLbl.Visible = msoTrue
@@ -572,7 +570,7 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
         rBtn = rBtn + 2
     Next nm
 
-    ' 3. UTILITY PANEL badge at Row 14
+    ' 3. UTILITY PANEL badge at Row 14 (top of the lower box)
     If Not utlLbl Is Nothing Then
         PosBackup ws, utlLbl
         utlLbl.Visible = msoTrue
