@@ -4,7 +4,8 @@ Option Explicit
 ' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
 '
 '   ApplyNavyGold   - pearl canvas, full-height slate navy sidebar (#18243E),
-'                     dual rounded gold-bordered panel cards, gold-bordered
+'                     separate ACTION/UTILITY pill badges, separate rounded
+'                     gold-bordered button container boxes, gold-bordered
 '                     buttons (Start = gold, Reset = crimson), navy+gold
 '                     banners with gold corner folds, solid white data cards
 '   RemoveNavyGold  - restores everything (shapes, cells, removes folds/frames)
@@ -24,7 +25,7 @@ Private cBannerNavy As Long, cBannerSoftNavy As Long
 Private cSidebarBg As Long, cBtnNavy As Long
 
 Private Sub InitPalette()
-    cNavy = RGB(24, 36, 62)              ' #18243E Rich Slate Navy (sidebar background)
+    cNavy = RGB(24, 36, 62)              ' #18243E Rich Slate Navy (sidebar background from image)
     cSoftNavy = RGB(34, 52, 86)          ' #223456 Button & Badge Navy
     cSidebarBg = cNavy                   ' #18243E Full-Height Sidebar Background
     cBtnNavy = cSoftNavy                 ' #223456 Elevated Button Tone
@@ -71,8 +72,8 @@ Sub ApplyNavyGold()
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws                                              ' solid white cards + full-height slate sidebar
     StyleShapes ws
-    RepositionBeta ws                                          ' position buttons and badges with precision
-    AddPanelCards ws                                           ' perfectly fitted upper & lower rounded gold boxes
+    RepositionBeta ws                                          ' position buttons and badges matching Image 1
+    AddPanelCards ws                                           ' separate gold boxes for Action (Rows 5-14) and Utility (Rows 18-27)
     RemoveStraySidebarIcons ws                                 ' permanently delete stray icons in sidebar
     AddFolds ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
@@ -206,17 +207,17 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- PANEL CARDS: perfectly fitted rounded gold boxes enclosing button groups
+'---- PANEL CARDS: rounded gold boxes enclosing button groups (Matching Image 1)
 Private Sub AddPanelCards(ByVal ws As Worksheet)
     On Error Resume Next
     Dim sbLeft As Single, sbWidth As Single
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
 
-    ' 1. Upper Rounded Box enclosing Action Group (Rows 3 to 11)
+    ' 1. Upper Rounded Box enclosing Action Buttons (Rows 5 to 14)
     Dim y1 As Single, h1 As Single, c1 As Shape
-    y1 = ws.Range("A3").Top
-    h1 = (ws.Range("A11").Top + ws.Range("A11").Height) - y1 + 6
+    y1 = ws.Range("A5").Top - 1
+    h1 = (ws.Range("A14").Top + ws.Range("A14").Height) - y1 + 1
     Set c1 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y1, sbWidth + 8, h1)
     c1.Name = ADD_PFX & "PANELCARD_ACT"
     c1.Adjustments(1) = 0.08
@@ -228,10 +229,10 @@ Private Sub AddPanelCards(ByVal ws As Worksheet)
     End With
     c1.ZOrder msoSendToBack
 
-    ' 2. Lower Rounded Box enclosing Utility Group (Rows 14 to 22)
+    ' 2. Lower Rounded Box enclosing Utility Buttons (Rows 18 to 27)
     Dim y2 As Single, h2 As Single, c2 As Shape
-    y2 = ws.Range("A14").Top
-    h2 = (ws.Range("A22").Top + ws.Range("A22").Height) - y2 + 6
+    y2 = ws.Range("A18").Top - 1
+    h2 = (ws.Range("A27").Top + ws.Range("A27").Height) - y2 + 1
     Set c2 = ws.Shapes.AddShape(msoShapeRoundedRectangle, sbLeft - 4, y2, sbWidth + 8, h2)
     c2.Name = ADD_PFX & "PANELCARD_UTL"
     c2.Adjustments(1) = 0.08
@@ -243,11 +244,6 @@ Private Sub AddPanelCards(ByVal ws As Worksheet)
     End With
     c2.ZOrder msoSendToBack
     On Error GoTo 0
-End Sub
-
-'---- CONTENT FRAMES: removed (no golden outer wireframe) -----------
-Private Sub AddContentFrames(ByVal ws As Worksheet)
-    ' Intentionally empty: removed outer golden ring
 End Sub
 
 '---- SHAPES: restyle existing --------------------------------------
@@ -504,7 +500,7 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Align Header & Buttons inside Sidebar -------------
+'---- REPOSITION: Align Header & Buttons matching Image 1 -----------
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
     Dim beta As Shape, actLbl As Shape, utlLbl As Shape
@@ -524,49 +520,49 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
 
-    ' 1. ACTION PANEL badge at Row 3 (inside the upper box)
+    ' 1. ACTION PANEL badge at Row 3 (Pill badge above the Action button box)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
         actLbl.Visible = msoTrue
-        actLbl.Left = sbLeft + 8
-        actLbl.Top = ws.Range("A3").Top + 2
-        actLbl.Width = sbWidth - 16
+        actLbl.Left = sbLeft + 4
+        actLbl.Top = ws.Range("A3").Top + 4
+        actLbl.Width = sbWidth - 8
         actLbl.Height = 22
     End If
 
-    ' 2. Action Buttons (Rows 5, 7, 9, 11)
+    ' 2. Action Buttons inside the Upper Box (Rows 6, 8, 11, 13)
     Dim btnStart As Shape, btnExp As Shape, btnOsdd As Shape, btnNarr As Shape
     Set btnStart = FindButton(ws, "Start")
     Set btnExp = FindButton(ws, "Export")
     Set btnOsdd = FindButton(ws, "OSDD")
     Set btnNarr = FindButton(ws, "Narrat")
 
-    If Not btnStart Is Nothing Then PosBackup ws, btnStart: btnStart.Left = sbLeft: btnStart.Top = ws.Range("A5").Top + 2: btnStart.Width = sbWidth: btnStart.Height = 24
-    If Not btnExp Is Nothing Then PosBackup ws, btnExp: btnExp.Left = sbLeft: btnExp.Top = ws.Range("A7").Top + 2: btnExp.Width = sbWidth: btnExp.Height = 24
-    If Not btnOsdd Is Nothing Then PosBackup ws, btnOsdd: btnOsdd.Left = sbLeft: btnOsdd.Top = ws.Range("A9").Top + 2: btnOsdd.Width = sbWidth: btnOsdd.Height = 24
-    If Not btnNarr Is Nothing Then PosBackup ws, btnNarr: btnNarr.Left = sbLeft: btnNarr.Top = ws.Range("A11").Top + 2: btnNarr.Width = sbWidth: btnNarr.Height = 24
+    If Not btnStart Is Nothing Then PosBackup ws, btnStart: btnStart.Left = sbLeft: btnStart.Top = ws.Range("A6").Top + 2: btnStart.Width = sbWidth: btnStart.Height = 24
+    If Not btnExp Is Nothing Then PosBackup ws, btnExp: btnExp.Left = sbLeft: btnExp.Top = ws.Range("A8").Top + 2: btnExp.Width = sbWidth: btnExp.Height = 24
+    If Not btnOsdd Is Nothing Then PosBackup ws, btnOsdd: btnOsdd.Left = sbLeft: btnOsdd.Top = ws.Range("A11").Top + 2: btnOsdd.Width = sbWidth: btnOsdd.Height = 24
+    If Not btnNarr Is Nothing Then PosBackup ws, btnNarr: btnNarr.Left = sbLeft: btnNarr.Top = ws.Range("A13").Top + 2: btnNarr.Width = sbWidth: btnNarr.Height = 24
 
-    ' 3. UTILITY PANEL badge at Row 14 (inside the lower box)
+    ' 3. UTILITY PANEL badge at Row 16 (Pill badge above the Utility button box)
     If Not utlLbl Is Nothing Then
         PosBackup ws, utlLbl
         utlLbl.Visible = msoTrue
-        utlLbl.Left = sbLeft + 8
-        utlLbl.Top = ws.Range("A14").Top + 2
-        utlLbl.Width = sbWidth - 16
+        utlLbl.Left = sbLeft + 4
+        utlLbl.Top = ws.Range("A16").Top + 4
+        utlLbl.Width = sbWidth - 8
         utlLbl.Height = 22
     End If
 
-    ' 4. Utility Buttons (Rows 16, 18, 20, 22)
+    ' 4. Utility Buttons inside the Lower Box (Rows 19, 22, 24, 26)
     Dim btnRen As Shape, btnPdf As Shape, btnWarm As Shape, btnRst As Shape
     Set btnRen = FindButton(ws, "Rename")
     Set btnPdf = FindButton(ws, "PDF")
     Set btnWarm = FindButton(ws, "Warm")
     Set btnRst = FindButton(ws, "Reset")
 
-    If Not btnRen Is Nothing Then PosBackup ws, btnRen: btnRen.Left = sbLeft: btnRen.Top = ws.Range("A16").Top + 2: btnRen.Width = sbWidth: btnRen.Height = 24
-    If Not btnPdf Is Nothing Then PosBackup ws, btnPdf: btnPdf.Left = sbLeft: btnPdf.Top = ws.Range("A18").Top + 2: btnPdf.Width = sbWidth: btnPdf.Height = 24
-    If Not btnWarm Is Nothing Then PosBackup ws, btnWarm: btnWarm.Left = sbLeft: btnWarm.Top = ws.Range("A20").Top + 2: btnWarm.Width = sbWidth: btnWarm.Height = 24
-    If Not btnRst Is Nothing Then PosBackup ws, btnRst: btnRst.Left = sbLeft: btnRst.Top = ws.Range("A22").Top + 2: btnRst.Width = sbWidth: btnRst.Height = 24
+    If Not btnRen Is Nothing Then PosBackup ws, btnRen: btnRen.Left = sbLeft: btnRen.Top = ws.Range("A19").Top + 2: btnRen.Width = sbWidth: btnRen.Height = 24
+    If Not btnPdf Is Nothing Then PosBackup ws, btnPdf: btnPdf.Left = sbLeft: btnPdf.Top = ws.Range("A22").Top + 2: btnPdf.Width = sbWidth: btnPdf.Height = 24
+    If Not btnWarm Is Nothing Then PosBackup ws, btnWarm: btnWarm.Left = sbLeft: btnWarm.Top = ws.Range("A24").Top + 2: btnWarm.Width = sbWidth: btnWarm.Height = 24
+    If Not btnRst Is Nothing Then PosBackup ws, btnRst: btnRst.Left = sbLeft: btnRst.Top = ws.Range("A26").Top + 2: btnRst.Width = sbWidth: btnRst.Height = 24
     On Error GoTo 0
 End Sub
 
