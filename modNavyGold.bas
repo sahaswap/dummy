@@ -88,8 +88,6 @@ Sub ApplyNavyGold()
     StyleShapes ws
     RepositionBeta ws
     AddFolds ws
-    AddContentFrames ws                                        ' individual click-through section cards with gold borders
-    AddPanelDecor ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
 
     On Error Resume Next
@@ -192,6 +190,10 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             rr.Font.Name = "Segoe UI"
             rr.Borders(xlEdgeBottom).Color = cWarmBorder
             rr.Borders(xlEdgeBottom).Weight = xlThin
+            rr.Borders(xlEdgeLeft).Color = cWarmBorder
+            rr.Borders(xlEdgeLeft).Weight = xlThin
+            rr.Borders(xlEdgeRight).Color = cWarmBorder
+            rr.Borders(xlEdgeRight).Weight = xlThin
         Next r
     Next rngAddr
 End Sub
@@ -452,33 +454,9 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: rounded card containers around each individual section
-' Boundary: 85-100% opaque gold line (Weight = 1.25pt)
-' Fill: No fill (msoFalse) -> 100% click-through so underlying cells are fully accessible!
+'---- CONTENT FRAMES: removed (avoids floating shape misalignments) -
 Private Sub AddContentFrames(ByVal ws As Worksheet)
-    AddSectionCard ws, "G3:T10"    ' Alert Information Card
-    AddSectionCard ws, "G12:T14"   ' Customer Information Card
-    AddSectionCard ws, "G16:T23"   ' Counterparty Information Card
-    AddSectionCard ws, "G25:T27"   ' Country Risk Rating Card
-End Sub
-
-Private Sub AddSectionCard(ByVal ws As Worksheet, ByVal addr As String)
-    On Error Resume Next
-    Static c As Long: c = c + 1
-    Dim r As Range: Set r = ws.Range(addr)
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 1, r.Top - 1, r.Width + 2, r.Height + 2)
-    shp.Name = ADD_PFX & "SECCARD_" & c
-    shp.Fill.Visible = msoFalse                 ' NO FILL -> 100% click-through, cells beneath are directly editable!
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cGold                  ' Champagne Gold border
-        .Weight = 1.25                          ' 1.25pt clean border
-        .Transparency = 0.15                    ' 85% opaque gold line
-    End With
-    shp.Adjustments(1) = 0.03                    ' soft rounded corner radius
-    shp.ZOrder msoSendToBack                     ' behind banners, wraps the section
-    On Error GoTo 0
+    ' Intentionally empty: section banners have integrated gold borders, cells have aligned borders
 End Sub
 
 '---- PANEL DECOR: disabled to prevent stray lines across badges ---
