@@ -4,7 +4,7 @@ Option Explicit
 ' modNavyGold - premium NAVY & GOLD theme for the Sheet1 dashboard.
 '
 '   ApplyNavyGold   - pearl canvas, full-height slate navy sidebar (#18243E),
-'                     prominent Beta 3.5 with Protect Shield icon (SVG/MDL2),
+'                     prominent Beta 3.5 with Protect Shield icon (100% VBA generated),
 '                     ACTION/UTILITY pill badges in exact parallel symmetry
 '                     with section banners, rounded gold-bordered button boxes,
 '                     gold-bordered buttons (Start = gold, Reset = crimson),
@@ -73,9 +73,9 @@ Sub ApplyNavyGold()
     RemoveAdded ws                                             ' clear existing decorators
     ApplyCells ws                                              ' solid white cards + full-height slate sidebar
     StyleShapes ws
-    RepositionBeta ws                                          ' position buttons and badges with banner alignment
+    RepositionBeta ws                                          ' position buttons, banners, and generate Beta 3.5
     AddPanelCards ws                                           ' dynamic gold boxes fitting below badges
-    RemoveStraySidebarIcons ws                                 ' permanently delete stray icons (preserving shield)
+    RemoveStraySidebarIcons ws                                 ' permanently delete stray icons in sidebar
     AddFolds ws
     AddIconsInline ws                                          ' glyphs prepended into shape text
 
@@ -355,25 +355,7 @@ End Sub
 
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
-    shp.Visible = msoTrue
-    shp.Fill.Visible = msoFalse                 ' transparent background
-    shp.Line.Visible = msoFalse                 ' clean borderless title
-    shp.TextFrame.Characters.Text = ChrW(&HE8D7&) & "  Beta 3.5"   ' Official Protect Shield icon
-    With shp.TextFrame.Characters(1, 1).Font
-        .Name = "Segoe MDL2 Assets"
-        .Color = cGold
-        .Size = 18                              ' large, prominent Protect Shield icon
-    End With
-    If Len(shp.TextFrame.Characters.Text) > 1 Then
-        With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
-            .Name = "Segoe UI"
-            .Color = cGold
-            .Bold = True
-            .Size = 14                          ' prominent Beta 3.5 title
-        End With
-    End If
-    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
-    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    shp.Visible = msoFalse                      ' superseded by AddTitleBeta
     On Error GoTo 0
 End Sub
 
@@ -537,9 +519,13 @@ End Sub
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
     Dim beta As Shape, actLbl As Shape, utlLbl As Shape
-    Dim alertBanner As Shape, cpBanner As Shape, shldIcon As Shape
+    Dim alertBanner As Shape, cpBanner As Shape
 
     Set beta = FindByText(ws, "Beta")
+    If Not beta Is Nothing Then
+        If Left$(beta.Name, Len(ADD_PFX)) <> ADD_PFX Then beta.Visible = msoFalse
+    End If
+
     Set actLbl = FindByText(ws, "Action Panel")
     If actLbl Is Nothing Then Set actLbl = FindByText(ws, "ACTION")
     Set utlLbl = FindByText(ws, "Utility Panel")
@@ -547,7 +533,6 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
 
     Set alertBanner = FindByText(ws, "Alert Related")
     Set cpBanner = FindByText(ws, "Counterparty Inf")
-    Set shldIcon = FindShieldGraphic(ws)
 
     Dim sbLeft As Single, sbWidth As Single, btnW As Single, btnH As Single
     sbLeft = ws.Range("A1").Left + 14
@@ -573,67 +558,17 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
         End If
     End If
 
-    ' 2. BETA 3.5 Title + Shield Icon
-    If Not shldIcon Is Nothing Then
-        ' User inserted the SVG Protect Shield icon -> Position and style in Champagne Gold
-        PosBackup ws, shldIcon
-        shldIcon.Visible = msoTrue
-        Dim iconSz As Single: iconSz = 22
-        shldIcon.Left = btnX + 8
-        shldIcon.Top = ws.Range("A2").Top - 4
-        shldIcon.Width = iconSz
-        shldIcon.Height = iconSz
-        With shldIcon.Fill
-            .Visible = msoTrue
-            .Solid
-            .ForeColor.RGB = cGold
-        End With
-        shldIcon.Line.Visible = msoFalse
-        shldIcon.ZOrder msoBringToFront
-
-        ' Position Beta 3.5 text right beside the shield icon
-        If beta Is Nothing Then
-            Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX + iconSz + 12, shldIcon.Top - 2, btnW - iconSz - 14, iconSz + 4)
-            beta.Name = ADD_PFX & "TITLE_BETA"
-        Else
-            PosBackup ws, beta
-            beta.Visible = msoTrue
-            beta.Left = btnX + iconSz + 12
-            beta.Top = shldIcon.Top - 2
-            beta.Width = btnW - iconSz - 14
-            beta.Height = iconSz + 4
-        End If
-        beta.Fill.Visible = msoFalse
-        beta.Line.Visible = msoFalse
-        beta.TextFrame.Characters.Text = "Beta 3.5"
-        With beta.TextFrame.Characters.Font
-            .Name = "Segoe UI"
-            .Color = cGold
-            .Bold = True
-            .Size = 13
-        End With
-        beta.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignLeft
-        beta.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    ' 2. BETA 3.5 Title with Protect Shield Icon (Sleek borderless brand header in Rows 1-2)
+    Dim bTop As Single, bH As Single
+    bTop = ws.Range("A1").Top + 4
+    If Not actLbl Is Nothing Then
+        bH = (actLbl.Top - bTop) - 8            ' 8pt clear air gap above Action Panel
+        If bH > 22 Then bH = 22
     Else
-        ' Fallback: Prominent MDL2 Protect Shield glyph + Beta 3.5
-        If beta Is Nothing Then
-            Dim bH As Single, bTop As Single
-            bTop = ws.Range("A1").Top + 4
-            If Not actLbl Is Nothing Then bH = (actLbl.Top - bTop) - 6 Else bH = 34
-            If bH < 26 Then bH = 26
-            Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, bTop, btnW, bH)
-            beta.Name = ADD_PFX & "TITLE_BETA"
-        Else
-            PosBackup ws, beta
-            beta.Visible = msoTrue
-            beta.Left = btnX
-            beta.Top = ws.Range("A1").Top + 4
-            If Not actLbl Is Nothing Then beta.Height = (actLbl.Top - beta.Top) - 6 Else beta.Height = 34
-            If beta.Height < 26 Then beta.Height = 26
-            beta.Width = btnW
-        End If
-        StyleTitle beta
+        bH = 22
     End If
+    If bH < 18 Then bH = 18
+    AddTitleBeta ws, btnX, bTop, btnW, bH
 
     ' 3. Action Buttons inside the Upper Box (below actLbl to bottom of Row 14)
     Dim box1Top As Single, box1Bot As Single, box1H As Single, gap1 As Single
@@ -750,21 +685,47 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
+'---- TITLE: Beta 3.5 with Protect Shield icon (Sleek Borderless Header) -
+Private Sub AddTitleBeta(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single)
+    On Error Resume Next
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, x, y, w, h)
+    shp.Name = ADD_PFX & "TITLE_BETA"
+    
+    ' Transparent & borderless so it sits cleanly with zero visual clutter/overflow
+    shp.Fill.Visible = msoFalse
+    shp.Line.Visible = msoFalse
+
+    ' Set text with Protect Shield glyph + Beta 3.5
+    shp.TextFrame.Characters.Text = ChrW(&HE8D7&) & "  Beta 3.5"
+    With shp.TextFrame.Characters(1, 1).Font
+        .Name = "Segoe MDL2 Assets"
+        .Color = cGold
+        .Size = 14                              ' crisp 14pt shield icon
+    End With
+    If Len(shp.TextFrame.Characters.Text) > 1 Then
+        With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
+            .Name = "Segoe UI"
+            .Color = cGold
+            .Bold = True
+            .Size = 12                          ' clean 12pt bold title
+        End With
+    End If
+    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    shp.ZOrder msoBringToFront
+    On Error GoTo 0
+End Sub
+
 '---- REMOVE STRAY ICONS / PICTURES IN SIDEBAR ---------------------
 Private Sub RemoveStraySidebarIcons(ByVal ws As Worksheet)
     On Error Resume Next
     Dim i As Long, shp As Shape, sbRight As Single
-    Dim shldIcon As Shape: Set shldIcon = FindShieldGraphic(ws)
     sbRight = ws.Range("F1").Left
     For i = ws.Shapes.count To 1 Step -1
         Set shp = ws.Shapes(i)
         ' Check if shape is inside the sidebar area (Cols A-E) and not dynamically generated
         If shp.Left < sbRight And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-            ' Preserve the shield icon if present!
-            If Not shldIcon Is Nothing Then
-                If shp.Name = shldIcon.Name Then GoTo NextShape
-            End If
-
             ' Delete pictures, vector graphics (msoGraphic), OLE objects, or orphan shapes without macros
             If shp.Type = msoPicture Or shp.Type = 28 Or shp.Type = msoLinkedPicture _
                Or shp.Type = msoOLEControlObject Then
@@ -781,7 +742,6 @@ Private Sub RemoveStraySidebarIcons(ByVal ws As Worksheet)
                 End If
             End If
         End If
-NextShape:
     Next i
     On Error GoTo 0
 End Sub
@@ -928,23 +888,5 @@ Private Function FindPicture(ByVal ws As Worksheet) As Shape
     Dim shp As Shape
     For Each shp In ws.Shapes
         If shp.Type = msoPicture Then Set FindPicture = shp: Exit Function
-    Next shp
-End Function
-
-Private Function FindShieldGraphic(ByVal ws As Worksheet) As Shape
-    Dim shp As Shape
-    For Each shp In ws.Shapes
-        On Error Resume Next
-        If shp.Type = 28 Or shp.Type = msoPicture Then
-            If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-                Set FindShieldGraphic = shp
-                Exit Function
-            End If
-        ElseIf InStr(1, shp.Name, "Graphic", vbTextCompare) > 0 Or _
-               InStr(1, shp.Name, "Icon", vbTextCompare) > 0 Then
-            Set FindShieldGraphic = shp
-            Exit Function
-        End If
-        On Error GoTo 0
     Next shp
 End Function
