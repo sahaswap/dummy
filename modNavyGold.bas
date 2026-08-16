@@ -127,6 +127,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     bak.Visible = xlSheetVeryHidden
 
     ws.Range(CANVAS).Interior.Color = cPearl                 ' pearl base
+    ws.Range("A1:E29").Interior.Color = cNavy                ' navy sidebar strip (cols A-E)
 
     Dim r As Long
     For r = CONTENT_FIRST To CONTENT_LAST
@@ -246,7 +247,9 @@ End Sub
 
 Private Sub StylePanelCard(ByVal shp As Shape)
     On Error Resume Next
-    With shp.Fill: .Visible = msoTrue: .Solid: .ForeColor.RGB = cNavy: End With
+    ' transparent so the navy sidebar CELLS show through; just a gold outline
+    ' (filling a custom-geometry freeform directly is unreliable)
+    shp.Fill.Visible = msoFalse
     With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
     On Error GoTo 0
 End Sub
