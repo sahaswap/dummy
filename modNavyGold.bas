@@ -69,6 +69,7 @@ Sub ApplyNavyGold()
     On Error GoTo 0
     ApplyCells ws
     StyleShapes ws
+    RepositionBeta ws
     AddFolds ws
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
@@ -98,6 +99,7 @@ Sub RemoveNavyGold()
 
     Application.ScreenUpdating = False
     RemoveAdded ws
+    RestorePositions ws
     RestoreShapes ws
     RestoreCells ws
     On Error Resume Next
@@ -307,6 +309,153 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
         If Left$(ws.Shapes(i).Name, Len(ADD_PFX)) = ADD_PFX Then ws.Shapes(i).Delete
     Next i
 End Sub
+
+'---- REPOSITION: Beta 3.5 parallel with Alert ----------------------
+Private Sub RepositionBeta(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(False)
+    If Not bak Is Nothing Then
+        If Len(CStr(bak.Cells(1, "G").Value)) > 0 Then Exit Sub    ' already repositioned
+    End If
+
+    Dim beta As Shape, alertB As Shape, actLbl As Shape, shield As Shape, actCard As Shape
+    Set beta = FindByText(ws, "Beta")
+    Set alertB = FindByText(ws, "Alert")
+    Set actLbl = FindByText(ws, "Action Panel")
+    Set shield = FindPicture(ws)
+    Set actCard = FindUpperBlank(ws)
+    If beta Is Nothing Or alertB Is Nothing Or actLbl Is Nothing Then Exit Sub
+
+    Dim sbLeft As Single, sbWidth As Single, newTop As Single, newH As Single, shift As Single
+    sbLeft = ws.Range("A1").Left
+    sbWidth = ws.Range("A1:E1").Width
+    newTop = alertB.Top
+    newH = alertB.Height
+    shift = newH + 8
+
+    ' shift the Action group DOWN to make room for Beta on top
+    PosBackup ws, actLbl
+    actLbl.Top = actLbl.Top + shift
+
+    Dim nm As Variant, s As Shape
+    For Each nm In Array("Start", "Export Trx File", "OSDD Search", "Generate Narrative")
+        Set s = FindButton(ws, CStr(nm))
+        If Not s Is Nothing Then
+            PosBackup ws, s
+            s.Top = s.Top + shift
+        End If
+    Next nm
+
+    If Not actCard Is Nothing Then
+        PosBackup ws, actCard
+        actCard.Top = actCard.Top + shift
+    End If
+
+    ' move Beta into the sidebar top, level with the Alert banner
+    PosBackup ws, beta
+    beta.Left = sbLeft: beta.Top = newTop: beta.Width = sbWidth: beta.Height = newH
+
+    ' bring the shield with it
+    If Not shield Is Nothing Then
+        PosBackup ws, shield
+        shield.Top = newTop + (newH - shield.Height) / 2
+        shield.Left = sbLeft + 8
+    End If
+    On Error GoTo 0
+End Sub
+
+Private Sub PosBackup(ByVal ws As Worksheet, ByVal shp As Shape)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(True)
+    Dim r As Long
+    r = bak.Cells(bak.Rows.count, "G").End(xlUp).Row
+    If Len(CStr(bak.Cells(1, "G").Value)) = 0 Then r = 0
+    r = r + 1
+    bak.Cells(r, "G").Value = shp.Name
+    bak.Cells(r, "H").Value = shp.Left
+    bak.Cells(r, "I").Value = shp.Top
+    bak.Cells(r, "J").Value = shp.Width
+    bak.Cells(r, "K").Value = shp.Height
+    On Error GoTo 0
+End Sub
+
+Private Sub RestorePositions(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(False)
+    If bak Is Nothing Then Exit Sub
+    Dim r As Long, nm As String, shp As Shape
+    r = 0
+    Do
+        r = r + 1
+        nm = CStr(bak.Cells(r, "G").Value)
+        If Len(nm) = 0 Then Exit Do
+        Set shp = Nothing
+        Set shp = ws.Shapes(nm)
+        If Not shp Is Nothing Then
+            shp.Left = bak.Cells(r, "H").Value
+            shp.Top = bak.Cells(r, "I").Value
+            shp.Width = bak.Cells(r, "J").Value
+            shp.Height = bak.Cells(r, "K").Value
+        End If
+    Loop
+    bak.Range("G:K").Clear
+    On Error GoTo 0
+End Sub
+
+Private Function FindByText(ByVal ws As Worksheet, ByVal t As String) As Shape
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        On Error Resume Next
+        If shp.TextFrame.HasText Then
+            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
+                Set FindByText = shp: Exit Function
+            End If
+        End If
+        On Error GoTo 0
+    Next shp
+End Function
+
+Private Function FindButton(ByVal ws As Worksheet, ByVal t As String) As Shape
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        On Error Resume Next
+        If Len(shp.OnAction) > 0 And shp.TextFrame.HasText Then
+            If InStr(1, shp.TextFrame.Characters.Text, t, vbTextCompare) > 0 Then
+                Set FindButton = shp: Exit Function
+            End If
+        End If
+        On Error GoTo 0
+    Next shp
+End Function
+
+Private Function FindPicture(ByVal ws As Worksheet) As Shape
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        If shp.Type = msoPicture Then Set FindPicture = shp: Exit Function
+    Next shp
+End Function
+
+Private Function FindUpperBlank(ByVal ws As Worksheet) As Shape
+    Dim shp As Shape, best As Shape, blank As Boolean
+    For Each shp In ws.Shapes
+        On Error Resume Next
+        blank = True
+        If shp.TextFrame.HasText Then
+            If Len(Trim$(shp.TextFrame.Characters.Text)) > 0 Then blank = False
+        End If
+        If Len(shp.OnAction) > 0 Then blank = False
+        If (shp.Type = msoAutoShape Or shp.Type = msoFreeform) And blank _
+           And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            If best Is Nothing Then
+                Set best = shp
+            ElseIf shp.Top < best.Top Then
+                Set best = shp
+            End If
+        End If
+        On Error GoTo 0
+    Next shp
+    Set FindUpperBlank = best
+End Function
 
 '---- stash / restore (shape AltText) -------------------------------
 Private Sub StashOriginal(ByVal shp As Shape)
