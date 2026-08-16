@@ -73,7 +73,6 @@ Sub ApplyNavyGold()
     RepositionBeta ws
     AddFolds ws
     AddPanelDecor ws
-    AddContentFrames ws
     AddIconsInline ws   ' glyphs prepended into the shape text (confirmed codes)
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
@@ -213,6 +212,7 @@ End Sub
 Private Sub RestoreShapes(ByVal ws As Worksheet)
     Dim shp As Shape
     For Each shp In ws.Shapes
+        shp.Visible = msoTrue
         If Left$(GetAlt(shp), Len(TAG)) = TAG Then RestoreOriginal shp
     Next shp
 End Sub
@@ -447,39 +447,17 @@ Private Sub RestoreText(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
-'---- CONTENT FRAMES: rounded gold outline around each section ------
+'---- CONTENT FRAMES: removed for clean borderless card layout -----
 Private Sub AddContentFrames(ByVal ws As Worksheet)
-    ' ONE rounded gold outline around the whole content area (left edge at
-    ' column F) - no messy per-section internal lines.
-    AddFrame2 ws, "F3:T28"
+    ' Intentionally empty: outer wireframe removed
 End Sub
 
-Private Sub AddFrame2(ByVal ws As Worksheet, ByVal addr As String)
-    On Error Resume Next
-    Static c As Long: c = c + 1
-    Dim r As Range: Set r = ws.Range(addr)
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, r.Left - 2, r.Top - 2, r.Width + 4, r.Height + 4)
-    shp.Name = ADD_PFX & "CFRAME_" & c
-    shp.Fill.Visible = msoFalse                 ' no fill -> click-through, cells show
-    With shp.Line: .Visible = msoTrue: .ForeColor.RGB = cGold: .Weight = 1.25: End With
-    shp.Adjustments(1) = 0.05                    ' rounded corners
-    shp.ZOrder msoSendToBack                     ' behind banners; wraps the section
-    On Error GoTo 0
-End Sub
-
-'---- PANEL DECOR: gold underline + flanking lines (from the demo) ---
+'---- PANEL DECOR: flanking lines for Action & Utility badges ---
 Private Sub AddPanelDecor(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim beta As Shape, actLbl As Shape, utlLbl As Shape
-    Set beta = FindByText(ws, "Beta")
+    Dim actLbl As Shape, utlLbl As Shape
     Set actLbl = FindByText(ws, "Action Panel")
-    Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel"
-    ' gold underline just under Beta 3.5
-    If Not beta Is Nothing Then
-        Dim by As Single: by = beta.Top + beta.Height - 2
-        AddGoldLine ws, beta.Left + beta.Width * 0.2, by, beta.Left + beta.Width * 0.8, by, 1.25
-    End If
+    Set utlLbl = FindByText(ws, "Utl")           ' "Utlity Panel" / "Utility Panel"
     AddFlank ws, actLbl
     AddFlank ws, utlLbl
     On Error GoTo 0
@@ -516,55 +494,43 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
     Next i
 End Sub
 
-'---- REPOSITION: Beta 3.5 parallel with Alert ----------------------
+'---- REPOSITION: align Action Panel with Alert Banner & hide redundant Beta 3.5 box
 Private Sub RepositionBeta(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim bak As Worksheet: Set bak = GetBak(False)
-    If Not bak Is Nothing Then
-        If Len(CStr(bak.Cells(1, "G").Value)) > 0 Then Exit Sub    ' already repositioned
-    End If
-
-    Dim beta As Shape, actLbl As Shape, shield As Shape, actCard As Shape
+    Dim beta As Shape, actLbl As Shape, utlLbl As Shape, shield As Shape
     Set beta = FindByText(ws, "Beta")
     Set actLbl = FindByText(ws, "Action Panel")
+    Set utlLbl = FindByText(ws, "Utl")
     Set shield = FindPicture(ws)
-    Set actCard = FindUpperBlank(ws)
-    If beta Is Nothing Or actLbl Is Nothing Then Exit Sub
 
-    Dim sbLeft As Single, sbWidth As Single, newTop As Single, newH As Single, shift As Single
-    sbLeft = ws.Range("A1").Left
-    sbWidth = ws.Range("A1:E1").Width
-    newTop = ws.Range("A3").Top          ' deterministic: row 3 (level with the Alert banner)
-    newH = ws.Range("A3:A4").Height       ' ~2 rows tall
-    shift = newH + 16                     ' extra gap so Action Panel isn't cramped under Beta
-
-    ' shift the Action group DOWN to make room for Beta on top
-    PosBackup ws, actLbl
-    actLbl.Top = actLbl.Top + shift
-
-    Dim nm As Variant, s As Shape
-    For Each nm In Array("Start", "Export Trx File", "OSDD Search", "Generate Narrative")
-        Set s = FindButton(ws, CStr(nm))
-        If Not s Is Nothing Then
-            PosBackup ws, s
-            s.Top = s.Top + shift
-        End If
-    Next nm
-
-    If Not actCard Is Nothing Then
-        PosBackup ws, actCard
-        actCard.Top = actCard.Top + shift
+    ' Hide redundant Beta 3.5 shape to achieve clean, symmetrical headers
+    If Not beta Is Nothing Then
+        PosBackup ws, beta
+        beta.Visible = msoFalse
     End If
-
-    ' move Beta into the sidebar top, level with the Alert banner
-    PosBackup ws, beta
-    beta.Left = sbLeft: beta.Top = newTop: beta.Width = sbWidth: beta.Height = newH
-
-    ' bring the shield with it
     If Not shield Is Nothing Then
         PosBackup ws, shield
-        shield.Top = newTop + (newH - shield.Height) / 2
-        shield.Left = sbLeft + 8
+        shield.Visible = msoFalse
+    End If
+
+    ' Deterministically position Action Panel badge at row 3 (level with Alert banner)
+    If Not actLbl Is Nothing Then
+        PosBackup ws, actLbl
+        actLbl.Visible = msoTrue
+        actLbl.Left = ws.Range("A3").Left + 14
+        actLbl.Top = ws.Range("A3").Top + 2
+        actLbl.Width = ws.Range("A3:E3").Width - 28
+        actLbl.Height = 22
+    End If
+
+    ' Position Utility Panel badge cleanly at row 16
+    If Not utlLbl Is Nothing Then
+        PosBackup ws, utlLbl
+        utlLbl.Visible = msoTrue
+        utlLbl.Left = ws.Range("A16").Left + 14
+        utlLbl.Top = ws.Range("A16").Top + 2
+        utlLbl.Width = ws.Range("A16:E16").Width - 28
+        utlLbl.Height = 22
     End If
     On Error GoTo 0
 End Sub
@@ -573,6 +539,10 @@ Private Sub PosBackup(ByVal ws As Worksheet, ByVal shp As Shape)
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(True)
     Dim r As Long
+    ' Check if shape is already backed up
+    For r = 1 To bak.Cells(bak.Rows.count, "G").End(xlUp).Row
+        If CStr(bak.Cells(r, "G").Value) = shp.Name Then Exit Sub
+    Next r
     r = bak.Cells(bak.Rows.count, "G").End(xlUp).Row
     If Len(CStr(bak.Cells(1, "G").Value)) = 0 Then r = 0
     r = r + 1
