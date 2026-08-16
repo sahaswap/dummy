@@ -340,7 +340,25 @@ End Sub
 
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
-    shp.Visible = msoFalse                      ' completely hide Beta 3.5 shape
+    shp.Visible = msoTrue
+    shp.Fill.Visible = msoFalse                 ' transparent background
+    shp.Line.Visible = msoFalse                 ' clean borderless title
+    shp.TextFrame.Characters.Text = ChrW(&HEA18&) & "  Beta 3.5"
+    With shp.TextFrame.Characters(1, 1).Font
+        .Name = "Segoe MDL2 Assets"
+        .Color = cGold
+        .Size = 12
+    End With
+    If Len(shp.TextFrame.Characters.Text) > 1 Then
+        With shp.TextFrame.Characters(2, Len(shp.TextFrame.Characters.Text) - 1).Font
+            .Name = "Segoe UI"
+            .Color = cGold
+            .Bold = True
+            .Size = 11
+        End With
+    End If
+    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
     On Error GoTo 0
 End Sub
 
@@ -510,12 +528,6 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     Set utlLbl = FindByText(ws, "Utility Panel")
     If utlLbl Is Nothing Then Set utlLbl = FindByText(ws, "UTILITY")
 
-    ' Hide Beta 3.5 completely
-    If Not beta Is Nothing Then
-        PosBackup ws, beta
-        beta.Visible = msoFalse
-    End If
-
     Dim sbLeft As Single, sbWidth As Single, btnW As Single, btnH As Single
     sbLeft = ws.Range("A1").Left + 14
     sbWidth = ws.Range("A1:E1").Width - 28
@@ -525,7 +537,21 @@ Private Sub RepositionBeta(ByVal ws As Worksheet)
     Dim btnX As Single
     btnX = sbLeft + 4                           ' perfectly centered inside the card boxes
 
-    ' 1. ACTION PANEL badge at Row 3 (Pill badge above the Action button box)
+    ' 1. BETA 3.5 Header Title above Action Panel (Rows 1-2)
+    If beta Is Nothing Then
+        Set beta = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnX, ws.Range("A1").Top + 4, btnW, 24)
+        beta.Name = ADD_PFX & "TITLE_BETA"
+    Else
+        PosBackup ws, beta
+        beta.Visible = msoTrue
+        beta.Left = btnX
+        beta.Top = ws.Range("A1").Top + 4
+        beta.Width = btnW
+        beta.Height = 24
+    End If
+    StyleTitle beta
+
+    ' 2. ACTION PANEL badge at Row 3 (Pill badge above the Action button box)
     If Not actLbl Is Nothing Then
         PosBackup ws, actLbl
         actLbl.Visible = msoTrue
