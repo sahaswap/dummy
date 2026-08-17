@@ -57,44 +57,36 @@ Sub RefreshSearchMatrixHyperlinks()
     For r = 2 To lastRow
         rawURL = CStr(ws.Range("C" & r).Value)   ' Raw URL column - already plain text
 
-        ' ALWAYS re-sync this Open URL cell's band from column D first. The theme
-        ' colours D and neither this macro nor a Reset ever touches it, so this
-        ' keeps the navy/gold zebra band under the cell WHETHER OR NOT a link is
-        ' present. Without this, a Reset (which clears the link) left the cell
-        ' stuck on the old white "Hyperlink" style - the "losing thematics on
-        ' reset" bug. Also re-assert the body font so no stray style lingers.
-        With ws.Range("E" & r)
-            .Interior.Color = ws.Range("D" & r).Interior.Color
-            .Font.Name = "Segoe UI"
-            .Font.Size = 9
-        End With
-
+        ' 1) Manage the link + its font (underline/colour only).
         If Len(rawURL) > 0 Then
             ' Real Hyperlink object - no 255-char cap like HYPERLINK() has
             ws.Hyperlinks.Add Anchor:=ws.Range("E" & r), _
                                Address:=rawURL, _
                                TextToDisplay:="Link"
-
-            ' Hyperlinks.Add re-stamps the white "Hyperlink" cell style; undo it
-            ' by copying the band back and formatting the link font by hand so the
-            ' navy/gold band shows through the "Link" cell.
-            With ws.Range("E" & r)
-                .Interior.Color = ws.Range("D" & r).Interior.Color
-                With .Font
-                    .Name = "Segoe UI"
-                    .Size = 9
-                    .Underline = xlUnderlineStyleSingle
-                    .Color = RGB(34, 52, 86)   ' navy #223456, matches the theme
-                End With
-            End With
+            ws.Range("E" & r).Font.Underline = xlUnderlineStyleSingle
+            ws.Range("E" & r).Font.Color = RGB(34, 52, 86)   ' navy #223456
         Else
-            ' No link -> neutral themed text so a leftover "Link" style can't
-            ' keep the cell looking different after a reset.
-            With ws.Range("E" & r).Font
-                .Underline = xlUnderlineStyleNone
-                .Color = RGB(37, 37, 37)       ' #252525 body text
-            End With
+            ws.Range("E" & r).Font.Underline = xlUnderlineStyleNone
+            ws.Range("E" & r).Font.Color = RGB(37, 37, 37)    ' #252525 body text
         End If
+
+        ' 2) Mirror column D's FILL + BOTTOM BORDER onto E as the LAST step.
+        '    Excel's built-in "Hyperlink" style (auto-stamped by Hyperlinks.Add)
+        '    both whitens the fill AND strips the border - that's the "going
+        '    white + gridlines removing" bug. D is coloured by the theme and is
+        '    never touched here, so copying its band+border back guarantees E
+        '    keeps the navy/gold band whether a link is present or not (incl.
+        '    after a Reset). Done last so it always wins over the style.
+        ws.Range("E" & r).Interior.Color = ws.Range("D" & r).Interior.Color
+        ws.Range("E" & r).Font.Name = "Segoe UI"
+        ws.Range("E" & r).Font.Size = 9
+        With ws.Range("E" & r).Borders(xlEdgeBottom)
+            .LineStyle = ws.Range("D" & r).Borders(xlEdgeBottom).LineStyle
+            If ws.Range("D" & r).Borders(xlEdgeBottom).LineStyle <> xlNone Then
+                .Weight = ws.Range("D" & r).Borders(xlEdgeBottom).Weight
+                .Color = ws.Range("D" & r).Borders(xlEdgeBottom).Color
+            End If
+        End With
     Next r
 
     Application.EnableEvents = True
