@@ -57,17 +57,27 @@ Sub RefreshSearchMatrixHyperlinks()
     For r = 2 To lastRow
         rawURL = CStr(ws.Range("C" & r).Value)   ' Raw URL column - already plain text
 
+        ' ALWAYS re-sync this Open URL cell's band from column D first. The theme
+        ' colours D and neither this macro nor a Reset ever touches it, so this
+        ' keeps the navy/gold zebra band under the cell WHETHER OR NOT a link is
+        ' present. Without this, a Reset (which clears the link) left the cell
+        ' stuck on the old white "Hyperlink" style - the "losing thematics on
+        ' reset" bug. Also re-assert the body font so no stray style lingers.
+        With ws.Range("E" & r)
+            .Interior.Color = ws.Range("D" & r).Interior.Color
+            .Font.Name = "Segoe UI"
+            .Font.Size = 9
+        End With
+
         If Len(rawURL) > 0 Then
             ' Real Hyperlink object - no 255-char cap like HYPERLINK() has
             ws.Hyperlinks.Add Anchor:=ws.Range("E" & r), _
                                Address:=rawURL, _
                                TextToDisplay:="Link"
 
-            ' Hyperlinks.Add auto-stamps the built-in "Hyperlink" cell style,
-            ' which forces a WHITE fill and wipes the Search Matrix zebra band.
-            ' Instead of that style, format the link by hand and copy the row's
-            ' band back from column D (which the theme colours and this never
-            ' touches) so the navy/gold banding shows through the "Link" cell.
+            ' Hyperlinks.Add re-stamps the white "Hyperlink" cell style; undo it
+            ' by copying the band back and formatting the link font by hand so the
+            ' navy/gold band shows through the "Link" cell.
             With ws.Range("E" & r)
                 .Interior.Color = ws.Range("D" & r).Interior.Color
                 With .Font
@@ -76,6 +86,13 @@ Sub RefreshSearchMatrixHyperlinks()
                     .Underline = xlUnderlineStyleSingle
                     .Color = RGB(34, 52, 86)   ' navy #223456, matches the theme
                 End With
+            End With
+        Else
+            ' No link -> neutral themed text so a leftover "Link" style can't
+            ' keep the cell looking different after a reset.
+            With ws.Range("E" & r).Font
+                .Underline = xlUnderlineStyleNone
+                .Color = RGB(37, 37, 37)       ' #252525 body text
             End With
         End If
     Next r

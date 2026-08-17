@@ -85,51 +85,48 @@ Sub StyleSearchMatrix()
     End With
 
     ' ---- DATA ROWS ----
+    ' Fonts are set as WHOLE-COLUMN ops (not per row). Row-by-row Font writes
+    ' were not reliably overriding the naming-convention formula cells, which
+    ' clung to their old Arial. Whole-column writes flatten every cell at once.
     If lastRow >= 2 Then
+        ' base body font for the entire data block (guarantees D is Segoe UI 9)
+        With ws.Range("A2:E" & lastRow)
+            .Font.Name = "Segoe UI": .Font.Size = 9: .Font.Color = TEXTCLR
+            .Font.Bold = False: .Font.Italic = False
+            .Font.Underline = xlUnderlineStyleNone
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' A = entity name -> navy bold, the block title
+        With ws.Range("A2:A" & lastRow)
+            .Font.Bold = True: .Font.Color = NAVY_DEEP
+            .HorizontalAlignment = xlLeft: .IndentLevel = 1
+        End With
+        ' B = "Type of Search" -> italic secondary grey
+        With ws.Range("B2:B" & lastRow)
+            .Font.Italic = True: .Font.Color = TEXT2: .HorizontalAlignment = xlLeft
+        End With
+        ' C = Raw URL -> small, muted (long strings, keep them quiet)
+        With ws.Range("C2:C" & lastRow)
+            .Font.Size = 8: .Font.Color = TEXT2
+        End With
+        ' D = Naming Convention -> plain body text, left (force Segoe UI 9)
+        With ws.Range("D2:D" & lastRow)
+            .Font.Name = "Segoe UI": .Font.Size = 9: .Font.Color = TEXTCLR
+            .HorizontalAlignment = xlLeft
+        End With
+        ' E = Open URL ("Link") -> centered, navy underlined link
+        With ws.Range("E2:E" & lastRow)
+            .HorizontalAlignment = xlCenter
+            .Font.Underline = xlUnderlineStyleSingle: .Font.Color = NAVY
+        End With
+
+        ' zebra band by ENTITY BLOCK + row separators (per row)
         For r = 2 To lastRow
             blk = (r - 2) \ BLOCK                    ' 0 = Customer, 1 = CP1, ...
-            ' zebra by ENTITY BLOCK (warm white / pearl)
             ws.Range("A" & r & ":E" & r).Interior.Color = _
                 IIf(blk Mod 2 = 0, WARMWHITE, PEARL)
 
-            ' A = entity name -> navy, bold (the block title)
-            With ws.Range("A" & r).Font
-                .Bold = True: .Color = NAVY_DEEP
-            End With
-            ws.Range("A" & r).HorizontalAlignment = xlLeft
-            ws.Range("A" & r).IndentLevel = 1
-
-            ' B = "Type of Search" -> italic secondary grey
-            With ws.Range("B" & r).Font
-                .Italic = True: .Color = TEXT2
-            End With
-
-            ' C = Raw URL -> small, muted (long strings, keep them quiet)
-            With ws.Range("C" & r).Font
-                .Name = "Segoe UI": .Size = 8: .Color = TEXT2: .Bold = False: .Italic = False
-            End With
-
-            ' D = Naming Convention -> plain body text; force Segoe UI explicitly
-            ' (these formula cells kept an old typeface otherwise)
-            With ws.Range("D" & r)
-                .HorizontalAlignment = xlLeft
-                With .Font
-                    .Name = "Segoe UI": .Size = 9: .Color = TEXTCLR: .Bold = False: .Italic = False
-                End With
-            End With
-
-            ' E = Open URL ("Link") -> centered, band kept, navy underlined link.
-            ' Set the band LAST here so it wins over any leftover white "Hyperlink"
-            ' cell style that Hyperlinks.Add stamped on before.
-            With ws.Range("E" & r)
-                .HorizontalAlignment = xlCenter
-                .Interior.Color = IIf(blk Mod 2 = 0, WARMWHITE, PEARL)
-                With .Font
-                    .Name = "Segoe UI": .Size = 9: .Underline = xlUnderlineStyleSingle: .Color = NAVY: .Bold = False
-                End With
-            End With
-
-            ' thin warm separator under every row
             With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
                 .LineStyle = xlContinuous: .Weight = xlThin: .Color = WARMBORDER
             End With
