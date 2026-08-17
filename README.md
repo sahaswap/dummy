@@ -1,46 +1,40 @@
 CUSTOMER PROFILE (OSDD search results)
 
-An internet search for Railway Media Limited did not return a dedicated 
-corporate website or verifiable business profile beyond a business 
-registration record. Per open sources, Railway Media Limited is a private 
-limited company (BRN 72251150) established in Hong Kong on 11/09/2021, 
-registered at 9/F Amtel Building, 148 Des Voeux Road Central, Central, 
-Hong Kong. No website, portfolio, or other public information was 
-identified to support the customer's stated industry type of affiliate 
-marketing/advertising.
+An internet search for Dovy Corporation Limited returned results with an 
+exact match found. Per open sources, Dovy Corporation Limited is a Hong 
+Kong private limited company (Business Registration Number 78522002), 
+registered on July 25, 2025. The company's current status is listed as 
+"Still registered." No further business description, website, or 
+operational details were identified to confirm the company's stated 
+industry type of Wholesale & Traditional Trading.
 
-Internal records reflect the customer's stated industry type as affiliate 
-marketing/advertising.
+Internal records reflect the customer's stated industry type as Wholesale 
+& Traditional Trading.
 
-A negative news search did not identify any adverse media on Railway 
-Media Limited.
+A negative news search did not identify any adverse media on Dovy 
+Corporation Limited.
 
 COUNTERPARTY REVIEW
 
-The following counterparties were selected for review based on transaction 
+The following counterparty was selected for review based on transaction 
 volume and monetary value observed in the alerted transaction activity:
 
-MYC Media Private Limited (OSDD results): Singapore-incorporated entity 
-(Registration No. 201932061K), incorporated 25 September 2019, registered 
-at 8 Burn Road #04-04, Trivex, Singapore 369977. Per open sources, the 
-company's primary registered industry classification (SSIC 47739) is 
-Retail Sale of Personal Effects N.E.C. Company records indicate the 
-primary business activity was changed on 10 August 2024 from Retail Sale 
-via Internet (income mainly from online sales) to its current 
-classification. No social media presence was identified for this entity.
+All Game Parts LLC (OSDD results): Texas-registered Domestic Limited 
+Liability Company (Company Number 0801837420), status "In Existence," 
+registered at 2962 Broken Pine Ct, Pearland, TX 77584-4065. The 
+registered agent is listed as Dovy Holdings LP, 9626 Highmeadow Dr, 
+Houston, TX 77063. Public records associate an individual, Donald Tran, 
+with All Game Parts LLC and five other companies, including All ATM 
+Services LLC, Lucky Tree Properties LLC, Beslot Properties LLC, American 
+Arcade Supply LLC, and Two Pigs Restaurants LLC (the latter two listed 
+as inactive).
 
-Label Products B.V. (OSDD results): Netherlands-incorporated entity 
-established at Steenovenweg 5, 5708HN Helmond, Netherlands. Per open 
-sources, the company is registered under multiple SBI classifications, 
-including retail trade specializing in other new items, activities of 
-advertising agencies, wholesale of household electrical appliances, 
-wholesale of medical and dental instruments/nursing and orthopaedic 
-articles/laboratory supplies, non-specialized wholesale trade of personal 
-and household goods, and retail sale of a general range of consumer 
-electronics. Management is listed as BZOR Holding B.V., from 2020.
-
-Based on OSDD, the registered industry classifications for both 
-counterparties are not directly consistent with the customer's stated 
-industry type of affiliate marketing/advertising, and no information was 
-identified establishing the nature of the business relationship between 
-Railway Media Limited and either counterparty.
+Based on OSDD, the registered agent name for the sole counterparty 
+(Dovy Holdings LP) shares common naming with the customer (Dovy 
+Corporation Limited), which may indicate a related-party relationship. 
+Additionally, the counterparty's associated business network reflects 
+industries (game parts, ATM services, amusement/arcade supply) that are 
+not consistent with the customer's stated industry type of Wholesale & 
+Traditional Trading. No information was identified establishing the 
+nature of the business relationship between Dovy Corporation Limited and 
+All Game Parts LLC.
