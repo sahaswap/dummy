@@ -77,6 +77,16 @@ Private Const XL_CUSTOM As String = "Custom Name..."
 Private m_CustomText As String        ' the user-typed part after ECM_AlertID_
 Private m_suppressPrompt As Boolean   ' True during CopyFrom so it never prompts
 
+' Exposed so CopyFrom can read another row's custom text. VBA will NOT let
+' you reach a Private member through an object reference (source.m_CustomText
+' raises "Method or data member not found"), so route it through this property.
+Public Property Get CustomText() As String
+    CustomText = m_CustomText
+End Property
+Public Property Let CustomText(ByVal v As String)
+    m_CustomText = v
+End Property
+
 ' --- Called once by UserForm2 after the Excel-row controls are made:
 '     fills the type dropdown, defaults to Alerted, sets field visibility.
 Public Sub BuildXlTypeList()
@@ -361,8 +371,8 @@ Public Sub CopyFrom(ByVal source As clsRenameRow)
     ' Suppress the custom prompt while we set combo values (their Change events
     ' would otherwise pop an InputBox on every row during "Apply to All").
     m_suppressPrompt = True
-    m_CustomText = source.m_CustomText   ' Private members are visible between
-                                         ' instances of the same class in VBA
+    m_CustomText = source.CustomText     ' via the public property - VBA blocks
+                                         ' direct access to a Private member
 
     If IsExcelType Then
         If Not source.CboXlType Is Nothing And Not CboXlType Is Nothing Then
