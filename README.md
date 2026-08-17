@@ -22,7 +22,8 @@ specific currency and, as necessary, exchange or remit those funds in
 another currency.
 
 The customer is located at Frasers Tower, 182 Cecil Street, #23-02, 
-Singapore 069547. Per open sources, Elevenyellow Pte LTD (UEN 
+Singapore 069547. An external search of the address indicates that it 
+is a commercial property. Per open sources, Elevenyellow Pte LTD (UEN 
 201306499D) is a Singapore Exempt Private Company Limited by Shares, 
 incorporated 12 March 2013, with a current status of Live Company. The 
 company's registered primary activity is Advertising Activities, and 
@@ -67,7 +68,9 @@ Printful Inc is a US-based print-on-demand and e-commerce fulfillment
 platform (Printful, Inc., 11025 Westlake Dr, Charlotte, North 
 Carolina). The payment received from this counterparty is consistent 
 with the customer's stated business as a software development studio 
-operating in the e-commerce and software project space.
+operating in the e-commerce and software project space. A negative 
+news search did not return any adverse or derogatory information on 
+Printful Inc.
 
 • Counterparty 2: Finova Singapore Pte LTD
 
@@ -78,7 +81,8 @@ services. Finova Singapore engaged Elevenyellow Pte LTD for software
 development services, consistent with the customer's registered 
 secondary business activity (development of software and applications) 
 and its self-described operating model as a software development 
-studio.
+studio. A negative news search did not return any adverse or 
+derogatory information on Finova Singapore Pte LTD.
 
 OTHER ACTIVITY REVIEW
 
@@ -103,7 +107,7 @@ non-alerted account activity did not identify any additional
 counterparties or patterns inconsistent with the customer's stated 
 business. There is no evidence of structuring, layering, or misuse of 
 third-party accounts. No adverse media or negative information was 
-identified for the customer.
+identified for the customer or either counterparty reviewed.
 
 Currently, there are no red flags indicative of potential illicit or 
 suspicious activity. Accordingly, it is recommended that this alert be 
