@@ -106,14 +106,28 @@ Sub StyleSearchMatrix()
 
             ' C = Raw URL -> small, muted (long strings, keep them quiet)
             With ws.Range("C" & r).Font
-                .Size = 8: .Color = TEXT2
+                .Name = "Segoe UI": .Size = 8: .Color = TEXT2: .Bold = False: .Italic = False
             End With
 
-            ' D = Naming Convention -> plain body text, left
-            ws.Range("D" & r).HorizontalAlignment = xlLeft
+            ' D = Naming Convention -> plain body text; force Segoe UI explicitly
+            ' (these formula cells kept an old typeface otherwise)
+            With ws.Range("D" & r)
+                .HorizontalAlignment = xlLeft
+                With .Font
+                    .Name = "Segoe UI": .Size = 9: .Color = TEXTCLR: .Bold = False: .Italic = False
+                End With
+            End With
 
-            ' E = Open URL ("Link") -> centered; hyperlink style stays
-            ws.Range("E" & r).HorizontalAlignment = xlCenter
+            ' E = Open URL ("Link") -> centered, band kept, navy underlined link.
+            ' Set the band LAST here so it wins over any leftover white "Hyperlink"
+            ' cell style that Hyperlinks.Add stamped on before.
+            With ws.Range("E" & r)
+                .HorizontalAlignment = xlCenter
+                .Interior.Color = IIf(blk Mod 2 = 0, WARMWHITE, PEARL)
+                With .Font
+                    .Name = "Segoe UI": .Size = 9: .Underline = xlUnderline: .Color = NAVY: .Bold = False
+                End With
+            End With
 
             ' thin warm separator under every row
             With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
