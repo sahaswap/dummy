@@ -1,3 +1,11 @@
+Attribute VB_Name = "clsRenameRow"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
 Option Explicit
 
 ' ============================================================
@@ -10,17 +18,25 @@ Option Explicit
 ' ============================================================
 
 Public WithEvents CboEntity As MSForms.ComboBox
+Attribute CboEntity.VB_VarHelpID = -1
 Public WithEvents CboCategory As MSForms.ComboBox
+Attribute CboCategory.VB_VarHelpID = -1
 Public WithEvents TxtSubAlert As MSForms.TextBox
+Attribute TxtSubAlert.VB_VarHelpID = -1
 
 ' Excel-row extras: a type dropdown (Alerted vs Lookback) and the two
 ' Lookback date fields, which are only shown when Lookback is chosen.
 Public WithEvents CboXlType As MSForms.ComboBox
+Attribute CboXlType.VB_VarHelpID = -1
 Public WithEvents TxtDateStart As MSForms.TextBox
+Attribute TxtDateStart.VB_VarHelpID = -1
 Public WithEvents TxtDateEnd As MSForms.TextBox
+Attribute TxtDateEnd.VB_VarHelpID = -1
 
 Public LblFileName As MSForms.Label
-Public LblPreview As MSForms.Label
+' WithEvents so a double-click re-opens the custom-name prompt for editing.
+Public WithEvents LblPreview As MSForms.Label
+Attribute LblPreview.VB_VarHelpID = -1
 Public LblStatus As MSForms.Label
 
 Public FilePath As String      ' full original path
@@ -59,6 +75,23 @@ Private Const XL_GALILEO As String = "Galileo Transaction"
 ' ECM_AlertID_CTS Report_<original name>. Label is picker-only text.
 Private Const XL_CTS_KEEP As String = "CTS Report (keep file name)"
 
+' ---- CUSTOM NAMING (works for Word / PDF / images AND Excel) ----
+' CAT_CUSTOM sits at the END of every entity's category list ->
+'   ECM_AlertID_<Entity>_<user text>
+' ENTITY_GENERAL is an extra entity at the end of the entity list; it has
+' no identifier, so its only category is CAT_CUSTOM ->  ECM_AlertID_<user text>
+' XL_CUSTOM is the Excel-type equivalent (Excel has no entity) ->
+'   ECM_AlertID_<user text>
+' The ECM_AlertID prefix is always kept (mandatory). The user-typed part is
+' captured via a prompt and stored in m_CustomText; it is sanitised by
+' cleanFileName in ComputeNewName just like every other generated name.
+Private Const CAT_CUSTOM As String = "Custom Name..."
+Private Const ENTITY_GENERAL As String = "General (Custom - no entity)"
+Private Const XL_CUSTOM As String = "Custom Name..."
+
+Private m_CustomText As String        ' the user-typed part after ECM_AlertID_
+Private m_suppressPrompt As Boolean   ' True during CopyFrom so it never prompts
+
 ' --- Called once by UserForm2 after the Excel-row controls are made:
 '     fills the type dropdown, defaults to Alerted, sets field visibility.
 Public Sub BuildXlTypeList()
@@ -68,6 +101,7 @@ Public Sub BuildXlTypeList()
     CboXlType.AddItem XL_LOOKBACK
     CboXlType.AddItem XL_GALILEO
     CboXlType.AddItem XL_CTS_KEEP
+    CboXlType.AddItem XL_CUSTOM       ' -> ECM_AlertID_<custom text>
     CboXlType.ListIndex = 0            ' default: Alerted
     ApplyXlTypeVisibility
 End Sub
@@ -90,14 +124,14 @@ Private Sub AutoFillLookbackEnd()
     mm = CInt(parts(0)): dd = CInt(parts(1)): yyyy = CInt(parts(2))
     If yyyy < 1900 Or mm < 1 Or mm > 12 Or dd < 1 Or dd > 31 Then Exit Sub
 
-    On Error GoTo done
+    On Error GoTo Done
     Dim startDate As Date, oneYr As Date, endDate As Date
     startDate = DateSerial(yyyy, mm, dd)
     oneYr = DateAdd("yyyy", 1, startDate)
     ' Day 0 of the following month = last day of oneYr's month.
     endDate = DateSerial(Year(oneYr), Month(oneYr) + 1, 0)
     TxtDateEnd.text = Format$(endDate, "mm.dd.yyyy")
-done:
+Done:
 End Sub
 
 ' Sub-Alert box only for Alerted, the two date boxes only for Lookback.
@@ -131,8 +165,16 @@ Public Sub BuildEntityList()
             CboEntity.AddItem "Counterparty " & i
         End If
     Next i
+    ' General custom entity (no identifier) -> ECM_AlertID_<custom text>
+    CboEntity.AddItem ENTITY_GENERAL
     CboEntity.ListIndex = -1
 End Sub
+
+' True when the "General (Custom - no entity)" entity is the current choice.
+Private Function IsGeneralEntity() As Boolean
+    If CboEntity Is Nothing Then Exit Function
+    IsGeneralEntity = (CboEntity.Value = ENTITY_GENERAL)
+End Function
 
 ' --- Rebuilds the Category dropdown to match the current Entity choice ---
 Private Sub RebuildCategoryList()
@@ -141,6 +183,14 @@ Private Sub RebuildCategoryList()
 
     CboCategory.Clear
     If CboEntity.ListIndex < 0 Then Exit Sub
+
+    ' General custom entity: the only category is the custom one, and we
+    ' auto-select it so the prompt fires immediately (no extra click).
+    If IsGeneralEntity() Then
+        CboCategory.AddItem CAT_CUSTOM
+        CboCategory.ListIndex = 0
+        Exit Sub
+    End If
 
     If CboEntity.ListIndex = 0 Then
         opts = Split(CUSTOMER_CATS, "|")
@@ -151,6 +201,8 @@ Private Sub RebuildCategoryList()
     For Each opt In opts
         CboCategory.AddItem opt
     Next opt
+    ' every entity gets a Custom option at the END of its list
+    CboCategory.AddItem CAT_CUSTOM
     CboCategory.ListIndex = -1
 End Sub
 
@@ -208,6 +260,13 @@ Public Function ComputeNewName() As String
         ElseIf xlt = XL_CTS_KEEP Then
             ' Keep the file's own static name, just prepend the prefix.
             newName = ECM & "_" & AlertID & "_CTS Report_" & OriginalBaseName()
+        ElseIf xlt = XL_CUSTOM Then
+            ' Custom - ECM_AlertID prefix mandatory, rest is user-typed.
+            If Trim(m_CustomText) = "" Then
+                ComputeNewName = ""
+                Exit Function
+            End If
+            newName = ECM & "_" & AlertID & "_" & m_CustomText
         Else
             ' Alerted (default) - Sub-Alert ID optional.
             Dim subAlert As String: subAlert = Trim(TxtSubAlert.text)
@@ -222,7 +281,21 @@ Public Function ComputeNewName() As String
             ComputeNewName = ""
             Exit Function
         End If
-        If CboCategory.Value = CAT_CTS_KYC Then
+        If IsGeneralEntity() Then
+            ' General custom - ECM_AlertID prefix only, no entity identifier.
+            If Trim(m_CustomText) = "" Then
+                ComputeNewName = ""
+                Exit Function
+            End If
+            newName = ECM & "_" & AlertID & "_" & m_CustomText
+        ElseIf CboCategory.Value = CAT_CUSTOM Then
+            ' Per-entity custom - ECM_AlertID_<Entity>_<user text>.
+            If Trim(m_CustomText) = "" Then
+                ComputeNewName = ""
+                Exit Function
+            End If
+            newName = ECM & "_" & AlertID & "_" & EntityIdentifier() & "_" & m_CustomText
+        ElseIf CboCategory.Value = CAT_CTS_KYC Then
             ' Standalone label - no entity identifier in the file name.
             newName = ECM & "_" & AlertID & "_" & CboCategory.Value
         Else
@@ -239,21 +312,56 @@ Public Sub RecalcPreview()
     Dim result As String
     result = ComputeNewName()
     If result = "" Then
-        If IsExcelType Then
-            LblPreview.Caption = "(enter both dates)"
+        If IsCustomActive() And Trim(m_CustomText) = "" Then
+            LblPreview.caption = "(double-click to type a custom name)"
+        ElseIf IsExcelType Then
+            LblPreview.caption = "(enter both dates)"
         Else
-            LblPreview.Caption = "(select entity & category)"
+            LblPreview.caption = "(select entity & category)"
         End If
         LblPreview.ForeColor = &H808080
     Else
-        LblPreview.Caption = result
+        LblPreview.caption = result
         LblPreview.ForeColor = &H0
     End If
 End Sub
 
+' True when a Custom naming option is the current selection (Excel or not).
+' Guards ListIndex < 0 first: reading .Value on an unselected combo returns
+' Null, and assigning Null to this Boolean result would raise error 94.
+Private Function IsCustomActive() As Boolean
+    If IsExcelType Then
+        If CboXlType Is Nothing Then Exit Function
+        If CboXlType.ListIndex < 0 Then Exit Function
+        IsCustomActive = (CboXlType.Value = XL_CUSTOM)
+    Else
+        If IsGeneralEntity() Then IsCustomActive = True: Exit Function
+        If CboCategory Is Nothing Then Exit Function
+        If CboCategory.ListIndex < 0 Then Exit Function
+        IsCustomActive = (CboCategory.Value = CAT_CUSTOM)
+    End If
+End Function
+
+' Prompt for the user-typed part. The ECM_AlertID prefix (and entity, when
+' one applies) is shown so the analyst sees the full resulting name. Cancel
+' keeps the previous value; a StrPtr of 0 marks Cancel vs an empty OK.
+Private Sub PromptCustom()
+    Dim prefix As String, s As String
+    prefix = ECM & "_" & AlertID & "_"
+    If (Not IsExcelType) And (Not IsGeneralEntity()) Then
+        If CboEntity.ListIndex >= 0 Then prefix = prefix & EntityIdentifier() & "_"
+    End If
+
+    s = InputBox("Type the custom part of the file name." & vbCrLf & vbCrLf & _
+                 "Saved as:  " & prefix & "<your text>" & FileExt, _
+                 "Custom Name", m_CustomText)
+    If StrPtr(s) = 0 Then Exit Sub        ' Cancelled - keep previous text
+    m_CustomText = Trim(s)
+End Sub
+
 ' --- Sets the outcome text/color after a rename attempt ---
 Public Sub SetStatus(ByVal text As String, ByVal isError As Boolean)
-    LblStatus.Caption = text
+    LblStatus.caption = text
     If isError Then
         LblStatus.ForeColor = &HFF&        ' red
     Else
@@ -264,6 +372,12 @@ End Sub
 ' --- Copy-down: pull this row's Entity/Category or Sub-Alert from another row of the same type ---
 Public Sub CopyFrom(ByVal source As clsRenameRow)
     If source.IsExcelType <> Me.IsExcelType Then Exit Sub ' only copy within same file type
+
+    ' Suppress the custom prompt while we set combo values (their Change events
+    ' would otherwise pop an InputBox on every row during "Apply to All").
+    m_suppressPrompt = True
+    m_CustomText = source.m_CustomText   ' Private members are visible between
+                                         ' instances of the same class in VBA
 
     If IsExcelType Then
         If Not source.CboXlType Is Nothing And Not CboXlType Is Nothing Then
@@ -282,6 +396,7 @@ Public Sub CopyFrom(ByVal source As clsRenameRow)
             CboCategory.ListIndex = source.CboCategory.ListIndex
         End If
     End If
+    m_suppressPrompt = False
     RecalcPreview
 End Sub
 
@@ -293,7 +408,18 @@ Private Sub CboEntity_Change()
 End Sub
 
 Private Sub CboCategory_Change()
+    ' Selecting the per-entity "Custom Name..." (or the general custom, which
+    ' is auto-selected) opens the prompt - unless we're mid-CopyFrom.
+    If (CboCategory.Value = CAT_CUSTOM) And (Not m_suppressPrompt) Then PromptCustom
     RecalcPreview
+End Sub
+
+' Double-click the preview to re-open the prompt and edit the custom text.
+Private Sub LblPreview_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    If IsCustomActive() Then
+        PromptCustom
+        RecalcPreview
+    End If
 End Sub
 
 Private Sub TxtSubAlert_Change()
@@ -302,6 +428,7 @@ End Sub
 
 Private Sub CboXlType_Change()
     ApplyXlTypeVisibility
+    If (CboXlType.Value = XL_CUSTOM) And (Not m_suppressPrompt) Then PromptCustom
     RecalcPreview
 End Sub
 
@@ -325,3 +452,4 @@ End Sub
 Private Sub TxtDateEnd_Change()
     RecalcPreview
 End Sub
+
