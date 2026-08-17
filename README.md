@@ -1,57 +1,48 @@
-Request for Information (RFI)
+ALERT TRIGGER
 
-To: external.rfi@airwallex.com
-Cc: AMLRequests@cfsb.com; RFI@CFSB.com
-Subject: CFSB Request for Information - Dovy Corporation Limited (ALERT#2363800) cfsbencrypt
+This alert was generated under the rule "Incoming Activity From High 
+Risk Jurisdiction," based on the receipt of funds from Mexico, which is 
+classified as a high-risk jurisdiction per the Bank's risk rating 
+methodology. The alert was not triggered based on transaction volume, 
+frequency, or amount anomalies.
 
-Good Morning / Afternoon,
+CUSTOMER PROFILE (OSDD search results)
 
-CFSB requires additional information regarding the transaction(s) and/or 
-customer relationship(s) noted below:
+An internet search for Longevity Unity Limited returned results with an 
+exact match found. Per open sources, Longevity Unity Limited is a Hong 
+Kong private limited company (Business Registration Number 76471196), 
+established on April 22, 2024. As of the review date, the company has 
+been operating for approximately 2 years, 3 months. The current status 
+of the company is "Still registered." A company website was identified; 
+however, no further business description or operational details were 
+reviewed to confirm the company's stated industry type of E-commerce 
+Merchant.
 
-• We are reviewing transactions for your customer, Dovy Corporation 
-  Limited (account # MSP8486311528).
+Internal records reflect the customer's stated industry type as 
+E-commerce Merchant.
 
-• Between 06/10/2026 to 06/11/2026 there are 5 incoming credit 
-  transactions totaling $327,674.00 from All Game Parts LLC. The purpose 
-  of this activity and relationship between the customer and the 
-  counterparty appears to be unknown.
+A negative news search did not identify any adverse media on Longevity 
+Unity Limited.
 
-• Additionally, we note that the registered agent for the counterparty, 
-  All Game Parts LLC, is listed as "Dovy Holdings LP," which shares 
-  common naming with your customer, Dovy Corporation Limited. Please 
-  confirm whether any common ownership, control, or affiliation exists 
-  between your customer and the counterparty.
+COUNTERPARTY REVIEW
 
-To proceed appropriately, we kindly request additional information 
-regarding your customer and the transactions outlined below on or before 
-close of business day, August 27th, 2026.
+The following counterparty was selected for review based on transaction 
+volume and monetary value observed in the alerted transaction activity:
 
-(1)  Account Type and Expected Usage
+Curiosidades Totek Sas De Cv (OSDD results): Mexico-based entity 
+registered at Avenida 16 de Septiembre 39, Camino San Lucas y Lirio 
+Acuático, Miguel Hidalgo, Ciudad de México, 16090, México (Tax Number 
+CTO170814577). Trade intelligence data (Panjiva/S&P Global Market 
+Intelligence) reflects an active import business with 956 shipment 
+records on file, with top supplying countries/regions being China 
+(586 shipments, 57.3%) and the United States (90 shipments, 8.8%). A 
+sample bill of lading identifies Curiosidades Totek Sas De Cv as 
+consignee for a shipment of electronic equipment/instruments (GICS: 
+Electronic Equipment & Instruments; HS Code 9025900100) shipped via air 
+from Vivace Process Instruments Ltda (Brazil), valued at $6,138 USD.
 
-(2)  Line of Business
-
-(3)  Physical operating address and US registered address
-
-(4)  Website
-
-(5)  Documentation used to validate business (formation documents, etc.)
-
-(6)  Evidence of Operations (i.e., invoices, contracts, etc.)
-
-(7)  Have any Alert or CDD/EDD reviews been conducted for this customer? 
-     If so, what material information was identified
-
-(8)  Current status of the account. If closed, please provide reason
-
-(9)  Purpose of the noted transactions
-
-(10) Relationship between CUSTOMER and COUNTERPARTY/ORIGINATOR/BENEFICIARY, 
-     including confirmation of any common ownership or affiliation with 
-     Dovy Holdings LP
-
-Your prompt response will allow us to complete our review in a timely 
-manner.
-
-Thank you,
-[Deloitte RFI Coordinator Name]
+Based on OSDD, Curiosidades Totek Sas De Cv reflects an established 
+import/trading business with verifiable supply chain activity. The 
+nature of the specific business relationship between Longevity Unity 
+Limited and Curiosidades Totek Sas De Cv has not been established through 
+open-source research.
