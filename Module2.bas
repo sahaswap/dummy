@@ -1,4 +1,3 @@
-Attribute VB_Name = "Module2"
 '==================================================================
 ' OSINT Automation Tool
 '
@@ -527,6 +526,30 @@ custNameNegNews = NormalizeSpaces(custNameNegNews)
 LogStep "STEP 3: after NormalizeSpaces, len=" & Len(custNameNegNews)
 
 If Trim(custNameNegNews) <> "" Then
+' An entity (legal suffix present) is NOT an individual, so it gets the
+' legal-extension variant and NO middle-name search. An individual gets
+' the middle-name variant instead. The two are mutually exclusive.
+Dim custStripLegal As String
+custStripLegal = StripLegalExtension(custNameNegNews)
+Dim custIsEntity As Boolean
+custIsEntity = (custStripLegal <> "" And StrComp(custStripLegal, custNameNegNews, vbTextCompare) <> 0)
+
+If custIsEntity Then
+' ---- ENTITY: extra Negative News WITHOUT the legal extension ----
+LogStep "STEP 3: before customer legal-extension InputBox"
+Application.StatusBar = "OSINT: Waiting for Legal Extension confirmation..."
+Beep
+ForcePromptToFront
+custNameNegNewsNoLegal = InputBox( _
+"This name looks like it has a legal extension (" & custNameNegNews & ")." & _
+vbCrLf & vbCrLf & "To ALSO run a Negative News search WITHOUT the legal " & _
+"extension, confirm/edit the base name below." & vbCrLf & _
+"(Clear the text or click Cancel to skip this extra search)", _
+"Legal Extension Detected", custStripLegal)
+If StrPtr(custNameNegNewsNoLegal) = 0 Then custNameNegNewsNoLegal = ""
+custNameNegNewsNoLegal = NormalizeSpaces(custNameNegNewsNoLegal)
+Else
+' ---- INDIVIDUAL: extra Negative News WITHOUT the middle name ----
 nameParts = Split(Trim(custNameNegNews), " ")
 LogStep "STEP 3: Split into " & (UBound(nameParts) + 1) & " parts"
 If UBound(nameParts) >= 2 Then
@@ -545,25 +568,6 @@ LogStep "STEP 3: middle-name InputBox returned"
 If StrPtr(custNameNegNewsNoMiddle) = 0 Then custNameNegNewsNoMiddle = ""
 custNameNegNewsNoMiddle = NormalizeSpaces(custNameNegNewsNoMiddle)
 End If
-
-' Legal-extension variant (Negative News ONLY). If the name ends in a
-' legal suffix (LLC/Inc/Ltd/...), offer an extra Negative News search
-' WITHOUT it. Google name / Address / Name+Address keep the full name.
-Dim custStripLegal As String
-custStripLegal = StripLegalExtension(custNameNegNews)
-If custStripLegal <> "" And StrComp(custStripLegal, custNameNegNews, vbTextCompare) <> 0 Then
-LogStep "STEP 3: before customer legal-extension InputBox"
-Application.StatusBar = "OSINT: Waiting for Legal Extension confirmation..."
-Beep
-ForcePromptToFront
-custNameNegNewsNoLegal = InputBox( _
-"This name looks like it has a legal extension (" & custNameNegNews & ")." & _
-vbCrLf & vbCrLf & "To ALSO run a Negative News search WITHOUT the legal " & _
-"extension, confirm/edit the base name below." & vbCrLf & _
-"(Clear the text or click Cancel to skip this extra search)", _
-"Legal Extension Detected", custStripLegal)
-If StrPtr(custNameNegNewsNoLegal) = 0 Then custNameNegNewsNoLegal = ""
-custNameNegNewsNoLegal = NormalizeSpaces(custNameNegNewsNoLegal)
 End If
 End If
 
@@ -602,6 +606,29 @@ If StrPtr(cpNameNegNews(i)) = 0 Then Exit Sub
 cpNameNegNews(i) = NormalizeSpaces(cpNameNegNews(i))
 
 If Trim(cpNameNegNews(i)) <> "" Then
+' Entity -> legal-extension variant, NO middle-name search.
+' Individual -> middle-name variant. Mutually exclusive.
+Dim cpStripLegal As String
+cpStripLegal = StripLegalExtension(cpNameNegNews(i))
+Dim cpIsEntity As Boolean
+cpIsEntity = (cpStripLegal <> "" And StrComp(cpStripLegal, cpNameNegNews(i), vbTextCompare) <> 0)
+
+If cpIsEntity Then
+' ---- ENTITY: extra Negative News WITHOUT the legal extension ----
+Application.StatusBar = "OSINT: Waiting for CP '" & cpName & "' Legal Extension confirmation..."
+Beep
+ForcePromptToFront
+cpNameNegNewsNoLegal(i) = InputBox( _
+"This counterparty name looks like it has a legal extension (" & _
+cpNameNegNews(i) & ")." & vbCrLf & vbCrLf & _
+"To ALSO run a Negative News search WITHOUT the legal extension, " & _
+"confirm/edit the base name below." & vbCrLf & _
+"(Clear the text or click Cancel to skip this extra search)", _
+"Legal Extension Detected", cpStripLegal)
+If StrPtr(cpNameNegNewsNoLegal(i)) = 0 Then cpNameNegNewsNoLegal(i) = ""
+cpNameNegNewsNoLegal(i) = NormalizeSpaces(cpNameNegNewsNoLegal(i))
+Else
+' ---- INDIVIDUAL: extra Negative News WITHOUT the middle name ----
 nameParts = Split(Trim(cpNameNegNews(i)), " ")
 If UBound(nameParts) >= 2 Then
 cpNameNegNewsNoMiddle(i) = nameParts(0) & " " & nameParts(UBound(nameParts))
@@ -618,23 +645,6 @@ cpNameNegNews(i) & ")." & vbCrLf & vbCrLf & _
 If StrPtr(cpNameNegNewsNoMiddle(i)) = 0 Then cpNameNegNewsNoMiddle(i) = ""
 cpNameNegNewsNoMiddle(i) = NormalizeSpaces(cpNameNegNewsNoMiddle(i))
 End If
-
-' Legal-extension variant for this counterparty (Negative News ONLY).
-Dim cpStripLegal As String
-cpStripLegal = StripLegalExtension(cpNameNegNews(i))
-If cpStripLegal <> "" And StrComp(cpStripLegal, cpNameNegNews(i), vbTextCompare) <> 0 Then
-Application.StatusBar = "OSINT: Waiting for CP '" & cpName & "' Legal Extension confirmation..."
-Beep
-ForcePromptToFront
-cpNameNegNewsNoLegal(i) = InputBox( _
-"This counterparty name looks like it has a legal extension (" & _
-cpNameNegNews(i) & ")." & vbCrLf & vbCrLf & _
-"To ALSO run a Negative News search WITHOUT the legal extension, " & _
-"confirm/edit the base name below." & vbCrLf & _
-"(Clear the text or click Cancel to skip this extra search)", _
-"Legal Extension Detected", cpStripLegal)
-If StrPtr(cpNameNegNewsNoLegal(i)) = 0 Then cpNameNegNewsNoLegal(i) = ""
-cpNameNegNewsNoLegal(i) = NormalizeSpaces(cpNameNegNewsNoLegal(i))
 End If
 End If
 End If
