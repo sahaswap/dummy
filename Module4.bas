@@ -73,7 +73,7 @@ Sub RefreshSearchMatrixHyperlinks()
                 With .Font
                     .Name = "Segoe UI"
                     .Size = 9
-                    .Underline = xlUnderline
+                    .Underline = xlUnderlineStyleSingle
                     .Color = RGB(34, 52, 86)   ' navy #223456, matches the theme
                 End With
             End With

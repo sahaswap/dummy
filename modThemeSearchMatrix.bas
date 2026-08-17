@@ -125,7 +125,7 @@ Sub StyleSearchMatrix()
                 .HorizontalAlignment = xlCenter
                 .Interior.Color = IIf(blk Mod 2 = 0, WARMWHITE, PEARL)
                 With .Font
-                    .Name = "Segoe UI": .Size = 9: .Underline = xlUnderline: .Color = NAVY: .Bold = False
+                    .Name = "Segoe UI": .Size = 9: .Underline = xlUnderlineStyleSingle: .Color = NAVY: .Bold = False
                 End With
             End With
 
