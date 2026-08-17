@@ -1,11 +1,3 @@
-Attribute VB_Name = "clsRenameRow"
-Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
-Attribute VB_GlobalNameSpace = False
-Attribute VB_Creatable = False
-Attribute VB_PredeclaredId = False
-Attribute VB_Exposed = False
-Attribute VB_TemplateDerived = False
-Attribute VB_Customizable = False
 Option Explicit
 
 ' ============================================================
@@ -18,25 +10,18 @@ Option Explicit
 ' ============================================================
 
 Public WithEvents CboEntity As MSForms.ComboBox
-Attribute CboEntity.VB_VarHelpID = -1
 Public WithEvents CboCategory As MSForms.ComboBox
-Attribute CboCategory.VB_VarHelpID = -1
 Public WithEvents TxtSubAlert As MSForms.TextBox
-Attribute TxtSubAlert.VB_VarHelpID = -1
 
 ' Excel-row extras: a type dropdown (Alerted vs Lookback) and the two
 ' Lookback date fields, which are only shown when Lookback is chosen.
 Public WithEvents CboXlType As MSForms.ComboBox
-Attribute CboXlType.VB_VarHelpID = -1
 Public WithEvents TxtDateStart As MSForms.TextBox
-Attribute TxtDateStart.VB_VarHelpID = -1
 Public WithEvents TxtDateEnd As MSForms.TextBox
-Attribute TxtDateEnd.VB_VarHelpID = -1
 
 Public LblFileName As MSForms.Label
 ' WithEvents so a double-click re-opens the custom-name prompt for editing.
 Public WithEvents LblPreview As MSForms.Label
-Attribute LblPreview.VB_VarHelpID = -1
 Public LblStatus As MSForms.Label
 
 Public FilePath As String      ' full original path
@@ -452,4 +437,3 @@ End Sub
 Private Sub TxtDateEnd_Change()
     RecalcPreview
 End Sub
-
