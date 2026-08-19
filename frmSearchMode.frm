@@ -17,44 +17,48 @@ Option Explicit
 Public SelectedMode As Long
 Public userCancelled As Boolean
 
-' Short, plain-English guidance for picking a mode. Shown BOTH as a
-' hover-tooltip on each button AND as an always-visible label added at
-' runtime below the buttons (so no form-designer work is needed). The
-' label is positioned under whatever controls already exist, and the
-' form grows to fit it - layout-agnostic, works however the buttons sit.
+' Short, plain-English guidance for picking a mode. Rewrites the verbose
+' per-button description labels IN PLACE (matched by keyword in their
+' current text) with crisp one-liners, and puts a short CAPTCHA tip next
+' to the Cancel button. No form-designer work needed.
 Private Sub UserForm_Initialize()
     On Error Resume Next
 
-    ' tooltips (backup, on hover)
-    btnFast.ControlTipText = "Fastest - your everyday default; best on a good connection."
-    btnOptimised.ControlTipText = "Steadier when the internet or VDI is slow or laggy."
-    btnVisible.ControlTipText = "Most reliable (but slowest) - non-English names or when others keep getting blocked."
+    ' Remove the old bottom guidance block, if a previous version added it.
+    Me.Controls.Remove "lblGuide"
 
-    ' find the lowest existing control so the label sits just below it
-    Dim c As MSForms.Control, maxBottom As Single
-    maxBottom = 0
+    ' Replace each verbose description label with a crisp one-liner. The
+    ' existing labels are identified by a distinctive word in their text.
+    Dim c As MSForms.Control, t As String
     For Each c In Me.Controls
-        If (c.Top + c.Height) > maxBottom Then maxBottom = c.Top + c.Height
+        If TypeName(c) = "Label" Then
+            t = LCase$(CStr(c.Caption))
+            If InStr(t, "quickest") > 0 Then
+                c.Caption = "Fastest - best on a good connection."
+            ElseIf InStr(t, "bursty") > 0 Then
+                c.Caption = "Steadier when the internet or VDI is slow / laggy."
+            ElseIf InStr(t, "visible browser") > 0 Then
+                c.Caption = "Most reliable (slowest) - non-English names, or when others keep getting blocked."
+            End If
+        End If
     Next c
 
-    ' add the always-visible guidance label
-    Dim lbl As MSForms.Label
-    Set lbl = Me.Controls.Add("Forms.Label.1", "lblGuide", True)
-    lbl.Left = 8
-    lbl.Top = maxBottom + 8
-    lbl.Width = Me.InsideWidth - 16
-    lbl.Height = 84
-    lbl.WordWrap = True
-    lbl.Font.Size = 8
-    lbl.Caption = _
-        "Fast  -  fastest; best on a good connection." & vbCrLf & _
-        "Optimised  -  steadier when the internet or VDI is slow / laggy." & vbCrLf & _
-        "Visible  -  most reliable (slowest); non-English names or when others keep getting blocked." & vbCrLf & _
-        "" & vbCrLf & _
-        "Tip: few CAPTCHAs & good internet -> use Fast (recommended). Slow internet -> use Optimised. Running Fast on a poor connection triggers more CAPTCHAs."
+    ' Short CAPTCHA tip, placed to the RIGHT of the Cancel button.
+    Dim tip As MSForms.Label
+    Set tip = Me.Controls.Add("Forms.Label.1", "lblGuide", True)
+    tip.Left = btnCancel.Left + btnCancel.Width + 12
+    tip.Top = btnCancel.Top
+    tip.Width = Me.InsideWidth - tip.Left - 8
+    tip.Height = 44
+    tip.WordWrap = True
+    tip.Font.Size = 8
+    tip.Caption = "Tip: few CAPTCHAs & good internet -> use Fast (recommended). " & _
+                  "Slow internet -> use Optimised (Fast on a poor connection triggers more CAPTCHAs)."
 
-    ' grow the form so the new label is fully visible
-    Me.Height = Me.Height + lbl.Height + 16
+    ' tooltips too (harmless, on hover)
+    btnFast.ControlTipText = "Fastest - best on a good connection."
+    btnOptimised.ControlTipText = "Steadier when the internet or VDI is slow or laggy."
+    btnVisible.ControlTipText = "Most reliable (slowest) - non-English names or when others keep getting blocked."
 
     On Error GoTo 0
 End Sub
