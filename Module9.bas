@@ -55,6 +55,31 @@ MsgBox "Action Denied: ECM ID is missing in J9.", vbCritical, "Missing ID"
 Exit Sub
 End If
 
+' ==========================================
+' 1b. EXPORT FORMAT PICKER - Legacy vs EN Network
+' ==========================================
+Dim exportMode As String, emResp As VbMsgBoxResult, enResp As VbMsgBoxResult
+emResp = MsgBox( _
+"Choose the export format:" & vbCrLf & vbCrLf & _
+"YES  =  Legacy   (dedupe + pivots)" & vbCrLf & _
+"NO   =  EN Network" & vbCrLf & vbCrLf & _
+"(Cancel to abort)", _
+vbYesNoCancel Or vbQuestion, "Export Format")
+If emResp = vbCancel Then Exit Sub
+If emResp = vbYes Then
+    exportMode = "LEGACY"
+Else
+    ' EN Network second-level choice
+    enResp = MsgBox( _
+    "EN Network - choose the file to export:" & vbCrLf & vbCrLf & _
+    "YES  =  Alerted / Non-Alerted Trx File" & vbCrLf & _
+    "NO   =  Lookback Transaction File" & vbCrLf & vbCrLf & _
+    "(Cancel to abort)", _
+    vbYesNoCancel Or vbQuestion, "EN Network Export")
+    If enResp = vbCancel Then Exit Sub
+    If enResp = vbYes Then exportMode = "EN" Else exportMode = "LOOKBACK"
+End If
+
 ' Source folder is always "Transaction Files" now - the old
 ' UserForm1 picker (Transaction Files / Non Alerted / Cancel) has
 ' been removed, so this runs straight through like it used to.
@@ -164,9 +189,15 @@ wsHome.Parent.Sheets("TempRawBackup").Delete
 Application.DisplayAlerts = True
 On Error GoTo CancelHandler
 
-WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
-Set WsRawTemp = ActiveSheet
-WsRawTemp.Name = "TempRawBackup"
+' The raw snapshot feeds the "Raw Transactions" sheet, which only the
+' Legacy and EN (Alerted/Non-Alerted) exports produce. The Lookback file
+' has no Raw sheet, so skip the full-data sheet copy for that mode - it
+' was being built and then thrown away untouched.
+If exportMode <> "LOOKBACK" Then
+    WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
+    Set WsRawTemp = ActiveSheet
+    WsRawTemp.Name = "TempRawBackup"
+End If
 
 ' ==========================================
 ' 3. AGGRESSIVE DATA CLEANUP
@@ -218,6 +249,296 @@ WsMaster.Range(WsMaster.Cells(2, LastCol - 1), WsMaster.Cells(LastRowMaster, Las
 WsMaster.Range(WsMaster.Cells(2, LastCol), WsMaster.Cells(LastRowMaster, LastCol)).PasteSpecial Paste:=xlPasteFormats
 Application.CutCopyMode = False
 End If
+End If
+
+' ==========================================
+' 4-EN. EN NETWORK EXPORT (Alerted / Non-Alerted split)
+'   Runs INSTEAD of the Legacy dedupe path when the analyst chose
+'   EN Network. Self-contained: builds its own workbook, saves, logs
+'   audit, and Exits - the Legacy block below is left untouched.
+' ==========================================
+If exportMode = "EN" Then
+    Dim wsAlertedEN As Worksheet, wsNonEN As Worksheet, wsPivotEN As Worksheet
+    Dim aColEN As Long, aDateColEN As Long, aLastEN As Long, naLastEN As Long
+    Dim rEN As Long, scanLastEN As Long, keepEN As Boolean, wsTidy As Variant, cvEN As Variant
+    Dim minAlerted As Date, maxAlerted As Date, haveAlerted As Boolean
+    Dim winStartEN As Date, winEndEN As Date
+    Dim lastRowA As Long, lastColA As Long, ddLastEN As Long
+    Dim ptRangeA As Range, ptCacheA As PivotCache, ptRangeT As Range, ptCacheT As PivotCache
+    Dim pt3EN As PivotTable, pt4EN As PivotTable
+
+    ' locate the split column + date column on the cleaned master
+    aColEN = 0: aDateColEN = 0
+    On Error Resume Next
+    aColEN = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
+    aDateColEN = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
+    On Error GoTo CancelHandler
+    If aColEN = 0 Then
+        MsgBox "EN Network export needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found in the data.", vbCritical, "Column Not Found"
+        GoTo CancelHandler
+    End If
+
+    ' --- alerted date window: min/max Transaction Date of the "Yes" rows,
+    '     snapped to first-day-of-month .. last-day-of-month (leap-safe).
+    '     The split + date columns are read in ONE bulk call each and scanned
+    '     in memory - cell-by-cell COM reads were slow on a full account
+    '     history. Last row comes from LastDataRow (all columns), so trailing
+    '     rows with a blank split value are no longer missed. ---
+    Dim sArrEN As Variant, dArrEN As Variant
+    scanLastEN = LastDataRow(WsMaster)
+    haveAlerted = False
+    If scanLastEN > 1 Then
+        sArrEN = WsMaster.Range(WsMaster.Cells(2, aColEN), WsMaster.Cells(scanLastEN, aColEN)).Value
+        If aDateColEN > 0 Then _
+            dArrEN = WsMaster.Range(WsMaster.Cells(2, aDateColEN), WsMaster.Cells(scanLastEN, aDateColEN)).Value
+        For rEN = 1 To scanLastEN - 1
+            If Trim(CStr(ArrCell(sArrEN, rEN))) = "Yes" Then
+                cvEN = ArrCell(dArrEN, rEN)
+                If IsDate(cvEN) Then
+                    If Not haveAlerted Then
+                        minAlerted = CDate(cvEN): maxAlerted = CDate(cvEN): haveAlerted = True
+                    Else
+                        If CDate(cvEN) < minAlerted Then minAlerted = CDate(cvEN)
+                        If CDate(cvEN) > maxAlerted Then maxAlerted = CDate(cvEN)
+                    End If
+                End If
+            End If
+        Next rEN
+    End If
+    If haveAlerted Then
+        winStartEN = DateSerial(Year(minAlerted), Month(minAlerted), 1)
+        winEndEN = DateSerial(Year(maxAlerted), Month(maxAlerted) + 1, 0)
+    Else
+        MsgBox "No 'Yes' alerted transactions were found, so the Non Alerted window can't be built. The Non Alerted sheet will be empty.", vbExclamation, "No Alerted Rows"
+    End If
+
+    ' --- build the export workbook ---
+    Set newWb = Workbooks.Add
+    WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+
+    ' Alerted Transaction = rows where split = "Yes"
+    WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Alerted Transaction"
+    Set wsAlertedEN = newWb.Sheets("Alerted Transaction")
+    FilterRowsFast wsAlertedEN, aColEN, "Yes", 0, False, 0, 0
+
+    ' Non Alerted Transaction = "No" rows whose date is in the alerted-month
+    ' window. FALLBACK: if there are no such "No" rows at all, fill the sheet
+    ' with the "Yes" (alerted) rows of the same window instead, so it's never
+    ' empty (e.g. a single-day alert with no surrounding non-alerted activity).
+    Dim naCriterion As String, hasNoInWin As Boolean
+    hasNoInWin = False
+    If haveAlerted And scanLastEN > 1 Then
+        For rEN = 1 To scanLastEN - 1
+            If Trim(CStr(ArrCell(sArrEN, rEN))) = "No" Then
+                cvEN = ArrCell(dArrEN, rEN)
+                If IsDate(cvEN) Then
+                    If CDate(cvEN) >= winStartEN And CDate(cvEN) <= winEndEN Then hasNoInWin = True: Exit For
+                End If
+            End If
+        Next rEN
+    End If
+    naCriterion = IIf(hasNoInWin, "No", "Yes")
+
+    WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Non Alerted Transaction"
+    Set wsNonEN = newWb.Sheets("Non Alerted Transaction")
+    ' If haveAlerted is False the window is 0..0, so nothing qualifies and the
+    ' sheet ends up empty - same outcome as the old row-by-row loop.
+    FilterRowsFast wsNonEN, aColEN, naCriterion, aDateColEN, True, winStartEN, winEndEN
+
+    ' tidy the two data sheets
+    For Each wsTidy In Array("Alerted Transaction", "Non Alerted Transaction")
+        With newWb.Sheets(CStr(wsTidy)).Cells
+            .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+            .EntireRow.AutoFit: .VerticalAlignment = xlTop
+        End With
+    Next wsTidy
+
+    ' ---- Pivots (same as Legacy), built from Alerted Transaction ----
+    BuildEnPivots newWb, "Alerted Transaction", "Alerted Transaction Pivot", "Alerted Transaction"
+
+    ' drop the default blank sheet(s) that Workbooks.Add created - keep only ours
+    Application.DisplayAlerts = False
+    For rEN = newWb.Sheets.count To 1 Step -1
+        Select Case newWb.Sheets(rEN).Name
+            Case "Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction"
+                ' keep
+            Case Else
+                newWb.Sheets(rEN).Delete
+        End Select
+    Next rEN
+    Application.DisplayAlerts = True
+
+    ' Final sheet order: Raw -> Alerted -> Alerted Pivot -> Non Alerted
+    newWb.Sheets("Non Alerted Transaction").Move After:=newWb.Sheets(newWb.Sheets.count)
+
+    ' clean up the raw-backup helper sheet in THIS workbook
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wsHome.Parent.Sheets("TempRawBackup").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo CancelHandler
+
+    ' ---- save (same file name as Legacy) ----
+    excelFileName = ecmID & "_" & AlertID & "_Combined_Alerted_Transaction.xlsx"
+    finalSavePath = saveFolderPath & slash & excelFileName
+    Application.DisplayAlerts = False
+    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    Application.DisplayAlerts = True
+
+    ' ---- audit + archive ----
+    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
+        customerName:=Trim(wsHome.Range("J13").Value), _
+        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
+        eventType:="Transaction File Consolidated", _
+        outputFile:=finalSavePath, toolVersion:="3.5", _
+        notes:="source=" & sourceFolderName & ", mode=EN Network"
+    On Error Resume Next
+    modAuditLog.ArchiveOutputSheets ecmID:=ecmID, sourceWb:=newWb, _
+        sheetNames:=Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction"), _
+        tagSuffix:="EN Network"
+    On Error GoTo CancelHandler
+
+    ' ConsolidatedData must hold ONLY the alerted transaction data - never
+    ' the Non-Alerted rows. Copy the Alerted Transaction sheet back into it.
+    WsMaster.Cells.Clear
+    newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=WsMaster.Range("A1")
+
+    newWb.Sheets("Raw Transactions").Activate
+
+    ' ---- finalize / restore Excel + re-protect ----
+    Application.EnableCancelKey = xlInterrupt
+    Application.Calculation = origCalc
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    On Error Resume Next
+    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
+    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
+    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
+    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
+    On Error GoTo 0
+
+    MsgBox "EN Network export complete!" & vbCrLf & _
+        "Saved to:" & vbCrLf & finalSavePath, vbInformation, "Success"
+    Exit Sub
+End If
+
+' ==========================================
+' 4-LB. LOOKBACK TRANSACTIONS (EN Network)
+'   All transactions (Yes AND No) in the 1-year lookback window:
+'   start = 1st of month, one year back from the LAST alerted date;
+'   end = the last alerted date. Data rows + the same Legacy pivots.
+' ==========================================
+If exportMode = "LOOKBACK" Then
+    Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
+    Dim keepLB As Boolean, cvLB As Variant
+    Dim lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
+    Dim wsLB As Worksheet, lbLastRow As Long
+
+    aColLB = 0: aDateColLB = 0
+    On Error Resume Next
+    aColLB = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
+    aDateColLB = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
+    On Error GoTo CancelHandler
+    If aColLB = 0 Then
+        MsgBox "Lookback needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found.", vbCritical, "Column Not Found"
+        GoTo CancelHandler
+    End If
+
+    ' last alerted date -> window [1st-of-month one year back .. last alerted
+    ' date]. Bulk read + LastDataRow, same as the EN branch.
+    Dim sArrLB As Variant, dArrLB As Variant
+    scanLastLB = LastDataRow(WsMaster)
+    haveAlertedLB = False
+    If scanLastLB > 1 Then
+        sArrLB = WsMaster.Range(WsMaster.Cells(2, aColLB), WsMaster.Cells(scanLastLB, aColLB)).Value
+        If aDateColLB > 0 Then _
+            dArrLB = WsMaster.Range(WsMaster.Cells(2, aDateColLB), WsMaster.Cells(scanLastLB, aDateColLB)).Value
+        For rLB = 1 To scanLastLB - 1
+            If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
+                cvLB = ArrCell(dArrLB, rLB)
+                If IsDate(cvLB) Then
+                    If Not haveAlertedLB Then
+                        lastAlertedLB = CDate(cvLB): haveAlertedLB = True
+                    ElseIf CDate(cvLB) > lastAlertedLB Then
+                        lastAlertedLB = CDate(cvLB)
+                    End If
+                End If
+            End If
+        Next rLB
+    End If
+    If Not haveAlertedLB Then
+        MsgBox "No dated 'Yes' alerted transactions were found, so the Lookback window can't be built.", vbCritical, "No Alerted Rows"
+        GoTo CancelHandler
+    End If
+    lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)  ' 1st of month, 1yr back
+    lbEnd = lastAlertedLB
+
+    ' build workbook: Lookback Transactions (all Yes+No in window) + pivots
+    Set newWb = Workbooks.Add
+    WsMaster.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Lookback Transactions"
+    Set wsLB = newWb.Sheets("Lookback Transactions")
+    ' date-window only - keeps BOTH Yes and No rows (splitCol = 0)
+    FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
+    With wsLB.Cells
+        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+        .EntireRow.AutoFit: .VerticalAlignment = xlTop
+    End With
+
+    BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
+
+    ' drop the default blank sheet(s)
+    Application.DisplayAlerts = False
+    For rLB = newWb.Sheets.count To 1 Step -1
+        Select Case newWb.Sheets(rLB).Name
+            Case "Lookback Transactions", "Pivot"
+                ' keep
+            Case Else
+                newWb.Sheets(rLB).Delete
+        End Select
+    Next rLB
+    Application.DisplayAlerts = True
+
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wsHome.Parent.Sheets("TempRawBackup").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo CancelHandler
+
+    ' save: {ECM}_{AlertID}_Lookback Transactions (mm.dd.yyyy to mm.dd.yyyy).xlsx
+    excelFileName = ecmID & "_" & AlertID & "_Lookback Transactions (" & _
+        Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
+    finalSavePath = saveFolderPath & slash & excelFileName
+    Application.DisplayAlerts = False
+    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    Application.DisplayAlerts = True
+
+    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
+        customerName:=Trim(wsHome.Range("J13").Value), _
+        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
+        eventType:="Transaction File Consolidated", _
+        outputFile:=finalSavePath, toolVersion:="3.5", _
+        notes:="source=" & sourceFolderName & ", mode=EN Network Lookback"
+
+    ' ConsolidatedData must hold ONLY the alerted (Yes) transactions - never
+    ' the Lookback data. Filter ConsolidatedData down to the "Yes" rows.
+    FilterRowsFast WsMaster, aColLB, "Yes", 0, False, 0, 0
+
+    newWb.Sheets("Lookback Transactions").Activate
+    Application.EnableCancelKey = xlInterrupt
+    Application.Calculation = origCalc
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    On Error Resume Next
+    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
+    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
+    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
+    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
+    On Error GoTo 0
+
+    MsgBox "Lookback Transactions export complete!" & vbCrLf & _
+        "Window: " & Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & vbCrLf & _
+        "Saved to:" & vbCrLf & finalSavePath, vbInformation, "Success"
+    Exit Sub
 End If
 
 ' ==========================================
@@ -633,3 +954,247 @@ End Sub
 
 
 
+
+
+' ==========================================================
+' BuildEnPivots - builds the 4 "Legacy" pivots on a fresh pivot sheet,
+' sourced from the given data sheet. Shared by the EN Network (Alerted)
+' and Lookback exports so the pivot logic lives in ONE place. It finds
+' its own "Transaction Date" column and cleans blank-date rows on the
+' source (needed so date grouping doesn't crash), exactly like Legacy.
+' ==========================================================
+Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
+    ByVal pivotSheet As String, ByVal insertAfter As String)
+    Dim wsData As Worksheet, wsPv As Worksheet
+    Dim dCol As Long, lastRow As Long, lastCol As Long, ddLast As Long
+    Dim rngScn As Range, cacheScn As PivotCache, rngTmp As Range, cacheTmp As PivotCache
+    Dim ptx As PivotTable, ptE As PivotTable, ptD As PivotTable
+
+    On Error Resume Next
+    Set wsData = wb.Sheets(dataSheet)
+    On Error GoTo 0
+    If wsData Is Nothing Then Exit Sub
+
+    dCol = 0
+    On Error Resume Next
+    dCol = wsData.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
+    On Error GoTo 0
+
+    lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).row
+    lastCol = wsData.Cells(1, wsData.Columns.count).End(xlToLeft).Column
+    If lastRow <= 1 Then Exit Sub
+
+    Set wsPv = wb.Sheets.Add(After:=wb.Sheets(insertAfter))
+    wsPv.Name = pivotSheet
+
+    ' PIVOT 1: SCENARIO
+    Set rngScn = wsData.Range(wsData.Cells(1, 1), wsData.Cells(lastRow, lastCol))
+    Set cacheScn = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=rngScn)
+    Set ptx = cacheScn.CreatePivotTable(TableDestination:=wsPv.Range("A3"), TableName:="ScenarioPivot")
+    On Error Resume Next
+    With ptx
+        .TableStyle2 = "PivotStyleLight16"
+        With .PivotFields("Alert Information"): .Orientation = xlRowField: .Position = 1: End With
+        With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 2: End With
+        With .PivotFields("Counterparty"): .Orientation = xlRowField: .Position = 3: End With
+        .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount", xlSum
+        .PivotFields("Sum of Transaction Amount").NumberFormat = "$#,#00.00"
+        .AddDataField .PivotFields("Transaction Amount"), "Count of Transaction Amount", xlCount
+        .RowAxisLayout xlCompactRow
+        .PivotFields("Count of Transaction Amount").NumberFormat = "0"
+        .PivotFields("Alert Information").AutoSort xlDescending, "Sum of Transaction Amount"
+        .PivotFields("Counterparty").AutoSort xlDescending, "Sum of Transaction Amount"
+    End With
+    On Error GoTo 0
+
+    ' clean blank dates + short-date format so grouping is stable
+    On Error Resume Next
+    If dCol > 0 Then
+        ddLast = wsData.Cells(wsData.Rows.count, dCol).End(xlUp).row
+        If ddLast > 1 Then
+            wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
+            wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol)).NumberFormat = "m/d/yyyy"
+        End If
+    End If
+    On Error GoTo 0
+
+    lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).row
+    lastCol = wsData.Cells(1, wsData.Columns.count).End(xlToLeft).Column
+    If lastRow > 1 Then
+        Set rngTmp = wsData.Range(wsData.Cells(1, 1), wsData.Cells(lastRow, lastCol))
+        Set cacheTmp = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=rngTmp)
+
+        ' PIVOT 2: TEMPORAL
+        Set ptx = cacheTmp.CreatePivotTable(TableDestination:=wsPv.Range("F3"), TableName:="TemporalPivot")
+        On Error Resume Next
+        With ptx
+            .TableStyle2 = "PivotStyleLight16"
+            With .PivotFields("Transaction Date"): .Orientation = xlRowField: .Position = 1: End With
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount ", xlSum
+            .PivotFields("Sum of Transaction Amount ").NumberFormat = "$#,#00.00"
+            .AddDataField .PivotFields("Transaction Amount"), "Count of Transaction Amount ", xlCount
+            .PivotFields("Count of Transaction Amount ").NumberFormat = "0"
+        End With
+        wsPv.Range("F4").Group Start:=True, End:=True, Periods:=Array(False, False, False, True, True, False, True)
+        On Error Resume Next
+        ptx.PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        On Error GoTo 0
+
+        ' PIVOT 3: ENHANCED TEMPORAL (cloned from PT2)
+        ptx.TableRange2.Copy Destination:=wsPv.Range("K3")
+        Set ptE = wsPv.Range("K3").PivotTable
+        ptE.Name = "TemporalPivot_Enhanced"
+        On Error Resume Next
+        With ptE
+            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
+            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
+            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 4: End With
+            .AddDataField .PivotFields("Transaction Amount"), "No of Trx  ", xlCount
+            .PivotFields("No of Trx  ").NumberFormat = "0"
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount  ", xlSum
+            .PivotFields("Sum of Transaction Amount  ").NumberFormat = "$#,#00.00"
+            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        End With
+        On Error GoTo 0
+
+        ' PIVOT 4: DR/CR INVERTED (cloned from PT2)
+        ptx.TableRange2.Copy Destination:=wsPv.Range("Q3")
+        Set ptD = wsPv.Range("Q3").PivotTable
+        ptD.Name = "DrCrTemporalPivot"
+        On Error Resume Next
+        With ptD
+            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
+            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
+            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 1: End With
+            .AddDataField .PivotFields("Transaction Amount"), "No of Trx   ", xlCount
+            .PivotFields("No of Trx   ").NumberFormat = "0"
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount   ", xlSum
+            .PivotFields("Sum of Transaction Amount   ").NumberFormat = "$#,#00.00"
+            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        End With
+        On Error GoTo 0
+
+        On Error Resume Next
+        BulletproofDateFormat wsPv
+        HighlightDrCrRows ptE, wsPv
+        HighlightDrCrRows ptD, wsPv
+        On Error GoTo 0
+    End If
+
+    wsPv.Columns("A:W").AutoFit
+End Sub
+
+' ==========================================================
+' LastDataRow - the true last row containing anything, across ALL
+' columns. The filters used to derive the last row from .End(xlUp) on
+' the "Is Alerted Transaction?" column alone, so any trailing row whose
+' value in THAT column was blank was never examined and survived the
+' filter (a non-"Yes" row could leak into the Alerted sheet).
+' ==========================================================
+Private Function LastDataRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+    On Error Resume Next
+    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+        LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    If c Is Nothing Then
+        LastDataRow = 1
+    Else
+        LastDataRow = c.row
+    End If
+End Function
+
+' Reads element idx from a bulk .Value read. A single-cell range returns a
+' scalar rather than a 2D array, and an unrequested column is Empty - both
+' are handled here so callers can index uniformly.
+Private Function ArrCell(ByVal v As Variant, ByVal idx As Long) As Variant
+    If IsArray(v) Then
+        ArrCell = v(idx, 1)
+    Else
+        ArrCell = v
+    End If
+End Function
+
+' ==========================================================
+' FilterRowsFast - keeps only the rows that match, deleting the rest in a
+' SINGLE operation.
+'
+' Replaces the old "For r = last To 2 Step -1 : Rows(r).Delete" loops. Those
+' cost one COM call + a full row-shift PER ROW, which on a whole-account
+' history (tens of thousands of rows) took minutes and looked like a hang.
+' This writes a temporary flag column, AutoFilters it, and deletes every
+' unwanted row at once.
+'
+'   splitCol  - "Is Alerted Transaction?" column (0 = don't test it)
+'   wantVal   - required value in splitCol ("Yes"/"No"); "" = don't test
+'   dateCol   - "Transaction Date" column (0 = don't test it)
+'   useWindow - True to also require winStart <= date <= winEnd
+' ==========================================================
+Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
+    ByVal wantVal As String, ByVal dateCol As Long, ByVal useWindow As Boolean, _
+    ByVal winStart As Date, ByVal winEnd As Date)
+
+    Dim lastRow As Long, lastCol As Long, helperCol As Long, r As Long
+    Dim sVals As Variant, dVals As Variant, dv As Variant
+    Dim keep As Boolean, anyDelete As Boolean
+    Dim flags() As Variant
+    Dim delRange As Range
+
+    lastRow = LastDataRow(ws)
+    If lastRow < 2 Then Exit Sub
+
+    lastCol = 1
+    On Error Resume Next
+    lastCol = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+        LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious).Column
+    On Error GoTo 0
+    helperCol = lastCol + 1
+
+    ' one bulk read per tested column, then decide every row in memory
+    If splitCol > 0 Then sVals = ws.Range(ws.Cells(2, splitCol), ws.Cells(lastRow, splitCol)).Value
+    If dateCol > 0 Then dVals = ws.Range(ws.Cells(2, dateCol), ws.Cells(lastRow, dateCol)).Value
+
+    ReDim flags(1 To lastRow - 1, 1 To 1)
+    anyDelete = False
+    For r = 1 To lastRow - 1
+        keep = True
+        If splitCol > 0 And Len(wantVal) > 0 Then
+            If Trim(CStr(ArrCell(sVals, r))) <> wantVal Then keep = False
+        End If
+        If keep And useWindow Then
+            dv = ArrCell(dVals, r)
+            If IsDate(dv) Then
+                If CDate(dv) < winStart Or CDate(dv) > winEnd Then keep = False
+            Else
+                keep = False
+            End If
+        End If
+        If keep Then
+            flags(r, 1) = "K"
+        Else
+            flags(r, 1) = "D"
+            anyDelete = True
+        End If
+    Next r
+
+    If Not anyDelete Then Exit Sub    ' nothing to remove - leave the sheet alone
+
+    ' flag column -> filter to "D" -> delete those rows in one shot
+    On Error Resume Next
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    On Error GoTo 0
+
+    ws.Cells(1, helperCol).Value = "_flag"
+    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = flags
+    ws.Range(ws.Cells(1, helperCol), ws.Cells(lastRow, helperCol)).AutoFilter Field:=1, Criteria1:="D"
+
+    On Error Resume Next
+    Set delRange = ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).SpecialCells(xlCellTypeVisible)
+    On Error GoTo 0
+    If Not delRange Is Nothing Then delRange.EntireRow.Delete
+
+    On Error Resume Next
+    ws.AutoFilterMode = False
+    On Error GoTo 0
+    ws.Columns(helperCol).Delete
+End Sub

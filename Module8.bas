@@ -1,13 +1,14 @@
+Attribute VB_Name = "Module8"
 Sub Start_Button_Create_Folders()
 Dim wsHome As Worksheet
 Dim ecmID As String
 Dim desktopPath As String, mainFolderPath As String
-Dim subFolderPath As String
+Dim subFolderPath As String, otherFolderPath As String
 Dim FSO As Object
 Dim userProfile As String
 
 Set wsHome = ThisWorkbook.Sheets("Sheet1")
-ecmID = Trim(wsHome.Range("J10").Value)
+ecmID = Trim(wsHome.Range("J9").Value)
 
 If ecmID = "" Then
 MsgBox "Action Denied: ECM ID is missing." & vbCrLf & "Please fill in the ECM ID before clicking START.", vbCritical, "Missing ID"
@@ -26,6 +27,7 @@ End If
 
 mainFolderPath = desktopPath & "\" & ecmID
 subFolderPath = mainFolderPath & "\Transaction Files"
+otherFolderPath = mainFolderPath & "\Other Transaction Files"
 
 ' Safely create Main Folder if it doesn't exist
 If Not FSO.FolderExists(mainFolderPath) Then
@@ -38,17 +40,24 @@ If Not FSO.FolderExists(subFolderPath) Then
 FSO.CreateFolder subFolderPath
 End If
 
+' Safely create the Other Transaction Files sub-folder too.
+If Not FSO.FolderExists(otherFolderPath) Then
+FSO.CreateFolder otherFolderPath
+End If
+
 ' Centralized audit ledger row - also seeds this case's own
 ' Register tab inside its Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx.
 modAuditLog.LogAuditEvent ecmID:=ecmID, _
-alertID:=Trim(wsHome.Range("J11").Value), _
-customerName:=Trim(wsHome.Range("J14").Value), _
+AlertID:=Trim(wsHome.Range("J10").Value), _
+customerName:=Trim(wsHome.Range("J13").Value), _
 counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
 eventType:="Case Folder Created", _
 outputFile:=mainFolderPath, _
 toolVersion:="n/a", _
-notes:="Transaction Files folder created"
+notes:="Transaction Files and Other Transaction Files folders created"
 
-' Automatically open the exact folder for the analyst
-Shell "explorer.exe """ & subFolderPath & """", vbNormalFocus
+' Open the main case folder so the analyst sees both sub-folders.
+Shell "explorer.exe """ & mainFolderPath & """", vbNormalFocus
 End Sub
+
+
