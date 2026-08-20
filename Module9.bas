@@ -315,6 +315,11 @@ If exportMode = "EN" Then
     ' --- build the export workbook ---
     Set newWb = Workbooks.Add
     WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+    ' Raw Transactions is a PRE-cleanup snapshot (taken before step 3 ran on
+    ' WsMaster), so unlike Alerted/Non-Alerted it never got date conversion,
+    ' amount formatting, or the Counterparty column. Run that same cleanup on
+    ' it now so it matches the rest instead of showing raw source formatting.
+    CleanTransactionData newWb.Sheets("Raw Transactions")
 
     ' Alerted Transaction = rows where split = "Yes"
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Alerted Transaction"
@@ -345,12 +350,30 @@ If exportMode = "EN" Then
     ' sheet ends up empty - same outcome as the old row-by-row loop.
     FilterRowsFast wsNonEN, aColEN, naCriterion, aDateColEN, True, winStartEN, winEndEN
 
-    ' tidy the two data sheets
-    For Each wsTidy In Array("Alerted Transaction", "Non Alerted Transaction")
+    ' Tidy all three data sheets, and force the SAME "Transaction Date" format
+    ' on each. Raw Transactions just got it via CleanTransactionData above;
+    ' Alerted/Non-Alerted already have real date VALUES (from WsMaster's step
+    ' 3 cleanup) but were showing the long "dddd, mmmm d, yyyy" format there -
+    ' this is what made Alerted look different from Non-Alerted. Setting it
+    ' explicitly here (rather than relying on BuildEnPivots' side effect,
+    ' which only ever touched Alerted Transaction) unifies all three.
+    Dim dateColTidy As Long, lastRTidy As Long
+    For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
         With newWb.Sheets(CStr(wsTidy)).Cells
             .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
             .EntireRow.AutoFit: .VerticalAlignment = xlTop
         End With
+        On Error Resume Next
+        dateColTidy = 0
+        dateColTidy = newWb.Sheets(CStr(wsTidy)).Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
+        If dateColTidy > 0 Then
+            lastRTidy = newWb.Sheets(CStr(wsTidy)).Cells(newWb.Sheets(CStr(wsTidy)).Rows.count, dateColTidy).End(xlUp).row
+            If lastRTidy > 1 Then
+                newWb.Sheets(CStr(wsTidy)).Range(newWb.Sheets(CStr(wsTidy)).Cells(2, dateColTidy), _
+                    newWb.Sheets(CStr(wsTidy)).Cells(lastRTidy, dateColTidy)).NumberFormat = "m/d/yyyy"
+            End If
+        End If
+        On Error GoTo CancelHandler
     Next wsTidy
 
     ' ---- Pivots (same as Legacy), built from Alerted Transaction ----
@@ -1197,4 +1220,73 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
     ws.AutoFilterMode = False
     On Error GoTo 0
     ws.Columns(helperCol).Delete
+End Sub
+
+' ==========================================================
+' CleanTransactionData - runs the SAME cleanup that step 3 (AGGRESSIVE DATA
+' CLEANUP) applies to WsMaster, but on any given worksheet. Used to bring
+' the "Raw Transactions" sheet (an EN Network snapshot taken BEFORE step 3
+' runs) up to the same cleaned state as the sheets copied from WsMaster
+' afterwards: real Date values in the Transaction Date column (via
+' TextToColumns, since source dates can arrive as text), Transaction Amount
+' as currency, and the derived Counterparty column.
+'
+' Uses "m/d/yyyy" (short form) rather than WsMaster's own "dddd, mmmm d,
+' yyyy" - this is the format the pivot-grouping code already relies on
+' elsewhere, and standardising on it here is what keeps Raw Transactions /
+' Alerted Transaction / Non Alerted Transaction all showing the same date
+' type instead of three different ones.
+' ==========================================================
+Private Sub CleanTransactionData(ByVal ws As Worksheet)
+    Dim dH As Range, dLast As Long, dRng As Range
+    Dim aH As Range, aLast As Long, aRng As Range
+    Dim drC As Range, benC As Range, orgC As Range
+    Dim drCol As Long, benCol As Long, orgCol As Long
+    Dim lastR As Long, lastC As Long
+
+    On Error Resume Next
+
+    ' Transaction Date -> real date values, unified short format
+    Set dH = ws.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
+    If Not dH Is Nothing Then
+        dLast = ws.Cells(ws.Rows.count, dH.Column).End(xlUp).row
+        If dLast > 1 Then
+            Set dRng = ws.Range(ws.Cells(2, dH.Column), ws.Cells(dLast, dH.Column))
+            dRng.TextToColumns Destination:=dRng.Cells(1, 1), DataType:=xlDelimited, FieldInfo:=Array(Array(1, 3))
+            dRng.NumberFormat = "m/d/yyyy"
+        End If
+    End If
+
+    ' Transaction Amount -> refreshed values + currency format
+    Set aH = ws.Rows(1).Find(What:="Transaction Amount", LookIn:=xlValues, LookAt:=xlPart)
+    If Not aH Is Nothing Then
+        aLast = ws.Cells(ws.Rows.count, aH.Column).End(xlUp).row
+        If aLast > 1 Then
+            Set aRng = ws.Range(ws.Cells(2, aH.Column), ws.Cells(aLast, aH.Column))
+            aRng.Value = aRng.Value
+            aRng.NumberFormat = "$#,##0.00"
+        End If
+    End If
+
+    ' Counterparty = IF(Dr Cr = "DR", Beneficiary Name, Originator Name)
+    Set drC = ws.Rows(1).Find(What:="Dr Cr", LookAt:=xlPart)
+    Set benC = ws.Rows(1).Find(What:="Beneficiary Name", LookAt:=xlPart)
+    Set orgC = ws.Rows(1).Find(What:="Originator Name", LookAt:=xlPart)
+    If Not drC Is Nothing And Not benC Is Nothing And Not orgC Is Nothing Then
+        drCol = drC.Column: benCol = benC.Column: orgCol = orgC.Column
+        lastR = ws.Cells(ws.Rows.count, "A").End(xlUp).row
+        lastC = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column + 1
+        If lastR > 1 Then
+            ws.Cells(1, lastC).Value = "Counterparty"
+            ws.Range(ws.Cells(2, lastC), ws.Cells(lastR, lastC)).FormulaR1C1 = _
+                "=IF(RC" & drCol & "=""DR"", RC" & benCol & ", RC" & orgCol & ")"
+            ws.Cells(1, lastC - 1).Copy
+            ws.Cells(1, lastC).PasteSpecial Paste:=xlPasteFormats
+            ws.Range(ws.Cells(2, lastC - 1), ws.Cells(lastR, lastC - 1)).Copy
+            ws.Range(ws.Cells(2, lastC), ws.Cells(lastR, lastC)).PasteSpecial Paste:=xlPasteFormats
+            Application.CutCopyMode = False
+        End If
+    End If
+
+    On Error GoTo 0
 End Sub
