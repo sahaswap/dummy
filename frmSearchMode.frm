@@ -98,26 +98,16 @@ Private Sub UserForm_Initialize()
     End If
 
     ' ---- move + center each description label against its OWN button's
-    ' new position (button and label centered on the same middle line). ----
-    Const LBL_H As Single = 34
-    If Not lblOptimised Is Nothing Then
-        lblOptimised.Height = LBL_H
-        lblOptimised.Top = btnOptimised.Top + (btnOptimised.Height - LBL_H) / 2
-        lblOptimised.TextAlign = 2 ' fmTextAlignCenter
-        lblOptimised.WordWrap = True
-    End If
-    If Not lblFast Is Nothing Then
-        lblFast.Height = LBL_H
-        lblFast.Top = btnFast.Top + (btnFast.Height - LBL_H) / 2
-        lblFast.TextAlign = 2
-        lblFast.WordWrap = True
-    End If
-    If Not lblVisible Is Nothing Then
-        lblVisible.Height = LBL_H
-        lblVisible.Top = btnVisible.Top + (btnVisible.Height - LBL_H) / 2
-        lblVisible.TextAlign = 2
-        lblVisible.WordWrap = True
-    End If
+    ' new position. A fixed guessed Height (the old approach) centers the
+    ' BOX against the button, but MSForms.Label has no vertical-align
+    ' property - text always starts at the TOP of whatever Height is set.
+    ' If the box is taller than the actual wrapped text, the box looks
+    ' centered but the readable text still sits high. CenterLabelOnButton
+    ' fixes this by letting AutoSize measure the TRUE wrapped-text height
+    ' at the label's fixed Width first, then centers THAT exact size. ----
+    If Not lblOptimised Is Nothing Then CenterLabelOnButton lblOptimised, btnOptimised
+    If Not lblFast Is Nothing Then CenterLabelOnButton lblFast, btnFast
+    If Not lblVisible Is Nothing Then CenterLabelOnButton lblVisible, btnVisible
 
     ' Short usage tip next to the Cancel button - purely situational, no
     ' option named as the default or preferred choice. Styled like a
@@ -139,6 +129,23 @@ Private Sub UserForm_Initialize()
     btnFast.ControlTipText = "Use if you are not seeing CAPTCHA blocks."
     btnVisible.ControlTipText = "Use for non-English names, or as a last resort."
 
+    On Error GoTo 0
+End Sub
+
+' Vertically centers lbl against btn using lbl's TRUE rendered text height,
+' not a guessed constant. AutoSize + WordWrap=True (with Width already
+' fixed) makes the Forms engine shrink/grow Height to exactly fit the
+' wrapped text at that Width - only Height changes, Width stays put. That
+' accurate Height is then centered against the button's box, so the
+' visible TEXT (not just an oversized bounding box) lines up with the
+' button's middle.
+Private Sub CenterLabelOnButton(ByVal lbl As MSForms.Label, ByVal btn As MSForms.CommandButton)
+    On Error Resume Next
+    lbl.TextAlign = 2 ' fmTextAlignCenter
+    lbl.WordWrap = True
+    lbl.AutoSize = True     ' measures the real wrapped-text height at the fixed Width
+    lbl.AutoSize = False    ' lock that height so nothing can resize it again later
+    lbl.Top = btn.Top + (btn.Height - lbl.Height) / 2
     On Error GoTo 0
 End Sub
 

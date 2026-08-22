@@ -549,10 +549,11 @@ If exportMode = "EN" Then
     FilterRowsFast wsAlertedEN, aColEN, "Yes", 0, False, 0, 0
 
     ' Non Alerted Transaction = "No" rows whose date is in the alerted-month
-    ' window. FALLBACK: if there are no such "No" rows at all, fill the sheet
-    ' with the "Yes" (alerted) rows of the same window instead, so it's never
-    ' empty (e.g. a single-day alert with no surrounding non-alerted activity).
-    Dim naCriterion As String, hasNoInWin As Boolean
+    ' window. If there are NO such "No" rows at all (e.g. a single-day alert
+    ' with no surrounding non-alerted activity), the sheet is NOT filled with
+    ' the "Yes" rows anymore - instead it gets a single message in A1 stating
+    ' that 0 non-alerted transactions were found, with the window's dates.
+    Dim hasNoInWin As Boolean
     hasNoInWin = False
     If haveAlerted And scanLastEN > 1 Then
         For rEN = 1 To scanLastEN - 1
@@ -564,13 +565,23 @@ If exportMode = "EN" Then
             End If
         Next rEN
     End If
-    naCriterion = IIf(hasNoInWin, "No", "Yes")
 
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Non Alerted Transaction"
     Set wsNonEN = newWb.Sheets("Non Alerted Transaction")
-    ' If haveAlerted is False the window is 0..0, so nothing qualifies and the
-    ' sheet ends up empty - same outcome as the old row-by-row loop.
-    FilterRowsFast wsNonEN, aColEN, naCriterion, aDateColEN, True, winStartEN, winEndEN
+
+    If Not haveAlerted Then
+        ' No dated "Yes" rows at all - no window could even be determined
+        ' (the earlier MsgBox already flagged this to the analyst).
+        wsNonEN.Cells.Clear
+        wsNonEN.Range("A1").Value = "No alerted transactions were found, so the Non Alerted window could not be determined."
+    ElseIf Not hasNoInWin Then
+        ' A real window exists, but zero "No" rows fall inside it.
+        wsNonEN.Cells.Clear
+        wsNonEN.Range("A1").Value = "There were 0 non-alerted transactions during the alerted month(s) " & _
+            Format$(winStartEN, "mm/dd/yyyy") & " to " & Format$(winEndEN, "mm/dd/yyyy") & "."
+    Else
+        FilterRowsFast wsNonEN, aColEN, "No", aDateColEN, True, winStartEN, winEndEN
+    End If
 
     ' Tidy all three data sheets, and force the SAME "Transaction Date" format
     ' on each. Raw Transactions just got it via CleanTransactionData above;
