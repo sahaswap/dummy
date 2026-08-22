@@ -56,6 +56,19 @@ Private Sub UserForm_Initialize()
     btnFast.Top = btnOptimised.Top
     btnOptimised.Top = tmpTop
 
+    ' ---- enforce a UNIFORM gap between all 4 buttons. The swap above only
+    ' exchanges Optimised/Fast's Top values - it never touched whatever gap
+    ' the Designer originally had between Fast/Visible and Visible/Cancel,
+    ' which is why 2-3 and 3-4 had a much bigger gap than 1-2. All four
+    ' Tops are now recomputed from Optimised's (now topmost) position using
+    ' one fixed gap, so every row is spaced identically. ----
+    Const BTN_GAP As Single = 10
+    Dim topAnchor As Single
+    topAnchor = btnOptimised.Top
+    btnFast.Top = topAnchor + (uH + BTN_GAP)
+    btnVisible.Top = topAnchor + 2 * (uH + BTN_GAP)
+    btnCancel.Top = topAnchor + 3 * (uH + BTN_GAP)
+
     ' Rename the buttons to match their NEW visual order (1 = whichever is
     ' now on top = Optimised, 2 = Fast, 3 = Visible, unchanged).
     btnOptimised.Caption = "Option 1"

@@ -51,9 +51,10 @@ Next i
 
 ' All 4 buttons share ONE size (BTN_W x BTN_H) so nothing looks mismatched.
 ' Each description label is shorter than its button and vertically CENTERED
-' against it (labelTop = buttonTop + (BTN_H - LBL_H)/2), so the button
-' caption and its text sit "parallel in the middle" of the same row
-' instead of the label text drifting toward the top of a tall box.
+' against it using its TRUE rendered text height (see CenterLbl below) -
+' MSForms.Label has no vertical-align property, so a fixed guessed Height
+' just leaves the box looking centered while the actual text still sits
+' at the very top of it.
 Const BTN_W As Single = 140
 Const BTN_H As Single = 50
 Const LBL_H As Single = 36
@@ -69,9 +70,6 @@ lblTitle.Font.Bold = True
 lblTitle.TextAlign = 1 ' fmTextAlignLeft
 
 ' ---- Row 1: Legacy ----
-' Description labels sit LEFT-ALIGNED to their button (Top flush with the
-' button's own Top, not vertically centered against it), with the TEXT
-' inside each label box itself center-aligned.
 Dim btnLegacy As Object, lblLegacy As Object
 Set btnLegacy = frm.Controls.Add("Forms.CommandButton.1", "btnLegacy")
 btnLegacy.caption = "Legacy": btnLegacy.Left = 10: btnLegacy.Top = 36: btnLegacy.Width = BTN_W: btnLegacy.Height = BTN_H
@@ -81,6 +79,7 @@ lblLegacy.Left = 160: lblLegacy.Top = 36: lblLegacy.Width = 380: lblLegacy.Heigh
 lblLegacy.caption = "Dedupe + pivots - the original consolidated transaction export."
 lblLegacy.WordWrap = True
 lblLegacy.TextAlign = 2 ' fmTextAlignCenter
+CenterLbl lblLegacy, btnLegacy
 
 ' ---- Row 2: EN Network ----
 Dim btnEN As Object, lblEN As Object
@@ -92,6 +91,7 @@ lblEN.Left = 160: lblEN.Top = 96: lblEN.Width = 380: lblEN.Height = LBL_H
 lblEN.caption = "Generates BOTH the Alerted/Non-Alerted file AND the Lookback Transactions file in one go."
 lblEN.WordWrap = True
 lblEN.TextAlign = 2 ' fmTextAlignCenter
+CenterLbl lblEN, btnEN
 
 ' ---- Row 3: Pivot Analysis ----
 Dim btnPivot As Object, lblPivot As Object
@@ -103,6 +103,7 @@ lblPivot.Left = 160: lblPivot.Top = 156: lblPivot.Width = 380: lblPivot.Height =
 lblPivot.caption = "Builds pivot tables from the files in the \Pivot folder. Does not touch ConsolidatedData."
 lblPivot.WordWrap = True
 lblPivot.TextAlign = 2 ' fmTextAlignCenter
+CenterLbl lblPivot, btnPivot
 
 ' ---- Cancel - same BTN_W x BTN_H as the other three ----
 Dim btnCancel As Object
@@ -162,4 +163,20 @@ MsgBox "Could not access the VBA project object model." & vbCrLf & vbCrLf & _
 "Enable 'Trust access to the VBA project object model' in:" & vbCrLf & _
 "File > Options > Trust Center > Trust Center Settings > Macro Settings." & vbCrLf & vbCrLf & _
 "If that's locked by IT policy, frmExportMode must be built manually.", vbCritical, "Trust Setting Required"
+End Sub
+
+' Vertically centers lbl against btn using lbl's TRUE rendered text
+' height, not a guessed constant - same technique as frmSearchMode's
+' CenterLabelOnButton. AutoSize + WordWrap=True (Width already fixed)
+' makes the label shrink/grow Height to exactly fit the wrapped text at
+' that Width; that real Height is then centered against the button's
+' box, so the visible TEXT (not just an oversized bounding box) lines up
+' with the button's middle. Runs at BUILD time here (via the Designer
+' object), same math as it would at Show time.
+Private Sub CenterLbl(ByVal lbl As Object, ByVal btn As Object)
+On Error Resume Next
+lbl.AutoSize = True     ' measures the real wrapped-text height at the fixed Width
+lbl.AutoSize = False    ' lock that height so nothing can resize it again later
+lbl.Top = btn.Top + (btn.Height - lbl.Height) / 2
+On Error GoTo 0
 End Sub

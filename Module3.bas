@@ -768,6 +768,15 @@ End Sub
 ' generated narrative. Assigning a plain .Value to K23 replaces the old
 ' formula outright the first time this runs - nothing needs to be
 ' deleted by hand in the sheet.
+'
+' One ConsolidatedData row can also list MORE THAN ONE triggered rule in
+' its Alert Information cell, comma-separated (e.g. "Rule A, Rule B"),
+' when a single transaction trips multiple rules at once. SplitAlertCell
+' below breaks each cell into its real individual rule names before
+' matching, instead of treating a multi-rule cell as one giant unmatched
+' name - which is what previously produced BOTH a "Rule Not Found" AND a
+' duplicate-looking second copy of a rule that actually did match fine
+' on its own elsewhere.
 ' ==========================================================
 Public Sub RefreshRuleNameTag()
     On Error Resume Next
@@ -794,15 +803,37 @@ Public Sub RefreshRuleNameTag()
     If codeCol = 0 Or nameCol = 0 Then Exit Sub
     lastRuleRow = wsRule.Cells(wsRule.Rows.count, nameCol).End(xlUp).row
 
-    ' ---- 1. collect the DISTINCT set of Alert Information values ----
+    ' ---- 0. build a lookup of every VALID Rule_DB name up front (case-
+    ' insensitive), so a raw Alert Information cell can be tested against
+    ' real known rule names instead of guessing where to split it. ----
+    Dim validNames As Object
+    Set validNames = CreateObject("Scripting.Dictionary")
+    Dim rr As Long, ruleName As String
+    For rr = 2 To lastRuleRow
+        ruleName = Trim$(CStr(wsRule.Cells(rr, nameCol).Value))
+        If ruleName <> "" Then
+            If Not validNames.Exists(UCase$(ruleName)) Then validNames.Add UCase$(ruleName), ruleName
+        End If
+    Next rr
+
+    ' ---- 1. collect the DISTINCT set of individual alert-rule names.
+    ' SplitAlertCell tries each cell WHOLE first (covers the common
+    ' single-rule case, and protects a rule name that itself contains a
+    ' comma, e.g. "...just below $10,000..."); only if that fails does it
+    ' fall back to splitting the cell as a comma-separated list. ----
     Dim seen As Object
     Set seen = CreateObject("Scripting.Dictionary")
     Dim r As Long, v As String, dictKey As String
+    Dim tok As Variant
     For r = 2 To lastDataRow
         v = Trim$(CStr(wsData.Cells(r, alertCol).Value))
         If v <> "" Then
-            dictKey = UCase$(v)
-            If Not seen.Exists(dictKey) Then seen.Add dictKey, v   ' keep first-seen casing
+            For Each tok In SplitAlertCell(v, validNames)
+                dictKey = UCase$(CStr(tok))
+                If dictKey <> "" Then
+                    If Not seen.Exists(dictKey) Then seen.Add dictKey, CStr(tok)   ' keep first-seen casing
+                End If
+            Next tok
         End If
     Next r
     If seen.Count = 0 Then Exit Sub
@@ -811,8 +842,8 @@ Public Sub RefreshRuleNameTag()
     ' so there is no way for a second entry to inherit the first entry's
     ' code. Matching is trimmed + case-insensitive (StrComp vbTextCompare)
     ' rather than a brittle exact-text array match. ----
-    Dim result As String, oneName As Variant, matched As Boolean, rr As Long
-    Dim ruleCode As String, ruleName As String
+    Dim result As String, oneName As Variant, matched As Boolean
+    Dim ruleCode As String
     result = ""
     For Each oneName In seen.Items
         matched = False
@@ -846,3 +877,49 @@ Public Sub RefreshRuleNameTag()
 
     On Error GoTo 0
 End Sub
+
+' Splits ONE raw Alert Information cell value into its individual
+' triggered-rule names. Tries the WHOLE trimmed string against the known
+' rule-name list first; only if that fails does it treat the cell as a
+' comma-separated list, matching the LONGEST possible run of comma-joined
+' pieces against a known rule name before falling back to a single
+' unmatched piece - so a genuine list separator is never confused with a
+' comma that's actually part of one rule's own name.
+Private Function SplitAlertCell(ByVal v As String, ByVal validNames As Object) As Collection
+    Dim outCol As New Collection
+    v = Trim$(v)
+
+    If validNames.Exists(UCase$(v)) Then
+        outCol.Add v
+        Set SplitAlertCell = outCol
+        Exit Function
+    End If
+
+    Dim parts() As String
+    parts = Split(v, ",")
+
+    Dim i As Long, k As Long, m As Long, consumedTo As Long
+    Dim candidate As String, gotMatch As Boolean
+    i = LBound(parts)
+    Do While i <= UBound(parts)
+        gotMatch = False
+        consumedTo = i
+        For k = UBound(parts) To i Step -1
+            candidate = parts(i)
+            For m = i + 1 To k
+                candidate = candidate & "," & parts(m)
+            Next m
+            candidate = Trim$(candidate)
+            If validNames.Exists(UCase$(candidate)) Then
+                outCol.Add candidate
+                consumedTo = k
+                gotMatch = True
+                Exit For
+            End If
+        Next k
+        If Not gotMatch Then outCol.Add Trim$(parts(i))
+        i = consumedTo + 1
+    Loop
+
+    Set SplitAlertCell = outCol
+End Function
