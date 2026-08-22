@@ -33,12 +33,15 @@ Set vbComp = vbProj.VBComponents.Add(3) ' vbext_ct_MSForm
 vbComp.Name = "frmExportMode"
 End If
 
+' Touch .Designer FIRST - on a freshly-added component its Properties
+' collection isn't populated until the Designer has been loaded once,
+' so reading .Properties("Width") before this line errors out.
+Dim frm As Object
+Set frm = vbComp.Designer
+
 vbComp.Properties("Width").Value = 560
 vbComp.Properties("Height").Value = 310
 vbComp.Properties("Caption").Value = "Choose Export Type"
-
-Dim frm As Object
-Set frm = vbComp.Designer
 
 ' Clear any existing controls so re-runs start clean.
 Dim i As Long
