@@ -17,42 +17,112 @@ Option Explicit
 Public SelectedMode As Long
 Public userCancelled As Boolean
 
-' Numbered "Run Search 1/2/3" buttons (instead of Fast/Optimised/Visible)
-' so analysts don't need to know the internals - they just try 1, then 2,
-' then 3. Button 1 = Fast, 2 = Optimised, 3 = Visible under the hood; only
-' the visible caption + guidance change. Verbose description labels are
-' rewritten in place (matched by a word in their original text).
+' Numbered "Option 1/2/3" buttons (instead of Fast/Optimised/Visible) so
+' analysts don't need to know the internals. Option 1/2 positions are
+' SWAPPED from the old Search 1/2 layout: Optimised is now first (Option
+' 1), Fast is now second (Option 2). Button 3 = Visible under the hood;
+' only the caption, guidance, and position change - SelectedMode values
+' (0/1/2) are untouched, so ApplySearchMode's mapping in Module2 needs no
+' changes. Guidance wording is deliberately situational only (which
+' condition applies to you), never comparative ("better"/"steadier"/
+' "quicker"/"default") - the analyst should pick based on their own
+' situation, not be nudged toward one option. Verbose description labels
+' are matched by a word in their ORIGINAL (Designer) text, since
+' Initialize runs fresh every Show/Unload cycle.
 Private Sub UserForm_Initialize()
     On Error Resume Next
 
     ' Remove the old bottom guidance block, if a previous version added it.
     Me.Controls.Remove "lblGuide"
 
-    ' Rename the buttons to simple numbered choices.
-    btnFast.Caption = "Search 1"
-    btnOptimised.Caption = "Search 2"
-    btnVisible.Caption = "Search 3"
+    ' ---- uniform button size: the SMALLEST of the 4 current sizes, so
+    ' nothing grows into a neighbouring label (only ever shrinks to match). ----
+    Dim uW As Single, uH As Single
+    uW = btnFast.Width: If btnOptimised.Width < uW Then uW = btnOptimised.Width
+    If btnVisible.Width < uW Then uW = btnVisible.Width
+    If btnCancel.Width < uW Then uW = btnCancel.Width
+    uH = btnFast.Height: If btnOptimised.Height < uH Then uH = btnOptimised.Height
+    If btnVisible.Height < uH Then uH = btnVisible.Height
+    If btnCancel.Height < uH Then uH = btnCancel.Height
+    btnFast.Width = uW: btnFast.Height = uH
+    btnOptimised.Width = uW: btnOptimised.Height = uH
+    btnVisible.Width = uW: btnVisible.Height = uH
+    btnCancel.Width = uW: btnCancel.Height = uH
 
-    ' Reword the title to make clear it's ONE choice (not three steps to run),
-    ' and replace each verbose description label with a purely situational line
-    ' (no "fast/steadier/reliable" wording - that would defeat the numbering).
+    ' ---- swap places: Optimised moves to where Fast was (now first),
+    ' Fast moves to where Optimised was (now second). Visible is untouched. ----
+    Dim tmpTop As Single
+    tmpTop = btnFast.Top
+    btnFast.Top = btnOptimised.Top
+    btnOptimised.Top = tmpTop
+
+    ' Rename the buttons to match their NEW visual order (1 = whichever is
+    ' now on top = Optimised, 2 = Fast, 3 = Visible, unchanged).
+    btnOptimised.Caption = "Option 1"
+    btnFast.Caption = "Option 2"
+    btnVisible.Caption = "Option 3"
+
+    ' Reword the title, and replace each verbose description label with a
+    ' short situational line - matched by ORIGINAL wording, THEN moved and
+    ' resized to sit centered against its (possibly just-swapped) button.
     Dim c As MSForms.Control, t As String
+    Dim lblFast As MSForms.Label, lblOptimised As MSForms.Label, lblVisible As MSForms.Label
     For Each c In Me.Controls
         If TypeName(c) = "Label" Then
             t = LCase$(CStr(c.Caption))
             If InStr(t, "choose a search") > 0 Or InStr(t, "search mode for this run") > 0 Then
-                c.Caption = "Pick ONE search to run - start with Search 1:"
+                c.Caption = "Pick ONE search to run, based on your situation:"
             ElseIf InStr(t, "quickest") > 0 Then
-                c.Caption = "Start here - use this for most searches."
+                Set lblFast = c   ' this label sits beside the Fast button
             ElseIf InStr(t, "bursty") > 0 Then
-                c.Caption = "Use if Search 1 keeps getting blocked, or the internet / VDI is slow."
+                Set lblOptimised = c   ' this label sits beside the Optimised button
             ElseIf InStr(t, "visible browser") > 0 Then
-                c.Caption = "Use for non-English names, or when the VDI is running its slowest."
+                Set lblVisible = c
+                c.Caption = "Use for non-English names, or as a last resort."
             End If
         End If
     Next c
 
-    ' Short ladder tip next to the Cancel button.
+    ' Observable-EVENT wording, not environment-quality wording. "Slow/
+    ' laggy" vs "good/fast" still carried an implicit good-vs-bad judgment
+    ' about the analyst's connection - even without comparative words like
+    ' "steadier"/"quicker", one condition read as a problem and the other
+    ' as ideal. Tying the choice to something DIRECTLY OBSERVED (a CAPTCHA
+    ' block, yes or no) is a neutral fact, not a quality judgment, so
+    ' neither option reads as the "good" or "bad" one to be in.
+    If Not lblOptimised Is Nothing Then
+        lblOptimised.Caption = "Use if you are seeing repeated CAPTCHA blocks."
+    End If
+    If Not lblFast Is Nothing Then
+        lblFast.Caption = "Use if you are not seeing CAPTCHA blocks."
+    End If
+
+    ' ---- move + center each description label against its OWN button's
+    ' new position (button and label centered on the same middle line). ----
+    Const LBL_H As Single = 34
+    If Not lblOptimised Is Nothing Then
+        lblOptimised.Height = LBL_H
+        lblOptimised.Top = btnOptimised.Top + (btnOptimised.Height - LBL_H) / 2
+        lblOptimised.TextAlign = 2 ' fmTextAlignCenter
+        lblOptimised.WordWrap = True
+    End If
+    If Not lblFast Is Nothing Then
+        lblFast.Height = LBL_H
+        lblFast.Top = btnFast.Top + (btnFast.Height - LBL_H) / 2
+        lblFast.TextAlign = 2
+        lblFast.WordWrap = True
+    End If
+    If Not lblVisible Is Nothing Then
+        lblVisible.Height = LBL_H
+        lblVisible.Top = btnVisible.Top + (btnVisible.Height - LBL_H) / 2
+        lblVisible.TextAlign = 2
+        lblVisible.WordWrap = True
+    End If
+
+    ' Short usage tip next to the Cancel button - purely situational, no
+    ' option named as the default or preferred choice. Styled like a
+    ' terms-and-conditions footnote (small, italic, asterisk-prefixed)
+    ' so it reads as fine-print reference, not a headline instruction.
     Dim tip As MSForms.Label
     Set tip = Me.Controls.Add("Forms.Label.1", "lblGuide", True)
     tip.Left = btnCancel.Left + btnCancel.Width + 12
@@ -60,13 +130,14 @@ Private Sub UserForm_Initialize()
     tip.Width = Me.InsideWidth - tip.Left - 8
     tip.Height = 44
     tip.WordWrap = True
-    tip.Font.Size = 8
-    tip.Caption = "Try Search 1 first. If it keeps getting blocked or the connection is slow, move to Search 2, then Search 3."
+    tip.Font.Size = 7
+    tip.Font.Italic = True
+    tip.Caption = "*Option 1 - you're seeing repeated CAPTCHA blocks. Option 2 - you're not seeing CAPTCHA blocks. Option 3 - non-English names, or as a last resort."
 
     ' tooltips too (harmless, on hover)
-    btnFast.ControlTipText = "Start here - use this for most searches."
-    btnOptimised.ControlTipText = "Use if Search 1 keeps getting blocked, or the internet / VDI is slow."
-    btnVisible.ControlTipText = "Use for non-English names, or when the VDI is running its slowest."
+    btnOptimised.ControlTipText = "Use if you are seeing repeated CAPTCHA blocks."
+    btnFast.ControlTipText = "Use if you are not seeing CAPTCHA blocks."
+    btnVisible.ControlTipText = "Use for non-English names, or as a last resort."
 
     On Error GoTo 0
 End Sub

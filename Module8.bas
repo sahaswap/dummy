@@ -27,7 +27,7 @@ End If
 
 mainFolderPath = desktopPath & "\" & ecmID
 subFolderPath = mainFolderPath & "\Transaction Files"
-otherFolderPath = mainFolderPath & "\Other Transaction Files"
+otherFolderPath = mainFolderPath & "\Pivot"
 
 ' Safely create Main Folder if it doesn't exist
 If Not FSO.FolderExists(mainFolderPath) Then
@@ -40,7 +40,7 @@ If Not FSO.FolderExists(subFolderPath) Then
 FSO.CreateFolder subFolderPath
 End If
 
-' Safely create the Other Transaction Files sub-folder too.
+' Safely create the Pivot sub-folder too.
 If Not FSO.FolderExists(otherFolderPath) Then
 FSO.CreateFolder otherFolderPath
 End If
@@ -54,7 +54,7 @@ counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
 eventType:="Case Folder Created", _
 outputFile:=mainFolderPath, _
 toolVersion:="n/a", _
-notes:="Transaction Files and Other Transaction Files folders created"
+notes:="Transaction Files and Pivot folders created"
 
 ' Open the main case folder so the analyst sees both sub-folders.
 Shell "explorer.exe """ & mainFolderPath & """", vbNormalFocus

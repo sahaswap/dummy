@@ -56,35 +56,30 @@ Exit Sub
 End If
 
 ' ==========================================
-' 1b. EXPORT FORMAT PICKER - Legacy vs EN Network
+' 1b. EXPORT FORMAT PICKER - frmExportMode (Legacy / EN Network / Pivot
+'     Analysis / Cancel), same pattern as frmSearchMode for OSDD Search.
+'     EN Network no longer asks Alerted/Non-Alerted vs Lookback
+'     separately - choosing it generates BOTH files in one go (see
+'     section 4-EN below).
 ' ==========================================
-Dim exportMode As String, emResp As VbMsgBoxResult, enResp As VbMsgBoxResult
-emResp = MsgBox( _
-"Choose the export format:" & vbCrLf & vbCrLf & _
-"YES  =  Legacy   (dedupe + pivots)" & vbCrLf & _
-"NO   =  EN Network" & vbCrLf & vbCrLf & _
-"(Cancel to abort)", _
-vbYesNoCancel Or vbQuestion, "Export Format")
-If emResp = vbCancel Then Exit Sub
-If emResp = vbYes Then
-    exportMode = "LEGACY"
-Else
-    ' EN Network second-level choice
-    enResp = MsgBox( _
-    "EN Network - choose the file to export:" & vbCrLf & vbCrLf & _
-    "YES  =  Alerted / Non-Alerted Trx File" & vbCrLf & _
-    "NO   =  Lookback Transaction File" & vbCrLf & vbCrLf & _
-    "(Cancel to abort)", _
-    vbYesNoCancel Or vbQuestion, "EN Network Export")
-    If enResp = vbCancel Then Exit Sub
-    If enResp = vbYes Then exportMode = "EN" Else exportMode = "LOOKBACK"
-End If
+Dim exportMode As String
+frmExportMode.Show vbModal
 
-' Source folder is always "Transaction Files" now - the old
-' UserForm1 picker (Transaction Files / Non Alerted / Cancel) has
-' been removed, so this runs straight through like it used to.
+If frmExportMode.userCancelled Then
+    Unload frmExportMode
+    Exit Sub
+End If
+exportMode = frmExportMode.SelectedMode   ' "LEGACY" / "EN" / "PIVOT"
+Unload frmExportMode
+
+' Source folder is "Transaction Files" for every mode except Pivot
+' Analysis, which reads from its own separate "\Pivot" folder instead.
 Dim sourceFolderName As String
-sourceFolderName = "Transaction Files"
+If exportMode = "PIVOT" Then
+    sourceFolderName = "Pivot"
+Else
+    sourceFolderName = "Transaction Files"
+End If
 
 ' Build the exact paths using the guaranteed slash
 desktopPath = CreateObject("WScript.Shell").SpecialFolders("Desktop")
@@ -113,6 +108,124 @@ Next objFile
 If Not fileFound Then
 MsgBox "No Excel files found in the target folder!", vbExclamation, "Folder is Empty"
 Exit Sub
+End If
+
+' ==========================================
+' 1c. PIVOT ANALYSIS EXPORT (own source folder: \Pivot)
+'   Runs on a PRIVATE scratch sheet of its own - ConsolidatedData is
+'   NEVER touched, not even temporarily, unlike every other mode below
+'   which stages through it. Combine + cleanup mirrors steps 2-3
+'   exactly, just targeting that scratch sheet instead of WsMaster.
+'   Output (data + the same 4 pivots) is saved INSIDE \Pivot itself,
+'   not the main case folder, named "..._Pivot Analysis.xlsx".
+' ==========================================
+If exportMode = "PIVOT" Then
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    origCalc = Application.Calculation
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+
+    Dim wsPivScratch As Worksheet
+    Dim pFile As Object, pWb As Workbook, pWs As Worksheet
+    Dim pHeaderCell As Range, pHeaderRow As Long, pHeadCol As Long
+    Dim pLastRowSource As Long, pLastRowMaster As Long, pHeaderCopied As Boolean
+
+    ' its own scratch sheet - a completely separate area from ConsolidatedData
+    On Error Resume Next
+    ThisWorkbook.Sheets("TempPivotScratch").Delete
+    On Error GoTo CancelHandler
+    Set wsPivScratch = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+    wsPivScratch.Name = "TempPivotScratch"
+
+    ' combine every .xls* in \Pivot, same "Transaction ID" anchor logic as step 2
+    pHeaderCopied = False
+    For Each pFile In objFolder.Files
+        If (InStr(1, pFile.Name, ".xls", vbTextCompare) > 0) And (Left(pFile.Name, 2) <> "~$") And (pFile.Name <> ThisWorkbook.Name) Then
+            Set pWb = Workbooks.Open(pFile.path, ReadOnly:=True, UpdateLinks:=False)
+            On Error Resume Next
+            Set pWs = pWb.Sheets(1)
+            On Error GoTo CancelHandler
+            If Not pWs Is Nothing Then
+                With pWs
+                    Set pHeaderCell = .Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole)
+                    If Not pHeaderCell Is Nothing Then
+                        pHeaderRow = pHeaderCell.row
+                        pHeadCol = pHeaderCell.Column
+                        pLastRowSource = .Cells(.Rows.count, pHeadCol).End(xlUp).row
+                        If pLastRowSource >= pHeaderRow Then
+                            If Not pHeaderCopied Then
+                                .Range(.Cells(pHeaderRow, pHeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=wsPivScratch.Range("A1")
+                                pHeaderCopied = True
+                            Else
+                                If pLastRowSource > pHeaderRow Then
+                                    pLastRowMaster = wsPivScratch.Cells(wsPivScratch.Rows.count, "A").End(xlUp).row + 1
+                                    .Range(.Cells(pHeaderRow + 1, pHeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=wsPivScratch.Range("A" & pLastRowMaster)
+                                End If
+                            End If
+                        End If
+                    End If
+                End With
+            End If
+            pWb.Close SaveChanges:=False
+        End If
+    Next pFile
+
+    ' same cleanup the other modes get (real dates, currency format, Counterparty column)
+    CleanTransactionData wsPivScratch
+
+    ' output workbook: the data + the same 4 "Legacy" pivots (shared helper)
+    Dim newWbPiv As Workbook
+    Set newWbPiv = Workbooks.Add
+    wsPivScratch.Copy Before:=newWbPiv.Sheets(1): ActiveSheet.Name = "Pivot Data"
+    BuildEnPivots newWbPiv, "Pivot Data", "Pivot", "Pivot Data"
+
+    Dim pSh As Long
+    For pSh = newWbPiv.Sheets.count To 1 Step -1
+        Select Case newWbPiv.Sheets(pSh).Name
+            Case "Pivot Data", "Pivot"
+                ' keep
+            Case Else
+                newWbPiv.Sheets(pSh).Delete
+        End Select
+    Next pSh
+
+    ' remove the scratch sheet - ConsolidatedData was never touched by this mode
+    On Error Resume Next
+    ThisWorkbook.Sheets("TempPivotScratch").Delete
+    On Error GoTo CancelHandler
+
+    ' save INSIDE \Pivot itself (folderPath), not the main case folder
+    Dim pivotFileName As String, pivotSavePath As String
+    pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
+    pivotSavePath = folderPath & slash & pivotFileName
+    newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
+
+    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
+        customerName:=Trim(wsHome.Range("J13").Value), _
+        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
+        eventType:="Pivot Analysis Generated", _
+        outputFile:=pivotSavePath, toolVersion:="3.5", _
+        notes:="source=" & sourceFolderName
+
+    newWbPiv.Sheets("Pivot Data").Activate
+
+    Application.EnableCancelKey = xlInterrupt
+    Application.Calculation = origCalc
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    On Error Resume Next
+    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
+    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
+    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
+    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
+    On Error GoTo 0
+
+    MsgBox "Pivot Analysis export complete!" & vbCrLf & _
+        "ConsolidatedData was not touched." & vbCrLf & _
+        "Saved to:" & vbCrLf & pivotSavePath, vbInformation, "Success"
+    Exit Sub
 End If
 
 ' Initialize ConsolidatedData sheet
@@ -189,15 +302,16 @@ wsHome.Parent.Sheets("TempRawBackup").Delete
 Application.DisplayAlerts = True
 On Error GoTo CancelHandler
 
-' The raw snapshot feeds the "Raw Transactions" sheet, which only the
-' Legacy and EN (Alerted/Non-Alerted) exports produce. The Lookback file
-' has no Raw sheet, so skip the full-data sheet copy for that mode - it
-' was being built and then thrown away untouched.
-If exportMode <> "LOOKBACK" Then
-    WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
-    Set WsRawTemp = ActiveSheet
-    WsRawTemp.Name = "TempRawBackup"
-End If
+' The raw snapshot feeds the "Raw Transactions" sheet. PIVOT mode never
+' reaches this line (it exits earlier, before ConsolidatedData is even
+' touched). Both remaining modes need it: LEGACY builds Raw Transactions
+' directly, and EN Network's combined export always includes the
+' Alerted/Non-Alerted file, which also needs it - so this now runs
+' unconditionally rather than checking for a "Lookback-only" mode that
+' no longer exists (EN Network always builds both files in one go).
+WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
+Set WsRawTemp = ActiveSheet
+WsRawTemp.Name = "TempRawBackup"
 
 ' ==========================================
 ' 3. AGGRESSIVE DATA CLEANUP
@@ -252,12 +366,120 @@ End If
 End If
 
 ' ==========================================
-' 4-EN. EN NETWORK EXPORT (Alerted / Non-Alerted split)
-'   Runs INSTEAD of the Legacy dedupe path when the analyst chose
-'   EN Network. Self-contained: builds its own workbook, saves, logs
-'   audit, and Exits - the Legacy block below is left untouched.
+' 4-EN. EN NETWORK EXPORT - generates BOTH files in one go
+'   Runs INSTEAD of the Legacy dedupe path when the analyst chose EN
+'   Network. There is no longer a sub-picker for this - clicking EN
+'   Network builds the Lookback Transactions file FIRST (it needs the
+'   FULL Yes+No dataset), then the Alerted/Non-Alerted file SECOND
+'   (its own final step is what narrows ConsolidatedData down to
+'   Yes-only for good - doing that any earlier would strip the "No"
+'   rows Lookback still needs). One combined Excel-state restore and
+'   one combined success message cover both files; the Legacy block
+'   below is left untouched.
 ' ==========================================
 If exportMode = "EN" Then
+    ' ---------------------------------------------------------------
+    ' 4-LB. Lookback Transactions (built FIRST - needs full Yes+No)
+    '   All transactions (Yes AND No) in the 1-year lookback window:
+    '   start = 1st of month, one year back from the LAST alerted date;
+    '   end = the last alerted date. Data rows + the same Legacy pivots.
+    ' ---------------------------------------------------------------
+    Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
+    Dim keepLB As Boolean, cvLB As Variant
+    Dim lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
+    Dim wsLB As Worksheet, lbLastRow As Long
+    Dim lbSavedPath As String
+
+    aColLB = 0: aDateColLB = 0
+    On Error Resume Next
+    aColLB = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
+    aDateColLB = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
+    On Error GoTo CancelHandler
+    If aColLB = 0 Then
+        MsgBox "EN Network export needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found in the data.", vbCritical, "Column Not Found"
+        GoTo CancelHandler
+    End If
+
+    ' last alerted date -> window [1st-of-month one year back .. last alerted
+    ' date]. Bulk read + LastDataRow, same mechanism the EN block uses below.
+    Dim sArrLB As Variant, dArrLB As Variant
+    scanLastLB = LastDataRow(WsMaster)
+    haveAlertedLB = False
+    If scanLastLB > 1 Then
+        sArrLB = WsMaster.Range(WsMaster.Cells(2, aColLB), WsMaster.Cells(scanLastLB, aColLB)).Value
+        If aDateColLB > 0 Then _
+            dArrLB = WsMaster.Range(WsMaster.Cells(2, aDateColLB), WsMaster.Cells(scanLastLB, aDateColLB)).Value
+        For rLB = 1 To scanLastLB - 1
+            If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
+                cvLB = ArrCell(dArrLB, rLB)
+                If IsDate(cvLB) Then
+                    If Not haveAlertedLB Then
+                        lastAlertedLB = CDate(cvLB): haveAlertedLB = True
+                    ElseIf CDate(cvLB) > lastAlertedLB Then
+                        lastAlertedLB = CDate(cvLB)
+                    End If
+                End If
+            End If
+        Next rLB
+    End If
+    If Not haveAlertedLB Then
+        MsgBox "No dated 'Yes' alerted transactions were found, so the EN Network export can't be built.", vbCritical, "No Alerted Rows"
+        GoTo CancelHandler
+    End If
+    lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)  ' 1st of month, 1yr back
+    lbEnd = lastAlertedLB
+
+    ' build workbook: Lookback Transactions (all Yes+No in window) + pivots
+    Set newWb = Workbooks.Add
+    WsMaster.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Lookback Transactions"
+    Set wsLB = newWb.Sheets("Lookback Transactions")
+    ' date-window only - keeps BOTH Yes and No rows (splitCol = 0). WsMaster
+    ' itself is only ever COPIED FROM here, never modified - it must stay
+    ' fully intact (Yes+No) for the Alerted/Non-Alerted build right after.
+    FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
+    With wsLB.Cells
+        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+        .EntireRow.AutoFit: .VerticalAlignment = xlTop
+    End With
+
+    BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
+
+    ' drop the default blank sheet(s)
+    Application.DisplayAlerts = False
+    For rLB = newWb.Sheets.count To 1 Step -1
+        Select Case newWb.Sheets(rLB).Name
+            Case "Lookback Transactions", "Pivot"
+                ' keep
+            Case Else
+                newWb.Sheets(rLB).Delete
+        End Select
+    Next rLB
+    Application.DisplayAlerts = True
+
+    ' save: {ECM}_{AlertID}_Lookback Transactions (mm.dd.yyyy to mm.dd.yyyy).xlsx
+    excelFileName = ecmID & "_" & AlertID & "_Lookback Transactions (" & _
+        Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
+    finalSavePath = saveFolderPath & slash & excelFileName
+    Application.DisplayAlerts = False
+    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    Application.DisplayAlerts = True
+    lbSavedPath = finalSavePath   ' remember before the Alerted/Non-Alerted save overwrites finalSavePath
+
+    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
+        customerName:=Trim(wsHome.Range("J13").Value), _
+        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
+        eventType:="Transaction File Consolidated", _
+        outputFile:=finalSavePath, toolVersion:="3.5", _
+        notes:="source=" & sourceFolderName & ", mode=EN Network Lookback"
+
+    ' NOTE: ConsolidatedData is NOT narrowed to Yes-only here (that used to
+    ' happen at this point). It must stay full Yes+No until the
+    ' Alerted/Non-Alerted build below has copied from it - THAT block's own
+    ' final step is what narrows it, once, for the whole combined export.
+
+    ' ---------------------------------------------------------------
+    ' 4-AN. Alerted / Non-Alerted Trx File (built SECOND)
+    ' ---------------------------------------------------------------
     Dim wsAlertedEN As Worksheet, wsNonEN As Worksheet, wsPivotEN As Worksheet
     Dim aColEN As Long, aDateColEN As Long, aLastEN As Long, naLastEN As Long
     Dim rEN As Long, scanLastEN As Long, keepEN As Boolean, wsTidy As Variant, cvEN As Variant
@@ -422,13 +644,15 @@ If exportMode = "EN" Then
     On Error GoTo CancelHandler
 
     ' ConsolidatedData must hold ONLY the alerted transaction data - never
-    ' the Non-Alerted rows. Copy the Alerted Transaction sheet back into it.
+    ' the Non-Alerted or Lookback rows. This is the ONE point in the whole
+    ' combined EN Network export where ConsolidatedData finally gets
+    ' narrowed - both files above already finished reading from it.
     WsMaster.Cells.Clear
     newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=WsMaster.Range("A1")
 
     newWb.Sheets("Raw Transactions").Activate
 
-    ' ---- finalize / restore Excel + re-protect ----
+    ' ---- ONE combined finalize / restore Excel + re-protect for BOTH files ----
     Application.EnableCancelKey = xlInterrupt
     Application.Calculation = origCalc
     Application.EnableEvents = True
@@ -440,127 +664,9 @@ If exportMode = "EN" Then
     Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
     On Error GoTo 0
 
-    MsgBox "EN Network export complete!" & vbCrLf & _
-        "Saved to:" & vbCrLf & finalSavePath, vbInformation, "Success"
-    Exit Sub
-End If
-
-' ==========================================
-' 4-LB. LOOKBACK TRANSACTIONS (EN Network)
-'   All transactions (Yes AND No) in the 1-year lookback window:
-'   start = 1st of month, one year back from the LAST alerted date;
-'   end = the last alerted date. Data rows + the same Legacy pivots.
-' ==========================================
-If exportMode = "LOOKBACK" Then
-    Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
-    Dim keepLB As Boolean, cvLB As Variant
-    Dim lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
-    Dim wsLB As Worksheet, lbLastRow As Long
-
-    aColLB = 0: aDateColLB = 0
-    On Error Resume Next
-    aColLB = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
-    aDateColLB = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-    On Error GoTo CancelHandler
-    If aColLB = 0 Then
-        MsgBox "Lookback needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found.", vbCritical, "Column Not Found"
-        GoTo CancelHandler
-    End If
-
-    ' last alerted date -> window [1st-of-month one year back .. last alerted
-    ' date]. Bulk read + LastDataRow, same as the EN branch.
-    Dim sArrLB As Variant, dArrLB As Variant
-    scanLastLB = LastDataRow(WsMaster)
-    haveAlertedLB = False
-    If scanLastLB > 1 Then
-        sArrLB = WsMaster.Range(WsMaster.Cells(2, aColLB), WsMaster.Cells(scanLastLB, aColLB)).Value
-        If aDateColLB > 0 Then _
-            dArrLB = WsMaster.Range(WsMaster.Cells(2, aDateColLB), WsMaster.Cells(scanLastLB, aDateColLB)).Value
-        For rLB = 1 To scanLastLB - 1
-            If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
-                cvLB = ArrCell(dArrLB, rLB)
-                If IsDate(cvLB) Then
-                    If Not haveAlertedLB Then
-                        lastAlertedLB = CDate(cvLB): haveAlertedLB = True
-                    ElseIf CDate(cvLB) > lastAlertedLB Then
-                        lastAlertedLB = CDate(cvLB)
-                    End If
-                End If
-            End If
-        Next rLB
-    End If
-    If Not haveAlertedLB Then
-        MsgBox "No dated 'Yes' alerted transactions were found, so the Lookback window can't be built.", vbCritical, "No Alerted Rows"
-        GoTo CancelHandler
-    End If
-    lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)  ' 1st of month, 1yr back
-    lbEnd = lastAlertedLB
-
-    ' build workbook: Lookback Transactions (all Yes+No in window) + pivots
-    Set newWb = Workbooks.Add
-    WsMaster.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Lookback Transactions"
-    Set wsLB = newWb.Sheets("Lookback Transactions")
-    ' date-window only - keeps BOTH Yes and No rows (splitCol = 0)
-    FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
-    With wsLB.Cells
-        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
-        .EntireRow.AutoFit: .VerticalAlignment = xlTop
-    End With
-
-    BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
-
-    ' drop the default blank sheet(s)
-    Application.DisplayAlerts = False
-    For rLB = newWb.Sheets.count To 1 Step -1
-        Select Case newWb.Sheets(rLB).Name
-            Case "Lookback Transactions", "Pivot"
-                ' keep
-            Case Else
-                newWb.Sheets(rLB).Delete
-        End Select
-    Next rLB
-    Application.DisplayAlerts = True
-
-    On Error Resume Next
-    Application.DisplayAlerts = False
-    wsHome.Parent.Sheets("TempRawBackup").Delete
-    Application.DisplayAlerts = True
-    On Error GoTo CancelHandler
-
-    ' save: {ECM}_{AlertID}_Lookback Transactions (mm.dd.yyyy to mm.dd.yyyy).xlsx
-    excelFileName = ecmID & "_" & AlertID & "_Lookback Transactions (" & _
-        Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
-    finalSavePath = saveFolderPath & slash & excelFileName
-    Application.DisplayAlerts = False
-    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
-    Application.DisplayAlerts = True
-
-    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-        customerName:=Trim(wsHome.Range("J13").Value), _
-        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-        eventType:="Transaction File Consolidated", _
-        outputFile:=finalSavePath, toolVersion:="3.5", _
-        notes:="source=" & sourceFolderName & ", mode=EN Network Lookback"
-
-    ' ConsolidatedData must hold ONLY the alerted (Yes) transactions - never
-    ' the Lookback data. Filter ConsolidatedData down to the "Yes" rows.
-    FilterRowsFast WsMaster, aColLB, "Yes", 0, False, 0, 0
-
-    newWb.Sheets("Lookback Transactions").Activate
-    Application.EnableCancelKey = xlInterrupt
-    Application.Calculation = origCalc
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True
-    On Error Resume Next
-    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
-    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
-    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
-    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
-    On Error GoTo 0
-
-    MsgBox "Lookback Transactions export complete!" & vbCrLf & _
-        "Window: " & Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & vbCrLf & _
-        "Saved to:" & vbCrLf & finalSavePath, vbInformation, "Success"
+    MsgBox "EN Network export complete! Both files were generated:" & vbCrLf & vbCrLf & _
+        "Lookback Transactions:" & vbCrLf & lbSavedPath & vbCrLf & vbCrLf & _
+        "Alerted / Non-Alerted Transactions:" & vbCrLf & finalSavePath, vbInformation, "Success"
     Exit Sub
 End If
 
