@@ -54,23 +54,27 @@ Next i
 Const BTN_W As Single = 140
 Const BTN_H As Single = 50
 Const LBL_H As Single = 36
-Const LBL_OFFSET As Single = (BTN_H - LBL_H) / 2   ' = 7
 
-' Title line
+' Title line - left-aligned, sitting just above the Legacy button (NOT a
+' centered banner spanning the whole form), so it reads as a caption for
+' the button column below it rather than a title for the whole dialog.
 Dim lblTitle As Object
 Set lblTitle = frm.Controls.Add("Forms.Label.1", "lblTitle")
-lblTitle.Left = 10: lblTitle.Top = 8: lblTitle.Width = 530: lblTitle.Height = 18
+lblTitle.Left = 10: lblTitle.Top = 14: lblTitle.Width = BTN_W: lblTitle.Height = 18
 lblTitle.caption = "Pick ONE export to run:"
 lblTitle.Font.Bold = True
-lblTitle.TextAlign = 2 ' fmTextAlignCenter
+lblTitle.TextAlign = 1 ' fmTextAlignLeft
 
 ' ---- Row 1: Legacy ----
+' Description labels sit LEFT-ALIGNED to their button (Top flush with the
+' button's own Top, not vertically centered against it), with the TEXT
+' inside each label box itself center-aligned.
 Dim btnLegacy As Object, lblLegacy As Object
 Set btnLegacy = frm.Controls.Add("Forms.CommandButton.1", "btnLegacy")
 btnLegacy.caption = "Legacy": btnLegacy.Left = 10: btnLegacy.Top = 36: btnLegacy.Width = BTN_W: btnLegacy.Height = BTN_H
 
 Set lblLegacy = frm.Controls.Add("Forms.Label.1", "lblLegacy")
-lblLegacy.Left = 160: lblLegacy.Top = 36 + LBL_OFFSET: lblLegacy.Width = 380: lblLegacy.Height = LBL_H
+lblLegacy.Left = 160: lblLegacy.Top = 36: lblLegacy.Width = 380: lblLegacy.Height = LBL_H
 lblLegacy.caption = "Dedupe + pivots - the original consolidated transaction export."
 lblLegacy.WordWrap = True
 lblLegacy.TextAlign = 2 ' fmTextAlignCenter
@@ -81,7 +85,7 @@ Set btnEN = frm.Controls.Add("Forms.CommandButton.1", "btnEN")
 btnEN.caption = "EN Network": btnEN.Left = 10: btnEN.Top = 96: btnEN.Width = BTN_W: btnEN.Height = BTN_H
 
 Set lblEN = frm.Controls.Add("Forms.Label.1", "lblEN")
-lblEN.Left = 160: lblEN.Top = 96 + LBL_OFFSET: lblEN.Width = 380: lblEN.Height = LBL_H
+lblEN.Left = 160: lblEN.Top = 96: lblEN.Width = 380: lblEN.Height = LBL_H
 lblEN.caption = "Generates BOTH the Alerted/Non-Alerted file AND the Lookback Transactions file in one go."
 lblEN.WordWrap = True
 lblEN.TextAlign = 2 ' fmTextAlignCenter
@@ -92,7 +96,7 @@ Set btnPivot = frm.Controls.Add("Forms.CommandButton.1", "btnPivot")
 btnPivot.caption = "Pivot Analysis": btnPivot.Left = 10: btnPivot.Top = 156: btnPivot.Width = BTN_W: btnPivot.Height = BTN_H
 
 Set lblPivot = frm.Controls.Add("Forms.Label.1", "lblPivot")
-lblPivot.Left = 160: lblPivot.Top = 156 + LBL_OFFSET: lblPivot.Width = 380: lblPivot.Height = LBL_H
+lblPivot.Left = 160: lblPivot.Top = 156: lblPivot.Width = 380: lblPivot.Height = LBL_H
 lblPivot.caption = "Builds pivot tables from the files in the \Pivot folder. Does not touch ConsolidatedData."
 lblPivot.WordWrap = True
 lblPivot.TextAlign = 2 ' fmTextAlignCenter

@@ -47,6 +47,10 @@ Dim c2 As Object
 ' 1. Point the macro to Sheet7 (where your mapping table lives)
 Set ws = ThisWorkbook.Sheets("Sheet7")
 
+' Recompute [Rule Name] (K23) fresh, right before it's used below - see
+' RefreshRuleNameTag for why this replaced the old in-sheet array formula.
+RefreshRuleNameTag
+
 ' --- CAPTURE ID's FROM SHEET1 FOR NAMING ---
 ecmID = ThisWorkbook.Sheets("Sheet1").Range("J9").Value
 AlertID = ThisWorkbook.Sheets("Sheet1").Range("J10").Value
@@ -166,7 +170,7 @@ CustName = ThisWorkbook.Sheets("Sheet1").Range("J13").Value
 If isRFI Then
     wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_RFI QUESTIONS.docx"
 ElseIf isEscalation Then
-    wordFileName = ecmID & "_" & AlertID & "_Escalation Narrative.docx"
+    wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_Escalation Narrative.docx"
 Else
     wordFileName = ecmID & "_" & AlertID & "_" & CustName & "_Alert Write-Up.docx"
 End If
@@ -729,3 +733,116 @@ Private Sub ApplySheet7Tags(ByVal wdTarget As Object)
 End Sub
 
 
+
+
+' ==========================================================
+' RefreshRuleNameTag - recomputes Sheet7's [Rule Name] tag (the cell in
+' column K next to "[Rule Name]" in column J) directly in VBA, replacing
+' the fragile in-sheet array formula that used to live there:
+'
+'   =LET(AllAlerts, TEXTJOIN(",",TRUE,FILTER(ConsolidatedData!C2:C1000,
+'        ConsolidatedData!C2:C1000<>"")),
+'        SplitNames, UNIQUE(TRIM(TEXTSPLIT(AllAlerts,,","))),
+'        RuleCodes, XLOOKUP(SplitNames, Rule_DB!C:C, Rule_DB!B:B,
+'        "Code Not Found"),
+'        TEXTJOIN(", ",TRUE, RuleCodes & " - " & SplitNames))
+'
+' That formula had two real bugs:
+'   1. It hardcoded ConsolidatedData column C rather than finding the
+'      "Alert Information" header by name, so it silently pointed at the
+'      wrong column if a source file's column order ever shifted.
+'   2. When TWO OR MORE distinct alert scenarios were present in one
+'      case, XLOOKUP's array result did not reliably zip one-to-one
+'      against the array of distinct names - the second (and later)
+'      scenario could end up paired with the FIRST scenario's rule code
+'      instead of its own. A genuine text mismatch against Rule_DB also
+'      surfaced as the raw "Code Not Found" fallback, which then showed
+'      up as a leaked calculation-error number (e.g. "-2363053") once
+'      that error propagated through the rest of the array formula.
+'
+' This version resolves each unique alert scenario ONE AT A TIME in a
+' plain loop - no array-broadcasting is possible - matches Rule_DB
+' robustly (trimmed, case-insensitive) instead of a brittle exact array
+' match, and writes a clearly human-readable flag for anything that
+' still doesn't match, instead of letting a raw error leak into the
+' generated narrative. Assigning a plain .Value to K23 replaces the old
+' formula outright the first time this runs - nothing needs to be
+' deleted by hand in the sheet.
+' ==========================================================
+Public Sub RefreshRuleNameTag()
+    On Error Resume Next
+    Dim wsData As Worksheet, wsRule As Worksheet, wsTag As Worksheet
+    Set wsData = ThisWorkbook.Sheets("ConsolidatedData")
+    Set wsRule = ThisWorkbook.Sheets("Rule_DB")
+    Set wsTag = ThisWorkbook.Sheets("Sheet7")
+    If wsData Is Nothing Or wsRule Is Nothing Or wsTag Is Nothing Then Exit Sub
+
+    ' locate "Alert Information" in ConsolidatedData by HEADER NAME, not a
+    ' hardcoded column letter - this is what made the old formula fragile.
+    Dim alertCol As Long, lastDataRow As Long
+    alertCol = 0
+    alertCol = wsData.Rows(1).Find(What:="Alert Information", LookAt:=xlPart).Column
+    If alertCol = 0 Then Exit Sub
+    lastDataRow = wsData.Cells(wsData.Rows.count, alertCol).End(xlUp).row
+    If lastDataRow < 2 Then Exit Sub
+
+    ' locate Rule_DB's Rule Code / Rule Name columns by header name too.
+    Dim codeCol As Long, nameCol As Long, lastRuleRow As Long
+    codeCol = 0: nameCol = 0
+    codeCol = wsRule.Rows(1).Find(What:="Rule Code", LookAt:=xlPart).Column
+    nameCol = wsRule.Rows(1).Find(What:="Rule Name", LookAt:=xlPart).Column
+    If codeCol = 0 Or nameCol = 0 Then Exit Sub
+    lastRuleRow = wsRule.Cells(wsRule.Rows.count, nameCol).End(xlUp).row
+
+    ' ---- 1. collect the DISTINCT set of Alert Information values ----
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    Dim r As Long, v As String, dictKey As String
+    For r = 2 To lastDataRow
+        v = Trim$(CStr(wsData.Cells(r, alertCol).Value))
+        If v <> "" Then
+            dictKey = UCase$(v)
+            If Not seen.Exists(dictKey) Then seen.Add dictKey, v   ' keep first-seen casing
+        End If
+    Next r
+    If seen.Count = 0 Then Exit Sub
+
+    ' ---- 2. match each one against Rule_DB, ONE AT A TIME - no array zip,
+    ' so there is no way for a second entry to inherit the first entry's
+    ' code. Matching is trimmed + case-insensitive (StrComp vbTextCompare)
+    ' rather than a brittle exact-text array match. ----
+    Dim result As String, oneName As Variant, matched As Boolean, rr As Long
+    Dim ruleCode As String, ruleName As String
+    result = ""
+    For Each oneName In seen.Items
+        matched = False
+        For rr = 2 To lastRuleRow
+            ruleName = Trim$(CStr(wsRule.Cells(rr, nameCol).Value))
+            If StrComp(ruleName, CStr(oneName), vbTextCompare) = 0 Then
+                ruleCode = Trim$(CStr(wsRule.Cells(rr, codeCol).Value))
+                matched = True
+                Exit For
+            End If
+        Next rr
+
+        ' Clear, human-readable flag instead of a leaked error value - a
+        ' reviewer will immediately notice this needs a manual check,
+        ' rather than a cryptic number appearing in the narrative.
+        If Not matched Then ruleCode = "Rule Not Found"
+
+        If result <> "" Then result = result & ", "
+        result = result & ruleCode & " - " & CStr(oneName)
+    Next oneName
+
+    ' ---- 3. write the corrected value into Sheet7's [Rule Name] row.
+    ' Found by searching column J for the tag text (not a hardcoded row
+    ' number), so this keeps working even if Sheet7's rows are ever
+    ' reordered. Assigning .Value to a cell that currently holds a
+    ' formula REPLACES the formula outright. ----
+    Dim tagRow As Long
+    tagRow = 0
+    tagRow = wsTag.Columns("J").Find(What:="[Rule Name]", LookAt:=xlWhole).Row
+    If tagRow > 0 Then wsTag.Cells(tagRow, "K").Value = result
+
+    On Error GoTo 0
+End Sub

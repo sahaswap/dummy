@@ -661,6 +661,13 @@ If exportMode = "EN" Then
     WsMaster.Cells.Clear
     newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=WsMaster.Range("A1")
 
+    ' Refresh Sheet7's [Rule Name] now too, right as ConsolidatedData gets
+    ' its final alerted-only content - so it's already correct if the
+    ' analyst looks at Sheet7 before ever running Generate Narrative.
+    On Error Resume Next
+    Module3.RefreshRuleNameTag
+    On Error GoTo CancelHandler
+
     newWb.Sheets("Raw Transactions").Activate
 
     ' ---- ONE combined finalize / restore Excel + re-protect for BOTH files ----
@@ -913,6 +920,13 @@ End If
 ' ==========================================
 WsMaster.Cells.Clear
 newWb.Sheets("DeDupe").UsedRange.Copy Destination:=WsMaster.Range("A1")
+
+' Refresh Sheet7's [Rule Name] now too, right as ConsolidatedData gets its
+' final deduped content - so it's already correct if the analyst looks at
+' Sheet7 before ever running Generate Narrative.
+On Error Resume Next
+Module3.RefreshRuleNameTag
+On Error GoTo CancelHandler
 
 With WsMaster.Cells
 .WrapText = False
