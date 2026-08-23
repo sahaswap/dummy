@@ -39,8 +39,13 @@ End If
 Dim frm As Object
 Set frm = vbComp.Designer
 
+' 560 x 280 is the shared dialog size used across the app's picker forms
+' (frmSearchMode matches this exact size too) so every "pick one" popup
+' looks consistent. 280 is trimmed to the 4-button content's real height
+' (last button bottom at 266 + a small margin) instead of leaving a slab
+' of empty space below Cancel.
 vbComp.Properties("Width").Value = 560
-vbComp.Properties("Height").Value = 310
+vbComp.Properties("Height").Value = 280
 vbComp.Properties("Caption").Value = "Choose Export Type"
 
 ' Clear any existing controls so re-runs start clean.
@@ -78,7 +83,7 @@ Set lblLegacy = frm.Controls.Add("Forms.Label.1", "lblLegacy")
 lblLegacy.Left = 160: lblLegacy.Top = 36: lblLegacy.Width = 380: lblLegacy.Height = LBL_H
 lblLegacy.caption = "Dedupe + pivots - the original consolidated transaction export."
 lblLegacy.WordWrap = True
-lblLegacy.TextAlign = 2 ' fmTextAlignCenter
+lblLegacy.TextAlign = 1 ' fmTextAlignLeft - all 3 descriptions share this Left so they read as one aligned column
 CenterLbl lblLegacy, btnLegacy
 
 ' ---- Row 2: EN Network ----
@@ -90,7 +95,7 @@ Set lblEN = frm.Controls.Add("Forms.Label.1", "lblEN")
 lblEN.Left = 160: lblEN.Top = 96: lblEN.Width = 380: lblEN.Height = LBL_H
 lblEN.caption = "Generates BOTH the Alerted/Non-Alerted file AND the Lookback Transactions file in one go."
 lblEN.WordWrap = True
-lblEN.TextAlign = 2 ' fmTextAlignCenter
+lblEN.TextAlign = 1 ' fmTextAlignLeft
 CenterLbl lblEN, btnEN
 
 ' ---- Row 3: Pivot Analysis ----
@@ -102,7 +107,7 @@ Set lblPivot = frm.Controls.Add("Forms.Label.1", "lblPivot")
 lblPivot.Left = 160: lblPivot.Top = 156: lblPivot.Width = 380: lblPivot.Height = LBL_H
 lblPivot.caption = "Builds pivot tables from the files in the \Pivot folder. Does not touch ConsolidatedData."
 lblPivot.WordWrap = True
-lblPivot.TextAlign = 2 ' fmTextAlignCenter
+lblPivot.TextAlign = 1 ' fmTextAlignLeft
 CenterLbl lblPivot, btnPivot
 
 ' ---- Cancel - same BTN_W x BTN_H as the other three ----

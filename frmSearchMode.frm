@@ -35,15 +35,20 @@ Private Sub UserForm_Initialize()
     ' Remove the old bottom guidance block, if a previous version added it.
     Me.Controls.Remove "lblGuide"
 
-    ' ---- uniform button size: the SMALLEST of the 4 current sizes, so
-    ' nothing grows into a neighbouring label (only ever shrinks to match). ----
+    ' ---- shared dialog size across the app's "pick one" popups - matches
+    ' frmExportMode exactly (560 x 280), so every picker form looks like
+    ' part of the same tool instead of each being its own random size. ----
+    Me.Width = 560
+    Me.Height = 280
+
+    ' ---- force the SAME button size as frmExportMode's buttons (140 x
+    ' 50), instead of inheriting whatever size happened to be dragged out
+    ' in the Designer - this is what makes the two forms fully consistent,
+    ' not just internally uniform within this one form. ----
+    Const BTN_W As Single = 140
+    Const BTN_H As Single = 50
     Dim uW As Single, uH As Single
-    uW = btnFast.Width: If btnOptimised.Width < uW Then uW = btnOptimised.Width
-    If btnVisible.Width < uW Then uW = btnVisible.Width
-    If btnCancel.Width < uW Then uW = btnCancel.Width
-    uH = btnFast.Height: If btnOptimised.Height < uH Then uH = btnOptimised.Height
-    If btnVisible.Height < uH Then uH = btnVisible.Height
-    If btnCancel.Height < uH Then uH = btnCancel.Height
+    uW = BTN_W: uH = BTN_H
     btnFast.Width = uW: btnFast.Height = uH
     btnOptimised.Width = uW: btnOptimised.Height = uH
     btnVisible.Width = uW: btnVisible.Height = uH
@@ -56,18 +61,20 @@ Private Sub UserForm_Initialize()
     btnFast.Top = btnOptimised.Top
     btnOptimised.Top = tmpTop
 
-    ' ---- enforce a UNIFORM gap between all 4 buttons. The swap above only
-    ' exchanges Optimised/Fast's Top values - it never touched whatever gap
-    ' the Designer originally had between Fast/Visible and Visible/Cancel,
-    ' which is why 2-3 and 3-4 had a much bigger gap than 1-2. All four
-    ' Tops are now recomputed from Optimised's (now topmost) position using
-    ' one fixed gap, so every row is spaced identically. ----
+    ' ---- enforce a UNIFORM gap between all 4 buttons, anchored at a FIXED
+    ' Top (36, matching frmExportMode's first button row) rather than
+    ' whatever leftover Designer position Optimised happened to have - that
+    ' fixed anchor is what actually shrinks the box and keeps both forms'
+    ' content starting at the same place. The swap above only exchanged
+    ' Optimised/Fast's Top values - it never touched the gap the Designer
+    ' originally had between Fast/Visible and Visible/Cancel, which is why
+    ' 2-3 and 3-4 had a much bigger gap than 1-2. ----
     Const BTN_GAP As Single = 10
-    Dim topAnchor As Single
-    topAnchor = btnOptimised.Top
-    btnFast.Top = topAnchor + (uH + BTN_GAP)
-    btnVisible.Top = topAnchor + 2 * (uH + BTN_GAP)
-    btnCancel.Top = topAnchor + 3 * (uH + BTN_GAP)
+    Const TOP_ANCHOR As Single = 36
+    btnOptimised.Top = TOP_ANCHOR
+    btnFast.Top = TOP_ANCHOR + (uH + BTN_GAP)
+    btnVisible.Top = TOP_ANCHOR + 2 * (uH + BTN_GAP)
+    btnCancel.Top = TOP_ANCHOR + 3 * (uH + BTN_GAP)
 
     ' Rename the buttons to match their NEW visual order (1 = whichever is
     ' now on top = Optimised, 2 = Fast, 3 = Visible, unchanged).
@@ -154,7 +161,11 @@ End Sub
 ' button's middle.
 Private Sub CenterLabelOnButton(ByVal lbl As MSForms.Label, ByVal btn As MSForms.CommandButton)
     On Error Resume Next
-    lbl.TextAlign = 2 ' fmTextAlignCenter
+    ' Left, not center: center-aligning each label independently makes
+    ' captions of different lengths start at different X positions (the
+    ' same bug reported on frmExportMode's EN Network line) - left-align
+    ' keeps all 3 lines starting at the same spot regardless of length.
+    lbl.TextAlign = 1 ' fmTextAlignLeft
     lbl.WordWrap = True
     lbl.AutoSize = True     ' measures the real wrapped-text height at the fixed Width
     lbl.AutoSize = False    ' lock that height so nothing can resize it again later
