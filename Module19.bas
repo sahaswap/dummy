@@ -39,13 +39,14 @@ End If
 Dim frm As Object
 Set frm = vbComp.Designer
 
-' 560 x 280 is the shared dialog size used across the app's picker forms
-' (frmSearchMode matches this exact size too) so every "pick one" popup
-' looks consistent. 280 is trimmed to the 4-button content's real height
-' (last button bottom at 266 + a small margin) instead of leaving a slab
-' of empty space below Cancel.
+' Trimmed to the 4-button content's real height (last button bottom at
+' 266 + margin) instead of leaving a slab of empty space below Cancel.
+' This form is built entirely from scratch below (every Left/Top/Width/
+' Height is set explicitly by this macro), so these numbers are safe to
+' fix directly - unlike frmSearchMode, there's no pre-existing Designer
+' layout here that a guessed size could clash with.
 vbComp.Properties("Width").Value = 560
-vbComp.Properties("Height").Value = 280
+vbComp.Properties("Height").Value = 300
 vbComp.Properties("Caption").Value = "Choose Export Type"
 
 ' Clear any existing controls so re-runs start clean.

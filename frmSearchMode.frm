@@ -35,20 +35,19 @@ Private Sub UserForm_Initialize()
     ' Remove the old bottom guidance block, if a previous version added it.
     Me.Controls.Remove "lblGuide"
 
-    ' ---- shared dialog size across the app's "pick one" popups - matches
-    ' frmExportMode exactly (560 x 280), so every picker form looks like
-    ' part of the same tool instead of each being its own random size. ----
-    Me.Width = 560
-    Me.Height = 280
-
-    ' ---- force the SAME button size as frmExportMode's buttons (140 x
-    ' 50), instead of inheriting whatever size happened to be dragged out
-    ' in the Designer - this is what makes the two forms fully consistent,
-    ' not just internally uniform within this one form. ----
-    Const BTN_W As Single = 140
-    Const BTN_H As Single = 50
+    ' ---- uniform button size: the SMALLEST of the 4 current sizes, so
+    ' nothing grows into a neighbouring label (only ever shrinks to match).
+    ' NOT a hardcoded number - this form's real button/label positions live
+    ' in the binary Designer layout, which isn't visible from the code
+    ' side, so forcing an arbitrary width here previously left the button
+    ' and its label stranded apart with a big dead gap between them. ----
     Dim uW As Single, uH As Single
-    uW = BTN_W: uH = BTN_H
+    uW = btnFast.Width: If btnOptimised.Width < uW Then uW = btnOptimised.Width
+    If btnVisible.Width < uW Then uW = btnVisible.Width
+    If btnCancel.Width < uW Then uW = btnCancel.Width
+    uH = btnFast.Height: If btnOptimised.Height < uH Then uH = btnOptimised.Height
+    If btnVisible.Height < uH Then uH = btnVisible.Height
+    If btnCancel.Height < uH Then uH = btnCancel.Height
     btnFast.Width = uW: btnFast.Height = uH
     btnOptimised.Width = uW: btnOptimised.Height = uH
     btnVisible.Width = uW: btnVisible.Height = uH
@@ -61,20 +60,24 @@ Private Sub UserForm_Initialize()
     btnFast.Top = btnOptimised.Top
     btnOptimised.Top = tmpTop
 
-    ' ---- enforce a UNIFORM gap between all 4 buttons, anchored at a FIXED
-    ' Top (36, matching frmExportMode's first button row) rather than
-    ' whatever leftover Designer position Optimised happened to have - that
-    ' fixed anchor is what actually shrinks the box and keeps both forms'
-    ' content starting at the same place. The swap above only exchanged
-    ' Optimised/Fast's Top values - it never touched the gap the Designer
-    ' originally had between Fast/Visible and Visible/Cancel, which is why
-    ' 2-3 and 3-4 had a much bigger gap than 1-2. ----
+    ' ---- enforce a UNIFORM gap between all 4 buttons, anchored at
+    ' Optimised's REAL (post-swap) Top - not a hardcoded guess - so this
+    ' can never clash with wherever the Designer actually placed things.
+    ' The swap above only exchanged Optimised/Fast's Top values; it never
+    ' touched the gap the Designer originally had between Fast/Visible and
+    ' Visible/Cancel, which is why 2-3 and 3-4 had a much bigger gap than
+    ' 1-2. This closes every gap to the same fixed size. ----
     Const BTN_GAP As Single = 10
-    Const TOP_ANCHOR As Single = 36
-    btnOptimised.Top = TOP_ANCHOR
-    btnFast.Top = TOP_ANCHOR + (uH + BTN_GAP)
-    btnVisible.Top = TOP_ANCHOR + 2 * (uH + BTN_GAP)
-    btnCancel.Top = TOP_ANCHOR + 3 * (uH + BTN_GAP)
+    Dim topAnchor As Single
+    topAnchor = btnOptimised.Top
+    btnFast.Top = topAnchor + (uH + BTN_GAP)
+    btnVisible.Top = topAnchor + 2 * (uH + BTN_GAP)
+    btnCancel.Top = topAnchor + 3 * (uH + BTN_GAP)
+
+    ' Shrink the box to fit the now-tighter content instead of leaving
+    ' whatever tall empty space the Designer's original layout had -
+    ' computed from the REAL button positions above, not a guessed number.
+    Me.Height = btnCancel.Top + uH + 60
 
     ' Rename the buttons to match their NEW visual order (1 = whichever is
     ' now on top = Optimised, 2 = Fast, 3 = Visible, unchanged).
