@@ -1,4 +1,3 @@
-Attribute VB_Name = "Module9"
 Sub Consolidated_AML_Workflow()
 
 ' ==========================================
@@ -13,7 +12,7 @@ Dim origCalc As XlCalculation
 origCalc = xlCalculationAutomatic
 
 Dim WbSource As Workbook, WsMaster As Worksheet, wsSource As Worksheet, wsHome As Worksheet
-Dim LastRowSource As Long, LastRowMaster As Long, LastCol As Long
+Dim LastRowSource As Long, LastRowMaster As Long, lastCol As Long
 Dim HeaderCopied As Boolean
 
 Dim HeaderCell As Range, HeaderRow As Long, HeadCol As Long
@@ -201,13 +200,6 @@ If exportMode = "PIVOT" Then
     pivotSavePath = folderPath & slash & pivotFileName
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
 
-    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-        customerName:=Trim(wsHome.Range("J13").Value), _
-        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-        eventType:="Pivot Analysis Generated", _
-        outputFile:=pivotSavePath, toolVersion:="3.5", _
-        notes:="source=" & sourceFolderName
-
     newWbPiv.Sheets("Pivot Data").Activate
 
     Application.EnableCancelKey = xlInterrupt
@@ -350,17 +342,17 @@ benNameCol = benNameCell.Column
 origNameCol = origNameCell.Column
 
 LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, "A").End(xlUp).row
-LastCol = WsMaster.Cells(1, WsMaster.Columns.count).End(xlToLeft).Column + 1
+lastCol = WsMaster.Cells(1, WsMaster.Columns.count).End(xlToLeft).Column + 1
 
 If LastRowMaster > 1 Then
-WsMaster.Cells(1, LastCol).Value = "Counterparty"
-WsMaster.Range(WsMaster.Cells(2, LastCol), WsMaster.Cells(LastRowMaster, LastCol)).FormulaR1C1 = _
+WsMaster.Cells(1, lastCol).Value = "Counterparty"
+WsMaster.Range(WsMaster.Cells(2, lastCol), WsMaster.Cells(LastRowMaster, lastCol)).FormulaR1C1 = _
 "=IF(RC" & drCrCol & "=""DR"", RC" & benNameCol & ", RC" & origNameCol & ")"
 
-WsMaster.Cells(1, LastCol - 1).Copy
-WsMaster.Cells(1, LastCol).PasteSpecial Paste:=xlPasteFormats
-WsMaster.Range(WsMaster.Cells(2, LastCol - 1), WsMaster.Cells(LastRowMaster, LastCol - 1)).Copy
-WsMaster.Range(WsMaster.Cells(2, LastCol), WsMaster.Cells(LastRowMaster, LastCol)).PasteSpecial Paste:=xlPasteFormats
+WsMaster.Cells(1, lastCol - 1).Copy
+WsMaster.Cells(1, lastCol).PasteSpecial Paste:=xlPasteFormats
+WsMaster.Range(WsMaster.Cells(2, lastCol - 1), WsMaster.Cells(LastRowMaster, lastCol - 1)).Copy
+WsMaster.Range(WsMaster.Cells(2, lastCol), WsMaster.Cells(LastRowMaster, lastCol)).PasteSpecial Paste:=xlPasteFormats
 Application.CutCopyMode = False
 End If
 End If
@@ -464,13 +456,6 @@ If exportMode = "EN" Then
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
     lbSavedPath = finalSavePath   ' remember before the Alerted/Non-Alerted save overwrites finalSavePath
-
-    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-        customerName:=Trim(wsHome.Range("J13").Value), _
-        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-        eventType:="Transaction File Consolidated", _
-        outputFile:=finalSavePath, toolVersion:="3.5", _
-        notes:="source=" & sourceFolderName & ", mode=EN Network Lookback"
 
     ' NOTE: ConsolidatedData is NOT narrowed to Yes-only here (that used to
     ' happen at this point). It must stay full Yes+No until the
@@ -635,24 +620,11 @@ If exportMode = "EN" Then
     On Error GoTo CancelHandler
 
     ' ---- save (same file name as Legacy) ----
-    excelFileName = ecmID & "_" & AlertID & "_Combined_Alerted_Transaction.xlsx"
+    excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
-
-    ' ---- audit + archive ----
-    modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-        customerName:=Trim(wsHome.Range("J13").Value), _
-        counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-        eventType:="Transaction File Consolidated", _
-        outputFile:=finalSavePath, toolVersion:="3.5", _
-        notes:="source=" & sourceFolderName & ", mode=EN Network"
-    On Error Resume Next
-    modAuditLog.ArchiveOutputSheets ecmID:=ecmID, sourceWb:=newWb, _
-        sheetNames:=Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction"), _
-        tagSuffix:="EN Network"
-    On Error GoTo CancelHandler
 
     ' ConsolidatedData must hold ONLY the alerted transaction data - never
     ' the Non-Alerted or Lookback rows. This is the ONE point in the whole
@@ -941,8 +913,6 @@ Application.DisplayAlerts = False
 wsHome.Parent.Sheets("TempRawBackup").Delete
 Application.DisplayAlerts = True
 
-' --- ZERO-BULLSHIT SAVE FIX ---
-Dim finalSavePath As String
 ' Always the alerted Transaction Files source now.
 Dim fileTag As String
 fileTag = "Alerted"
@@ -955,25 +925,6 @@ finalSavePath = saveFolderPath & slash & excelFileName
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
 Application.DisplayAlerts = True
-
-' Centralized audit ledger row - Register tab of this case's own
-' Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx.
-modAuditLog.LogAuditEvent ecmID:=ecmID, AlertID:=AlertID, _
-customerName:=Trim(wsHome.Range("J13").Value), _
-counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-eventType:="Transaction File Consolidated", _
-outputFile:=finalSavePath, _
-toolVersion:="3.5", _
-notes:="source=" & sourceFolderName & ", tag=" & fileTag
-
-' Copies the 4 actual sheets just built (Raw Transactions, Pivot,
-' CP Selection, DeDupe) into that same audit workbook, tagged by
-' source (Alerted/NonAlerted) - real content, not just a path.
-' Re-running THIS tag refreshes those 4 tabs; running the other tag
-' later adds its own 4 alongside instead of overwriting them.
-modAuditLog.ArchiveOutputSheets ecmID:=ecmID, sourceWb:=newWb, _
-sheetNames:=Array("Raw Transactions", "Pivot", "CP Selection", "DeDupe"), _
-tagSuffix:=fileTag
 
 newWb.Sheets("Raw Transactions").Activate
 
@@ -1421,3 +1372,4 @@ Private Sub CleanTransactionData(ByVal ws As Worksheet)
 
     On Error GoTo 0
 End Sub
+
