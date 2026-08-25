@@ -396,6 +396,7 @@ If exportMode = "EN" Then
 
     FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
     With wsLB.Cells
+        .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
         .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
         .EntireRow.AutoFit: .VerticalAlignment = xlTop
     End With
@@ -515,6 +516,7 @@ If exportMode = "EN" Then
     Dim dateColTidy As Long, lastRTidy As Long
     For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
         With newWb.Sheets(CStr(wsTidy)).Cells
+            .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
             .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
             .EntireRow.AutoFit: .VerticalAlignment = xlTop
         End With
@@ -626,6 +628,7 @@ If TransCol > 0 Then wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol
 For Each ws In newWb.Sheets
     If ws.Name = "Raw Transactions" Or ws.Name = "CP Selection" Or ws.Name = "DeDupe" Then
         With ws.Cells
+            .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
             .WrapText = False
             .EntireColumn.AutoFit
             .WrapText = True
@@ -780,6 +783,7 @@ wsRealCD.Cells.Clear
 newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
 
 With wsRealCD.Cells
+    .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
     .WrapText = False
     .EntireColumn.AutoFit
     .WrapText = True
@@ -1203,6 +1207,12 @@ Private Sub CleanTransactionData(ByVal ws As Worksheet)
     Dim lastR As Long, lastC As Long
 
     On Error Resume Next
+
+    ' Explicit, not left to inherit whatever default font a brand-new
+    ' sheet happens to have - runs BEFORE this sheet's data is later
+    ' copied onward (e.g. into "Pivot Data" or ConsolidatedData), so the
+    ' font carries forward automatically via that Range.Copy Destination.
+    If ws.UsedRange.Cells.count > 0 Then ws.Cells.Font.Name = "Segoe UI"
 
     Set dH = ws.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
     If Not dH Is Nothing Then
