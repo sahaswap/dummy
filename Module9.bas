@@ -1348,6 +1348,37 @@ SkipDateGroupedPivots:
 End Sub
 
 ' ==========================================================
+' CloseIfAlreadyOpen - if a workbook matching targetPath's FILE NAME is
+' already open in this Excel session (e.g. a prior run's export the
+' analyst left open to review), close it WITHOUT saving, right before we
+' overwrite that exact path via SaveAs. Application.Workbooks is keyed by
+' name, not full path, so this matches on name only - fine here since
+' every export target is a distinct, ECM/Alert-specific filename.
+'
+' Without this, SaveAs to a path that's already open under THIS Excel
+' session throws runtime error 1004 ("document not saved... already
+' open"), which used to abort the whole run and leave ConsolidatedData
+' never updated - even though the analyst just wanted a fresh export to
+' overwrite the stale one they still had open from last time.
+' ==========================================================
+Private Sub CloseIfAlreadyOpen(ByVal targetPath As String)
+    On Error Resume Next
+    Dim targetName As String, wb As Workbook
+    targetName = Mid$(targetPath, InStrRev(targetPath, Application.PathSeparator) + 1)
+    For Each wb In Application.Workbooks
+        If Not wb Is ThisWorkbook Then
+            If StrComp(wb.Name, targetName, vbTextCompare) = 0 Then
+                Application.DisplayAlerts = False
+                wb.Close SaveChanges:=False
+                Application.DisplayAlerts = True
+                Exit For
+            End If
+        End If
+    Next wb
+    On Error GoTo 0
+End Sub
+
+' ==========================================================
 ' LastDataRow - the true last row containing anything, across ALL
 ' columns. The filters used to derive the last row from .End(xlUp) on
 ' the "Is Alerted Transaction?" column alone, so any trailing row whose
