@@ -198,7 +198,9 @@ If exportMode = "PIVOT" Then
     ' output workbook: the data + the same 4 "Legacy" pivots (shared helper)
     Dim newWbPiv As Workbook
     Set newWbPiv = Workbooks.Add
+    LogModule9Debug "about to Copy: wsPivScratch -> Pivot Data"
     wsPivScratch.Copy Before:=newWbPiv.Sheets(1): ActiveSheet.Name = "Pivot Data"
+    LogModule9Debug "Copy OK: Pivot Data"
     BuildEnPivots newWbPiv, "Pivot Data", "Pivot", "Pivot Data"
 
     Dim pSh As Long
@@ -353,7 +355,9 @@ On Error GoTo CancelHandler
 ' Alerted/Non-Alerted file, which also needs it - so this now runs
 ' unconditionally rather than checking for a "Lookback-only" mode that
 ' no longer exists (EN Network always builds both files in one go).
+LogModule9Debug "about to Copy: WsMaster -> TempRawBackup (step 2.5)"
 WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
+LogModule9Debug "Copy OK: TempRawBackup"
 Set WsRawTemp = ActiveSheet
 WsRawTemp.Name = "TempRawBackup"
 WsRawTemp.Visible = xlSheetVeryHidden   ' internal working sheet - never shown as a tab
@@ -479,7 +483,9 @@ If exportMode = "EN" Then
 
     ' build workbook: Lookback Transactions (all Yes+No in window) + pivots
     Set newWb = Workbooks.Add
+    LogModule9Debug "about to Copy: WsMaster -> Lookback Transactions"
     WsMaster.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Lookback Transactions"
+    LogModule9Debug "Copy OK: Lookback Transactions"
     ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsLB = newWb.Sheets("Lookback Transactions")
     ' date-window only - keeps BOTH Yes and No rows (splitCol = 0). WsMaster
@@ -579,7 +585,9 @@ If exportMode = "EN" Then
 
     ' --- build the export workbook ---
     Set newWb = Workbooks.Add
+    LogModule9Debug "about to Copy: WsRawTemp -> Raw Transactions (EN)"
     WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+    LogModule9Debug "Copy OK: Raw Transactions (EN)"
     ActiveSheet.Visible = xlSheetVisible   ' WsRawTemp (the source) is VeryHidden - force this deliverable sheet visible
     ' Raw Transactions is a PRE-cleanup snapshot (taken before step 3 ran on
     ' WsMaster), so unlike Alerted/Non-Alerted it never got date conversion,
@@ -588,7 +596,9 @@ If exportMode = "EN" Then
     CleanTransactionData newWb.Sheets("Raw Transactions")
 
     ' Alerted Transaction = rows where split = "Yes"
+    LogModule9Debug "about to Copy: WsMaster -> Alerted Transaction"
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Alerted Transaction"
+    LogModule9Debug "Copy OK: Alerted Transaction"
     ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsAlertedEN = newWb.Sheets("Alerted Transaction")
     FilterRowsFast wsAlertedEN, aColEN, "Yes", 0, False, 0, 0
@@ -611,7 +621,9 @@ If exportMode = "EN" Then
         Next rEN
     End If
 
+    LogModule9Debug "about to Copy: WsMaster -> Non Alerted Transaction"
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Non Alerted Transaction"
+    LogModule9Debug "Copy OK: Non Alerted Transaction"
     ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsNonEN = newWb.Sheets("Non Alerted Transaction")
 
@@ -743,9 +755,13 @@ End If
 ' ==========================================
 Set newWb = Workbooks.Add
 
+LogModule9Debug "about to Copy: WsRawTemp -> Raw Transactions (Legacy)"
 WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+LogModule9Debug "Copy OK: Raw Transactions (Legacy)"
 ActiveSheet.Visible = xlSheetVisible   ' WsRawTemp (the source) is VeryHidden - force this deliverable sheet visible
+LogModule9Debug "about to Copy: WsMaster -> CP Selection"
 WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "CP Selection"
+LogModule9Debug "Copy OK: CP Selection"
 ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
 
 Set wsExport = newWb.Sheets("CP Selection")
@@ -759,7 +775,9 @@ If TransCol > 0 And AlertCol > 0 Then
 wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol, AlertCol), Header:=xlYes
 End If
 
+LogModule9Debug "about to Copy: CP Selection -> DeDupe"
 wsExport.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "DeDupe"
+LogModule9Debug "Copy OK: DeDupe"
 
 Set wsExport = newWb.Sheets("DeDupe")
 TransCol = 0
@@ -1283,7 +1301,9 @@ Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
     ' no matter how aggressive or fragile the blank-detection turns out to
     ' be on a thin dataset.
     On Error Resume Next
+    LogModule9Debug "BuildEnPivots(" & dataSheet & "): about to Copy scratch. wb sheets=" & wb.Sheets.count
     wsData.Copy After:=wb.Sheets(wb.Sheets.count)
+    LogModule9Debug "BuildEnPivots(" & dataSheet & "): Copy scratch returned. Err=" & Err.Number & " " & Err.Description
     Set wsPvScratch = wb.Sheets(wb.Sheets.count)
     wsPvScratch.Visible = xlSheetVeryHidden
     On Error GoTo 0
