@@ -341,15 +341,21 @@ Next objFile
 
 ' Every iteration above does a Range.Copy (marching-ants clipboard mode)
 ' then immediately closes the SOURCE workbook that copied range belonged
-' to, without ever clearing that clipboard state. Excel's clipboard can
-' end up holding a reference into a workbook that's now closed, and that
-' corrupted/dangling copy-mode state is a well-documented cause of
-' completely UNRELATED, subsequent Copy operations throwing a generic
-' "Method 'Copy' of object '_Worksheet' failed" (or 'Range' failed) 1004 -
-' exactly the error hit consistently on WsMaster.Copy right below in step
-' 2.5. Clearing it here, once the loop is done, removes that risk instead
-' of relying on the next real error message to explain what happened.
+' to, without ever clearing that clipboard state.
 Application.CutCopyMode = False
+
+' Range.Copy Destination:= brings over FORMULAS (not just values) from
+' each source file, if the source has any - and every one of those source
+' workbooks is now closed. A worksheet holding cells with formulas/
+' external references pointing at a workbook that's no longer open is a
+' specific, well-documented cause of Worksheet.Copy ITSELF throwing a
+' generic "Method 'Copy' of object '_Worksheet' failed" 1004 when Excel
+' tries to duplicate the sheet - distinct from an ordinary in-workbook
+' formula, and distinct from the clipboard-state issue above. Strip
+' everything down to plain values here, severing any such link, before
+' the very next step attempts exactly that Copy. Same bulk .Value = .Value
+' idiom already used elsewhere in this Sub (see step 3's AmtRange).
+If WsMaster.UsedRange.Cells.count > 0 Then WsMaster.UsedRange.Value = WsMaster.UsedRange.Value
 
 ' ==========================================
 ' 2.5 SNAPSHOT RAW DATA
