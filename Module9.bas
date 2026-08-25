@@ -355,8 +355,18 @@ On Error GoTo CancelHandler
 ' Alerted/Non-Alerted file, which also needs it - so this now runs
 ' unconditionally rather than checking for a "Lookback-only" mode that
 ' no longer exists (EN Network always builds both files in one go).
+' ROOT CAUSE of the recurring 1004 here: WsMaster (TempConsolidatedScratch)
+' is added as the LAST sheet in wsHome.Parent right when it's created, and
+' nothing adds another sheet to wsHome.Parent between then and this line -
+' so "wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)" IS WsMaster itself.
+' This was really "WsMaster.Copy After:=WsMaster" - a self-referential
+' copy (copying a sheet to a position "after itself"), which is a known
+' flaky pattern in Excel automation and is exactly what threw the generic
+' "Method 'Copy' of object '_Worksheet' failed" every single time. Anchor
+' on wsHome (Sheet1) instead - guaranteed to always be a DIFFERENT sheet
+' from WsMaster, so this can never be self-referential.
 LogModule9Debug "about to Copy: WsMaster -> TempRawBackup (step 2.5)"
-WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
+WsMaster.Copy After:=wsHome
 LogModule9Debug "Copy OK: TempRawBackup"
 Set WsRawTemp = ActiveSheet
 WsRawTemp.Name = "TempRawBackup"
