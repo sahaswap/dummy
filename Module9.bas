@@ -339,6 +339,18 @@ WbSource.Close SaveChanges:=False
 End If
 Next objFile
 
+' Every iteration above does a Range.Copy (marching-ants clipboard mode)
+' then immediately closes the SOURCE workbook that copied range belonged
+' to, without ever clearing that clipboard state. Excel's clipboard can
+' end up holding a reference into a workbook that's now closed, and that
+' corrupted/dangling copy-mode state is a well-documented cause of
+' completely UNRELATED, subsequent Copy operations throwing a generic
+' "Method 'Copy' of object '_Worksheet' failed" (or 'Range' failed) 1004 -
+' exactly the error hit consistently on WsMaster.Copy right below in step
+' 2.5. Clearing it here, once the loop is done, removes that risk instead
+' of relying on the next real error message to explain what happened.
+Application.CutCopyMode = False
+
 ' ==========================================
 ' 2.5 SNAPSHOT RAW DATA
 ' ==========================================
