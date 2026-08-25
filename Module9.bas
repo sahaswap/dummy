@@ -193,6 +193,7 @@ If exportMode = "PIVOT" Then
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
     CloseIfAlreadyOpen pivotSavePath
+    SetSheetZoom85 newWbPiv, Array("Pivot Data", "Pivot")
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
 
     newWbPiv.Sheets("Pivot Data").Activate
@@ -396,7 +397,6 @@ If exportMode = "EN" Then
 
     FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
     With wsLB.Cells
-        .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
         .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
         .EntireRow.AutoFit: .VerticalAlignment = xlTop
     End With
@@ -416,6 +416,7 @@ If exportMode = "EN" Then
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
+    SetSheetZoom85 newWb, Array("Lookback Transactions", "Pivot")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
@@ -516,7 +517,6 @@ If exportMode = "EN" Then
     Dim dateColTidy As Long, lastRTidy As Long
     For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
         With newWb.Sheets(CStr(wsTidy)).Cells
-            .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
             .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
             .EntireRow.AutoFit: .VerticalAlignment = xlTop
         End With
@@ -551,6 +551,7 @@ If exportMode = "EN" Then
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
+    SetSheetZoom85 newWb, Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
@@ -628,7 +629,6 @@ If TransCol > 0 Then wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol
 For Each ws In newWb.Sheets
     If ws.Name = "Raw Transactions" Or ws.Name = "CP Selection" Or ws.Name = "DeDupe" Then
         With ws.Cells
-            .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
             .WrapText = False
             .EntireColumn.AutoFit
             .WrapText = True
@@ -774,6 +774,9 @@ excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.x
 
 finalSavePath = saveFolderPath & slash & excelFileName
 CloseIfAlreadyOpen finalSavePath
+' "Pivot" only exists if lastRowCP > 1 above - SetSheetZoom85's own error
+' handling silently skips it otherwise, same as any other missing name.
+SetSheetZoom85 newWb, Array("Raw Transactions", "CP Selection", "DeDupe", "Pivot")
 
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
@@ -783,7 +786,6 @@ wsRealCD.Cells.Clear
 newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
 
 With wsRealCD.Cells
-    .Font.Name = "Segoe UI"   ' explicit, not left to inherit a new sheet's default
     .WrapText = False
     .EntireColumn.AutoFit
     .WrapText = True
@@ -1083,6 +1085,32 @@ SkipDateGroupedPivots:
 End Sub
 
 ' ==========================================================
+' SetSheetZoom85 - forces each named sheet's saved window zoom to 85%,
+' matching ConsolidatedData's OWN saved zoom in the live workbook (its
+' sheetView zoomScale is 85, not 100 - confirmed directly in the file's
+' XML). A sheet built via Sheets.Add inside a brand-new Workbooks.Add
+' workbook defaults to 100% instead of inheriting whatever zoom the
+' analyst's own window happened to be at - which is what the OLD
+' Worksheet.Copy-based approach used to carry over silently, and is the
+' most likely reason exported sheets used to look "different" even
+' though the font itself was never actually changed by that rewrite.
+'
+' Zoom is a WINDOW property in VBA (Window.Zoom), not a range/cell
+' property, so each sheet must be briefly activated to set it. This
+' MUST run BEFORE SaveAs - Zoom set after a workbook is already written
+' to disk never makes it into that saved file.
+' ==========================================================
+Private Sub SetSheetZoom85(ByVal wb As Workbook, ByVal sheetNames As Variant)
+    On Error Resume Next
+    Dim nm As Variant
+    For Each nm In sheetNames
+        wb.Sheets(CStr(nm)).Activate
+        ActiveWindow.Zoom = 85
+    Next nm
+    On Error GoTo 0
+End Sub
+
+' ==========================================================
 ' CloseIfAlreadyOpen - safely closes an open target file prior to SaveAs
 ' ==========================================================
 Private Sub CloseIfAlreadyOpen(ByVal targetPath As String)
@@ -1207,12 +1235,6 @@ Private Sub CleanTransactionData(ByVal ws As Worksheet)
     Dim lastR As Long, lastC As Long
 
     On Error Resume Next
-
-    ' Explicit, not left to inherit whatever default font a brand-new
-    ' sheet happens to have - runs BEFORE this sheet's data is later
-    ' copied onward (e.g. into "Pivot Data" or ConsolidatedData), so the
-    ' font carries forward automatically via that Range.Copy Destination.
-    If ws.UsedRange.Cells.count > 0 Then ws.Cells.Font.Name = "Segoe UI"
 
     Set dH = ws.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
     If Not dH Is Nothing Then
