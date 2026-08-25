@@ -707,9 +707,14 @@ If exportMode = "EN" Then
     ' Scratch sheet's job is done - remove it so it never lingers. Explicit
     ' Unprotect first - see the matching comment at scratch-sheet creation.
     On Error Resume Next
+    LogModule9Debug "EN success path: about to Unprotect+Delete scratch. EnableEvents=" & Application.EnableEvents & _
+        ", ProtectStructure=" & wsHome.Parent.ProtectStructure
     wsHome.Parent.Unprotect Password:="p7ss"
+    LogModule9Debug "EN success path: Unprotect done. Err=" & Err.Number & " " & Err.Description
+    Err.Clear
     Application.DisplayAlerts = False
     wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+    LogModule9Debug "EN success path: Delete returned. Err=" & Err.Number & " " & Err.Description
     Application.DisplayAlerts = True
     On Error GoTo CancelHandler
 
@@ -1020,9 +1025,14 @@ On Error GoTo CancelHandler
 ' Scratch sheet's job is done - remove it so it never lingers. Explicit
 ' Unprotect first - see the matching comment at scratch-sheet creation.
 On Error Resume Next
+LogModule9Debug "Legacy success path: about to Unprotect+Delete scratch. EnableEvents=" & Application.EnableEvents & _
+    ", ProtectStructure=" & wsHome.Parent.ProtectStructure
 wsHome.Parent.Unprotect Password:="p7ss"
+LogModule9Debug "Legacy success path: Unprotect done. Err=" & Err.Number & " " & Err.Description
+Err.Clear
 Application.DisplayAlerts = False
 wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+LogModule9Debug "Legacy success path: Delete returned. Err=" & Err.Number & " " & Err.Description
 Application.DisplayAlerts = True
 On Error GoTo CancelHandler
 
@@ -1075,6 +1085,12 @@ Application.DisplayAlerts = True
 
 On Error Resume Next
 
+'=== TEMP DIAGNOSTIC (file-based, written BEFORE each risky call so we
+' get a record even if execution breaks on the very next line and never
+' returns) - remove once root-caused ===
+LogModule9Debug "CancelHandler: entered. savedErrNum=" & savedErrNum & ", savedErrDesc=" & savedErrDesc & _
+    ", wsHome Is Nothing=" & (wsHome Is Nothing) & ", EnableEvents=" & Application.EnableEvents
+
 ' If this run got far enough to build the scratch sheet before aborting,
 ' remove it FIRST - the REAL ConsolidatedData sheet (wsRealCD) was never
 ' touched by an aborted run, so there's nothing else to undo. wsHome may
@@ -1086,9 +1102,23 @@ On Error Resume Next
 ' - whatever error actually triggered this abort, the workbook's
 ' protection state at that exact moment shouldn't be assumed.
 wsHome.Parent.Unprotect Password:="p7ss"
+LogModule9Debug "CancelHandler: Unprotect done. Err=" & Err.Number & " " & Err.Description & _
+    ", ProtectStructure now=" & wsHome.Parent.ProtectStructure
+
+Dim scratchExists As Boolean, wsChk As Worksheet
+scratchExists = False
+For Each wsChk In wsHome.Parent.Sheets
+    If wsChk.Name = "TempConsolidatedScratch" Then scratchExists = True: Exit For
+Next wsChk
+LogModule9Debug "CancelHandler: about to Delete. scratchExists=" & scratchExists & _
+    ", ProtectStructure=" & wsHome.Parent.ProtectStructure & ", EnableEvents=" & Application.EnableEvents
+Err.Clear
+
 Application.DisplayAlerts = False
 wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+LogModule9Debug "CancelHandler: Delete returned. Err=" & Err.Number & " " & Err.Description
 Application.DisplayAlerts = True
+'=== END TEMP DIAGNOSTIC ===
 
 ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
 ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
@@ -1377,6 +1407,23 @@ Private Sub CloseIfAlreadyOpen(ByVal targetPath As String)
     Next wb
     On Error GoTo 0
 End Sub
+
+'=== TEMP DIAGNOSTIC HELPER - remove once the CancelHandler 1004 is
+' root-caused. Writes to a file (not a MsgBox) BEFORE each risky call in
+' CancelHandler's cleanup, so we get a record of exact state even if
+' execution breaks on the VERY NEXT line and never returns to log
+' anything "after".
+Private Sub LogModule9Debug(ByVal msg As String)
+    On Error Resume Next
+    Dim fnum As Integer, logPath As String
+    logPath = Environ("TEMP") & "\module9_debug.log"
+    fnum = FreeFile
+    Open logPath For Append Shared As #fnum
+    Print #fnum, Format(Now, "yyyy-mm-dd hh:nn:ss") & " | " & msg
+    Close #fnum
+    On Error GoTo 0
+End Sub
+'=== END TEMP DIAGNOSTIC HELPER ===
 
 ' ==========================================================
 ' LastDataRow - the true last row containing anything, across ALL
