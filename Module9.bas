@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module9"
 Sub Consolidated_AML_Workflow()
 
 ' ==========================================
@@ -266,7 +267,7 @@ If Not wsSource Is Nothing Then
             HeaderRow = HeaderCell.row
             HeadCol = HeaderCell.Column
             LastRowSource = .Cells(.Rows.count, HeadCol).End(xlUp).row
-            
+
             If LastRowSource >= HeaderRow Then
                 If Not HeaderCopied Then
                     .Range(.Cells(HeaderRow, HeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=WsMaster.Range("A1")
@@ -788,10 +789,10 @@ With pt
         .Orientation = xlRowField
         .Position = 1
     End With
-    
+
     .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount ", xlSum
     .PivotFields("Sum of Transaction Amount ").NumberFormat = "$#,#00.00"
-    
+
     .AddDataField .PivotFields("Transaction Amount"), "Count of Transaction Amount ", xlCount
     .PivotFields("Count of Transaction Amount ").NumberFormat = "0"
 End With
@@ -1070,7 +1071,7 @@ End Sub
 ' ==========================================================
 Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
     ByVal pivotSheet As String, ByVal insertAfter As String)
-    Dim wsData As Worksheet, wsPv As Worksheet
+    Dim wsData As Worksheet, wsPv As Worksheet, wsPvScratch As Worksheet
     Dim dCol As Long, lastRow As Long, lastCol As Long, ddLast As Long
     Dim rngScn As Range, cacheScn As PivotCache, rngTmp As Range, cacheTmp As PivotCache
     Dim ptx As PivotTable, ptE As PivotTable, ptD As PivotTable
@@ -1112,21 +1113,38 @@ Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
     End With
     On Error GoTo 0
 
-    ' clean blank dates + short-date format so grouping is stable
+    ' Pivots 2-4 (date-grouped) need blank Transaction-Date rows removed so
+    ' grouping doesn't crash - but that cleanup must NEVER run against
+    ' wsData directly. wsData IS the real deliverable sheet the analyst
+    ' opens (e.g. "Alerted Transaction") - deleting rows from it here was
+    ' the actual root cause of that sheet coming out completely empty
+    ' (and of Pivots 2-4 silently never getting built, since the row-count
+    ' this block computed afterward gates whether they run at all). Do the
+    ' cleanup on a disposable COPY instead, feed Pivots 2-4 from THAT
+    ' copy's cache, then delete the copy - wsData itself is never mutated,
+    ' no matter how aggressive or fragile the blank-detection turns out to
+    ' be on a thin dataset.
+    On Error Resume Next
+    wsData.Copy After:=wb.Sheets(wb.Sheets.count)
+    Set wsPvScratch = wb.Sheets(wb.Sheets.count)
+    wsPvScratch.Visible = xlSheetVeryHidden
+    On Error GoTo 0
+    If wsPvScratch Is Nothing Then GoTo SkipDateGroupedPivots
+
     On Error Resume Next
     If dCol > 0 Then
-        ddLast = wsData.Cells(wsData.Rows.count, dCol).End(xlUp).row
+        ddLast = wsPvScratch.Cells(wsPvScratch.Rows.count, dCol).End(xlUp).row
         If ddLast > 1 Then
-            wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
-            wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol)).NumberFormat = "m/d/yyyy"
+            wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
+            wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).NumberFormat = "m/d/yyyy"
         End If
     End If
     On Error GoTo 0
 
-    lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).row
-    lastCol = wsData.Cells(1, wsData.Columns.count).End(xlToLeft).Column
+    lastRow = wsPvScratch.Cells(wsPvScratch.Rows.count, "A").End(xlUp).row
+    lastCol = wsPvScratch.Cells(1, wsPvScratch.Columns.count).End(xlToLeft).Column
     If lastRow > 1 Then
-        Set rngTmp = wsData.Range(wsData.Cells(1, 1), wsData.Cells(lastRow, lastCol))
+        Set rngTmp = wsPvScratch.Range(wsPvScratch.Cells(1, 1), wsPvScratch.Cells(lastRow, lastCol))
         Set cacheTmp = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=rngTmp)
 
         ' PIVOT 2: TEMPORAL
@@ -1185,6 +1203,18 @@ Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
         HighlightDrCrRows ptD, wsPv
         On Error GoTo 0
     End If
+
+SkipDateGroupedPivots:
+    ' Scratch copy's job is done - remove it. wsData (the real deliverable
+    ' sheet) was never touched by any of the above, regardless of whether
+    ' Pivots 2-4 built successfully.
+    On Error Resume Next
+    If Not wsPvScratch Is Nothing Then
+        Application.DisplayAlerts = False
+        wsPvScratch.Delete
+        Application.DisplayAlerts = True
+    End If
+    On Error GoTo 0
 
     wsPv.Columns("A:W").AutoFit
 End Sub
@@ -1372,4 +1402,3 @@ Private Sub CleanTransactionData(ByVal ws As Worksheet)
 
     On Error GoTo 0
 End Sub
-
