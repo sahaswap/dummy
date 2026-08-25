@@ -174,7 +174,7 @@ If exportMode = "PIVOT" Then
     If wsPivScratch.UsedRange.Cells.count > 0 Then
         wsPivScratch.UsedRange.Copy Destination:=newWbPiv.Sheets("Pivot Data").Range("A1")
     End If
-    
+
     BuildEnPivots newWbPiv, "Pivot Data", "Pivot", "Pivot Data"
 
     Dim pSh As Long
@@ -855,14 +855,14 @@ End Sub
 Private Sub SafeDeleteSheet(ByVal wb As Workbook, ByVal sheetName As String)
     On Error Resume Next
     If wb Is Nothing Then Exit Sub
-    
+
     wb.Unprotect Password:="p7ss"
     wb.Unprotect
-    
+
     Dim wsTarget As Worksheet
     Set wsTarget = Nothing
     Set wsTarget = wb.Sheets(sheetName)
-    
+
     If Not wsTarget Is Nothing Then
         Application.DisplayAlerts = False
         wsTarget.Visible = xlSheetVisible
