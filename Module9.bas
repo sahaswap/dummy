@@ -13,6 +13,14 @@ Dim origCalc As XlCalculation
 origCalc = xlCalculationAutomatic
 
 Dim WbSource As Workbook, WsMaster As Worksheet, wsSource As Worksheet, wsHome As Worksheet
+' wsRealCD = the ACTUAL ConsolidatedData sheet in this workbook. WsMaster
+' below is a disposable SCRATCH copy that steps 2-4 build/merge/clean on -
+' the real sheet is only ever written to once, at the final narrowing step
+' in each branch, so a failure anywhere before that (e.g. a SaveAs
+' conflict because a prior export's file is still open) leaves the LIVE
+' ConsolidatedData sheet completely untouched instead of stuck holding
+' half-built intermediate data.
+Dim wsRealCD As Worksheet
 Dim LastRowSource As Long, LastRowMaster As Long, lastCol As Long
 Dim HeaderCopied As Boolean
 
@@ -34,6 +42,19 @@ Dim fileFound As Boolean
 ' --- THE ULTIMATE PATH FIX ---
 ' This forces Excel to use a built-in slash, preventing it from vanishing during copy/paste
 slash = Application.PathSeparator
+
+' Break sheet grouping if active - grouped/multi-selected tabs are known
+' to make Protect/Unprotect, Copy, and Delete all behave inconsistently
+' (including throwing genuine but confusing 1004 errors on operations
+' that would otherwise work fine). Cheap and harmless to always do this
+' up front.
+On Error Resume Next
+If Not ActiveWindow Is Nothing Then
+    If ActiveWindow.SelectedSheets.count > 1 Then
+        ActiveSheet.Select
+    End If
+End If
+On Error GoTo CancelHandler
 
 ' ==========================================
 ' 1. SETUP & THE PROVEN FOLDER CONNECTION
@@ -199,6 +220,7 @@ If exportMode = "PIVOT" Then
     Dim pivotFileName As String, pivotSavePath As String
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
+    CloseIfAlreadyOpen pivotSavePath
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
 
     newWbPiv.Sheets("Pivot Data").Activate
@@ -221,17 +243,46 @@ If exportMode = "PIVOT" Then
     Exit Sub
 End If
 
-' Initialize ConsolidatedData sheet
+' Initialize the REAL ConsolidatedData sheet (create it if missing) - but
+' NEVER clear or write into it here. It stays exactly as it was until the
+' single final narrowing write in whichever branch below actually succeeds.
+' Uses wsHome.Parent (not ActiveWorkbook) throughout this block and every
+' later TempConsolidatedScratch reference - Worksheet.Copy (used heavily
+' below to build newWb's sheets) silently shifts ActiveWorkbook to newWb
+' as a side effect, so anything after that point can no longer rely on
+' ActiveWorkbook still meaning THIS tool's workbook. wsHome.Parent is
+' fixed and always correct, exactly like the existing TempRawBackup calls
+' elsewhere in this Sub already do.
 On Error Resume Next
-Set WsMaster = ActiveWorkbook.Sheets("ConsolidatedData")
+Set wsRealCD = wsHome.Parent.Sheets("ConsolidatedData")
 On Error GoTo CancelHandler
 
+If wsRealCD Is Nothing Then
+Set wsRealCD = wsHome.Parent.Sheets.Add(After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count))
+wsRealCD.Name = "ConsolidatedData"
+End If
+
+' Disposable SCRATCH copy - every merge/cleanup/build step below (2, 2.5,
+' 3, 4-EN, 4/5) works on THIS, never on the real ConsolidatedData sheet
+' above. REUSED (not deleted-then-recreated) if a prior run left one
+' behind - deleting then immediately recreating under the same name can
+' throw a genuine Excel error ("That name is already taken. Try a
+' different one.", err 1004) if the delete ever silently failed for any
+' reason. Reusing the existing sheet outright removes that failure mode
+' entirely - there's never a moment where two sheets briefly want the
+' same name. Explicit Unprotect first - Excel refuses to add/rename/
+' delete ANY sheet while workbook structure is protected.
+On Error Resume Next
+wsHome.Parent.Unprotect Password:="p7ss"
+Set WsMaster = wsHome.Parent.Sheets("TempConsolidatedScratch")
+On Error GoTo CancelHandler
 If WsMaster Is Nothing Then
-Set WsMaster = ActiveWorkbook.Sheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.count))
-WsMaster.Name = "ConsolidatedData"
+Set WsMaster = wsHome.Parent.Sheets.Add(After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count))
+WsMaster.Name = "TempConsolidatedScratch"
 Else
 WsMaster.Cells.Clear
 End If
+WsMaster.Visible = xlSheetVeryHidden   ' internal working sheet - never shown as a tab
 
 ' EnableEvents/Calculation were never touched here before - every
 ' cell write, paste, and sheet copy below could trigger a full
@@ -305,11 +356,15 @@ On Error GoTo CancelHandler
 WsMaster.Copy After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count)
 Set WsRawTemp = ActiveSheet
 WsRawTemp.Name = "TempRawBackup"
+WsRawTemp.Visible = xlSheetVeryHidden   ' internal working sheet - never shown as a tab
 
 ' ==========================================
 ' 3. AGGRESSIVE DATA CLEANUP
 ' ==========================================
-WsMaster.Activate
+' WsMaster.Activate removed - none of Find/TextToColumns/NumberFormat
+' below need the sheet to actually be on-screen active, and WsMaster is
+' now VeryHidden (see its creation above), which would make .Activate
+' raise its own runtime error.
 
 Set DateHeader = WsMaster.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
 If Not DateHeader Is Nothing Then
@@ -425,6 +480,7 @@ If exportMode = "EN" Then
     ' build workbook: Lookback Transactions (all Yes+No in window) + pivots
     Set newWb = Workbooks.Add
     WsMaster.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Lookback Transactions"
+    ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsLB = newWb.Sheets("Lookback Transactions")
     ' date-window only - keeps BOTH Yes and No rows (splitCol = 0). WsMaster
     ' itself is only ever COPIED FROM here, never modified - it must stay
@@ -453,6 +509,7 @@ If exportMode = "EN" Then
     excelFileName = ecmID & "_" & AlertID & "_Lookback Transactions (" & _
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
+    CloseIfAlreadyOpen finalSavePath
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
@@ -523,6 +580,7 @@ If exportMode = "EN" Then
     ' --- build the export workbook ---
     Set newWb = Workbooks.Add
     WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+    ActiveSheet.Visible = xlSheetVisible   ' WsRawTemp (the source) is VeryHidden - force this deliverable sheet visible
     ' Raw Transactions is a PRE-cleanup snapshot (taken before step 3 ran on
     ' WsMaster), so unlike Alerted/Non-Alerted it never got date conversion,
     ' amount formatting, or the Counterparty column. Run that same cleanup on
@@ -531,6 +589,7 @@ If exportMode = "EN" Then
 
     ' Alerted Transaction = rows where split = "Yes"
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Alerted Transaction"
+    ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsAlertedEN = newWb.Sheets("Alerted Transaction")
     FilterRowsFast wsAlertedEN, aColEN, "Yes", 0, False, 0, 0
 
@@ -553,6 +612,7 @@ If exportMode = "EN" Then
     End If
 
     WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "Non Alerted Transaction"
+    ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
     Set wsNonEN = newWb.Sheets("Non Alerted Transaction")
 
     If Not haveAlerted Then
@@ -623,22 +683,34 @@ If exportMode = "EN" Then
     ' ---- save (same file name as Legacy) ----
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
+    CloseIfAlreadyOpen finalSavePath
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
     Application.DisplayAlerts = True
 
     ' ConsolidatedData must hold ONLY the alerted transaction data - never
     ' the Non-Alerted or Lookback rows. This is the ONE point in the whole
-    ' combined EN Network export where ConsolidatedData finally gets
-    ' narrowed - both files above already finished reading from it.
-    WsMaster.Cells.Clear
-    newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=WsMaster.Range("A1")
+    ' combined EN Network export where the REAL ConsolidatedData sheet gets
+    ' written to at all - by this point the save above already succeeded,
+    ' so it's safe to overwrite. Everything before this line only ever
+    ' touched the disposable scratch sheet (WsMaster).
+    wsRealCD.Cells.Clear
+    newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=wsRealCD.Range("A1")
 
     ' Refresh Sheet7's [Rule Name] now too, right as ConsolidatedData gets
     ' its final alerted-only content - so it's already correct if the
     ' analyst looks at Sheet7 before ever running Generate Narrative.
     On Error Resume Next
     Module3.RefreshRuleNameTag
+    On Error GoTo CancelHandler
+
+    ' Scratch sheet's job is done - remove it so it never lingers. Explicit
+    ' Unprotect first - see the matching comment at scratch-sheet creation.
+    On Error Resume Next
+    wsHome.Parent.Unprotect Password:="p7ss"
+    Application.DisplayAlerts = False
+    wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+    Application.DisplayAlerts = True
     On Error GoTo CancelHandler
 
     newWb.Sheets("Raw Transactions").Activate
@@ -667,7 +739,9 @@ End If
 Set newWb = Workbooks.Add
 
 WsRawTemp.Copy Before:=newWb.Sheets(1): ActiveSheet.Name = "Raw Transactions"
+ActiveSheet.Visible = xlSheetVisible   ' WsRawTemp (the source) is VeryHidden - force this deliverable sheet visible
 WsMaster.Copy After:=newWb.Sheets(newWb.Sheets.count): ActiveSheet.Name = "CP Selection"
+ActiveSheet.Visible = xlSheetVisible   ' WsMaster (the source) is VeryHidden - force this deliverable sheet visible
 
 Set wsExport = newWb.Sheets("CP Selection")
 TransCol = 0: AlertCol = 0
@@ -891,28 +965,16 @@ End If
 ' ==========================================
 ' 5. FINALIZE MASTER TAB & SAVE
 ' ==========================================
-WsMaster.Cells.Clear
-newWb.Sheets("DeDupe").UsedRange.Copy Destination:=WsMaster.Range("A1")
-
-' Refresh Sheet7's [Rule Name] now too, right as ConsolidatedData gets its
-' final deduped content - so it's already correct if the analyst looks at
-' Sheet7 before ever running Generate Narrative.
-On Error Resume Next
-Module3.RefreshRuleNameTag
-On Error GoTo CancelHandler
-
-With WsMaster.Cells
-.WrapText = False
-.EntireColumn.AutoFit
-.WrapText = True
-.EntireRow.AutoFit
-.VerticalAlignment = xlTop
-End With
-
 On Error Resume Next
 Application.DisplayAlerts = False
 wsHome.Parent.Sheets("TempRawBackup").Delete
 Application.DisplayAlerts = True
+' This GoTo was missing before - without it, a failed SaveAs below was
+' SILENTLY SWALLOWED by the Resume Next above (never caught, never shown
+' to the analyst), which is exactly how a save failure could leave newWb
+' as an unsaved "Book12" while the code kept going and still claimed
+' "Workflow Complete!" with a path that was never actually written.
+On Error GoTo CancelHandler
 
 ' Always the alerted Transaction Files source now.
 Dim fileTag As String
@@ -921,11 +983,48 @@ excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.x
 
 ' Building path with guaranteed slashes
 finalSavePath = saveFolderPath & slash & excelFileName
+CloseIfAlreadyOpen finalSavePath
 
 ' Remove the error bypass so if Excel blocks the save, we actually see why
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
 Application.DisplayAlerts = True
+
+' ConsolidatedData must hold ONLY the alerted transaction data. Legacy
+' source files are always pre-filtered to alerted-only (unlike EN
+' Network, which reads a mixed Yes+No file), so DeDupe never needs its
+' own Yes-only filter here - copying it straight into ConsolidatedData is
+' correct. This now happens AFTER the save above succeeds - by this point
+' the export is safely on disk, so it's safe to overwrite the REAL
+' ConsolidatedData sheet. Everything before this line only ever touched
+' the disposable scratch sheet (WsMaster) - a failed save now leaves the
+' live ConsolidatedData sheet completely untouched.
+wsRealCD.Cells.Clear
+newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
+
+With wsRealCD.Cells
+.WrapText = False
+.EntireColumn.AutoFit
+.WrapText = True
+.EntireRow.AutoFit
+.VerticalAlignment = xlTop
+End With
+
+' Refresh Sheet7's [Rule Name] now too, right as ConsolidatedData gets its
+' final deduped content - so it's already correct if the analyst looks at
+' Sheet7 before ever running Generate Narrative.
+On Error Resume Next
+Module3.RefreshRuleNameTag
+On Error GoTo CancelHandler
+
+' Scratch sheet's job is done - remove it so it never lingers. Explicit
+' Unprotect first - see the matching comment at scratch-sheet creation.
+On Error Resume Next
+wsHome.Parent.Unprotect Password:="p7ss"
+Application.DisplayAlerts = False
+wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+Application.DisplayAlerts = True
+On Error GoTo CancelHandler
 
 newWb.Sheets("Raw Transactions").Activate
 
@@ -956,23 +1055,52 @@ MsgBox "Workflow Complete!" & vbCrLf & _
 Exit Sub
 
 CancelHandler:
-' CRITICAL FIX: This ensures Excel unfreezes even if the macro crashes
-Application.EnableEvents = True
+' Capture the error that actually got us here BEFORE any cleanup below
+' can overwrite Err (e.g. deleting a scratch sheet that doesn't exist
+' raises its own error) - otherwise the MsgBox at the bottom could end up
+' showing the wrong error entirely.
+Dim savedErrNum As Long, savedErrDesc As String
+savedErrNum = Err.Number
+savedErrDesc = Err.Description
+
+' CRITICAL FIX: This ensures Excel unfreezes even if the macro crashes.
+' EnableEvents is restored LAST (see below) - Sheet1's own Worksheet_Change
+' handler unconditionally re-protects the whole workbook at the end of
+' every edit, and would be able to fire and re-lock structure while our
+' own cleanup below is still running if this were set True here instead.
 Application.Calculation = origCalc
 Application.EnableCancelKey = xlInterrupt
 Application.ScreenUpdating = True
 Application.DisplayAlerts = True
 
 On Error Resume Next
+
+' If this run got far enough to build the scratch sheet before aborting,
+' remove it FIRST - the REAL ConsolidatedData sheet (wsRealCD) was never
+' touched by an aborted run, so there's nothing else to undo. wsHome may
+' still be Nothing if the error fired before it was even set (very top
+' of the Sub) - harmless here since Resume Next is already active and
+' there'd be no scratch sheet to clean up that early anyway. This MUST
+' run before Protect Structure:=True below - a structure-protected
+' workbook can't have any sheet deleted. Explicit Unprotect right here too
+' - whatever error actually triggered this abort, the workbook's
+' protection state at that exact moment shouldn't be assumed.
+wsHome.Parent.Unprotect Password:="p7ss"
+Application.DisplayAlerts = False
+wsHome.Parent.Sheets("TempConsolidatedScratch").Delete
+Application.DisplayAlerts = True
+
 ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
 ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
 ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
+
+Application.EnableEvents = True
 On Error GoTo 0
 
-If Err.Number = 18 Then
+If savedErrNum = 18 Then
 MsgBox "Process Safely Cancelled.", vbInformation, "Aborted"
-ElseIf Err.Number <> 0 Then
-MsgBox "An unexpected error occurred:" & vbCrLf & Err.Description, vbCritical, "Error " & Err.Number
+ElseIf savedErrNum <> 0 Then
+MsgBox "An unexpected error occurred:" & vbCrLf & savedErrDesc, vbCritical, "Error " & savedErrNum
 End If
 End Sub
 
