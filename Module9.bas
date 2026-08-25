@@ -189,6 +189,15 @@ If exportMode = "PIVOT" Then
 
     SafeDeleteSheet ThisWorkbook, "TempPivotScratch"
 
+    ' Same tidy pass every other mode's data sheets already get (Legacy's
+    ' Raw Transactions/CP Selection/DeDupe, EN Network's 3 sheets,
+    ' Lookback Transactions) - "Pivot Data" here was the one sheet still
+    ' missing it.
+    With newWbPiv.Sheets("Pivot Data").Cells
+        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+        .EntireRow.AutoFit: .VerticalAlignment = xlTop
+    End With
+
     Dim pivotFileName As String, pivotSavePath As String
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
