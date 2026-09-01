@@ -49,25 +49,34 @@ Private cDim As Long           ' secondary / de-emphasised text
 Private cOrange As Long        ' Rinzler - Reset, Utility faction
 Private cAmber As Long         ' the orange side's bloom
 
-' Excel's Glow.Transparency runs 0 (solid halo) to 1 (invisible), so a
-' stronger glow means a LOWER number, not a higher one. The first pass
-' used 0.45-0.75 with radii of 4-8, which is why nothing appeared to be
-' emitting light. These are the values that actually bloom.
+' Glow.Transparency runs 0 (solid halo) to 1 (invisible), so a stronger
+' glow is a LOWER number.
 '
-' These live here, in the module's declarations section, because VBA only
-' accepts module-level Const and Dim before the first procedure. Put one
-' after an End Sub and the whole module fails to compile with "Only
-' comments may appear after End Sub, End Function, or End Property".
-Private Const GLOW_TITLE_R As Single = 28
-Private Const GLOW_TITLE_T As Single = 0.05
-Private Const GLOW_HERO_R As Single = 24        ' Start / Reset
-Private Const GLOW_HERO_T As Single = 0.05
-Private Const GLOW_BTN_R As Single = 14
-Private Const GLOW_BTN_T As Single = 0.25
-Private Const GLOW_PANEL_R As Single = 10
-Private Const GLOW_PANEL_T As Single = 0.5
-Private Const GLOW_TEXT_R As Single = 7         ' Font.Glow - the big win
-Private Const GLOW_TEXT_T As Single = 0.15
+' THE RULE: on a dark sheet, glow is a scarce resource. Roughly ten
+' objects on Sheet1 should emit light - the title, eight buttons, and the
+' two panel badges. Everything else is dark structure. When banners, table
+' borders and body text all glow too, the contrast that made the buttons
+' findable is gone and the sheet becomes an even wall of cyan. That is
+' what happened at radius 24 with transparency 0.05 on everything, and it
+' is why these values are now conservative and reserved.
+'
+' Font.Glow is deliberately NOT used below 12pt. A halo on 8.5pt text
+' does not make it glow, it smears it - the halo is wider than the stroke,
+' so the letterforms fill in and the caption turns to mush. Only the
+' title, which is large, gets lit text.
+'
+' These live in the declarations section because VBA accepts module-level
+' Const only before the first procedure; one placed after an End Sub fails
+' the whole module with "Only comments may appear after End Sub".
+Private Const GLOW_TITLE_R As Single = 16       ' the title is the sheet's brightest object
+Private Const GLOW_TITLE_T As Single = 0.3
+Private Const GLOW_TITLE_TEXT_R As Single = 8   ' the ONLY lit text on the sheet
+Private Const GLOW_HERO_R As Single = 12        ' Start / Reset
+Private Const GLOW_HERO_T As Single = 0.35
+Private Const GLOW_BTN_R As Single = 7
+Private Const GLOW_BTN_T As Single = 0.55
+Private Const GLOW_BADGE_R As Single = 6        ' ACTION / UTILITY badges
+Private Const GLOW_BADGE_T As Single = 0.6
 
 Private Sub InitPalette()
     ' Surfaces. Frame analysis of the film describes the Grid not as black
@@ -82,7 +91,11 @@ Private Sub InitPalette()
 
     ' Light sources. These are emitters, so unlike the surfaces they are
     ' bright and cold - the icy near-white blue of a lit circuit.
-    cTrace = RGB(38, 130, 156)      ' #26829C  unlit circuit
+    ' Unlit circuit. This is a SEPARATOR, not a light - it draws every
+    ' table rule on the sheet, so at #26829C it turned the data into a
+    ' glowing neon grid that competed with the buttons. Dark enough to
+    ' read as structure.
+    cTrace = RGB(24, 56, 72)        ' #183848  unlit circuit
     cCyan = RGB(122, 214, 245)      ' #7AD6F5  lit circuit
     cBloom = RGB(180, 240, 255)     ' #B4F0FF  its halo
     cCore = RGB(240, 253, 255)      ' #F0FDFF  white-hot core
@@ -120,10 +133,19 @@ Sub ApplyTronLegacy()
 
     ' Order matters. Clear every inherited artefact BEFORE stashing any
     ' shape, or the stash records another theme's colours as "original".
+    ' Sheet1 has NO title shape of its own. Reading the drawing XML, the
+    ' only "Beta 3.6" on the sheet is NGADD_TITLE_TXT - a shape Navy &
+    ' Gold generates. Purging NGADD_* therefore deletes the sheet's only
+    ' title outright, and nothing un-hides it because there is nothing
+    ' hidden. So capture the caption first and re-issue it as our own.
+    Dim titleText As String
+    titleText = CaptureTitleText(ws)
+
     PurgeAllSheetBackgroundImages ThisWorkbook   ' the mottled wash behind the data
-    UnhideBaselineShapes ws                      ' MUST run before PurgeForeignDecor - see below
-    PurgeForeignDecor ws                         ' NavyGold folds / cards / icon shapes
-    RemoveAdded ws                               ' our own traces from a previous run
+    UnhideBaselineShapes ws                      ' recover anything a theme hid
+    HideForeignGraphics ws                       ' the gold shield - see below
+    PurgeForeignDecor ws                         ' NavyGold folds / cards / title
+    RemoveAdded ws                               ' our own additions from a previous run
     ApplyCells ws                                ' Grid-black canvas + sidebar slab
 
     For Each shp In ws.Shapes
@@ -134,14 +156,17 @@ Sub ApplyTronLegacy()
                 Case "PRIMARY":   StyleButton shp, cBloom, cBloom, True    ' Start
                 Case "DANGER":    StyleButton shp, cOrange, cAmber, True   ' Reset
                 Case "BUTTON":    StyleButton shp, cCyan, cBloom, False
-                Case "PANEL_ALT": StylePanel shp, cOrange, cAmber          ' UTILITY badge
-                Case Else:        StylePanel shp, cCyan, cBloom
+                Case "BADGE":     StyleBadge shp, cCyan, cBloom            ' ACTION
+                Case "BADGE_ALT": StyleBadge shp, cOrange, cAmber          ' UTILITY
+                Case Else:        StyleBanner shp                          ' section headers
             End Select
             n = n + 1
         End If
     Next shp
 
+    AddGroupCards ws                 ' behind the buttons - restores sidebar structure
     AddCircuitTraces ws
+    AddTronTitle ws, titleText       ' after the cards, so it sits above them
     ApplyTabColour ws
 
     On Error Resume Next
@@ -240,6 +265,48 @@ Private Sub UnhideBaselineShapes(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
+' Reads the current title caption off whatever shape is carrying it, so
+' the version number follows the workbook instead of being hardcoded here
+' and going stale at the next bump.
+Private Function CaptureTitleText(ByVal ws As Worksheet) As String
+    On Error Resume Next
+    Dim shp As Shape, t As String
+    CaptureTitleText = "Beta"                    ' last-resort fallback
+    For Each shp In ws.Shapes
+        t = ""
+        If shp.TextFrame.HasText Then t = Trim$(shp.TextFrame.Characters.Text)
+        If Len(t) > 0 And Len(shp.OnAction) = 0 Then
+            If InStr(1, t, "Beta", vbTextCompare) > 0 Then
+                CaptureTitleText = t
+                Exit For
+            End If
+        End If
+    Next shp
+    On Error GoTo 0
+End Function
+
+' Sheet1 carries one msoGraphic ("Graphic 2") - the gold shield that sits
+' beside the title. It is not an AutoShape, so no theme can recolour it,
+' and it is not NGADD_-prefixed, so purging Navy & Gold's decorations
+' leaves it behind: a gold icon stranded on a black Grid.
+'
+' It is hidden rather than deleted, because deleting is irreversible and
+' the icon belongs to the workbook. The theme manager's un-hide pass
+' brings it straight back when a theme is removed.
+Private Sub HideForeignGraphics(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim shp As Shape, sbRight As Single
+    sbRight = ws.Range("F1").Left
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            If shp.Type <> msoAutoShape And shp.Type <> msoFreeform Then
+                If shp.Left < sbRight Then shp.Visible = msoFalse
+            End If
+        End If
+    Next shp
+    On Error GoTo 0
+End Sub
+
 ' modNavyGold generates its own decorations - corner folds, panel cards,
 ' the shield-and-title lockup, inline icon glyphs - all named NGADD_*.
 ' They are Navy & Gold objects, not dashboard content, so Tron deletes
@@ -323,14 +390,13 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
                 ws.Range("J" & r & ":T" & r).Font.Color = cCore    ' value
             End If
 
+            ' A bottom rule only. Boxing every row on three sides drew a
+            ' bright cage around each line of data and made the tables the
+            ' loudest thing on the sheet. One horizontal separator is
+            ' enough to group rows; the panel fill already defines the
+            ' block's edges.
             With rr.Borders(xlEdgeBottom)
-                .LineStyle = xlContinuous: .Weight = xlThin: .Color = cTrace
-            End With
-            With rr.Borders(xlEdgeLeft)
-                .LineStyle = xlContinuous: .Weight = xlThin: .Color = cTrace
-            End With
-            With rr.Borders(xlEdgeRight)
-                .LineStyle = xlContinuous: .Weight = xlThin: .Color = cTrace
+                .LineStyle = xlContinuous: .Weight = xlHairline: .Color = cTrace
             End With
         Next r
     Next addr
@@ -403,28 +469,151 @@ Private Sub AddCircuitTraces(ByVal ws As Worksheet)
     On Error Resume Next
     Dim x As Single, ln As Shape
 
-    ' The sidebar's outer edge is the sheet's main light run, and it is
-    ' split at the Action/Utility boundary: cyan down the action half,
-    ' orange down the utility half. Two circuits of opposing colour on
-    ' one dark slab is the Grid's whole visual signature, and here the
-    ' split lands on a division the dashboard already has.
+    ' The sidebar's outer edge is the sheet's main light run: cyan down
+    ' the Action half, orange down the Utility half.
+    '
+    ' They are drawn as TWO OVERLAPPING RIBBONS, not two lines meeting at
+    ' a point. Each ribbon runs its colour at full strength at its own end
+    ' and fades to fully transparent past the middle, so through the
+    ' overlap both are partly present and the eye reads one continuous run
+    ' of light changing hue - not "orange stops here, cyan starts here".
+    ' Two lights meeting should mix, the way they would on the Grid; a
+    ' butt joint between two saturated colours always reads as a seam.
+    '
+    ' The overlap is deliberately wide (rows 10-22 against a 1-30 run).
+    ' A narrow crossfade still reads as an edge; it needs room to blend.
+    Dim xTop As Single, xBot As Single
     x = ws.Range("F1").Left
-    Set ln = ws.Shapes.AddLine(x, ws.Range("A1").Top, x, ws.Range("A16").Top)
-    LightTrace ln, 2#, cCyan, cBloom, 18
+    xTop = ws.Range("A1").Top
+    xBot = ws.Range("A30").Top
 
-    Set ln = ws.Shapes.AddLine(x, ws.Range("A16").Top, x, ws.Range("A30").Top)
-    LightTrace ln, 2#, cOrange, cAmber, 18
+    AddLightRibbon ws, x, xTop, ws.Range("A22").Top, cCyan, cBloom, False
+    AddLightRibbon ws, x, ws.Range("A10").Top, xBot, cOrange, cAmber, True
 
-    ' Horizontal rule capping the sidebar header block.
+    ' Horizontal rule capping the sidebar header block. Sits in the cyan
+    ' half, so it stays cyan.
     Set ln = ws.Shapes.AddLine(ws.Range("A4").Left + 8, ws.Range("A4").Top, _
                                ws.Range("F4").Left - 8, ws.Range("A4").Top)
-    LightTrace ln, 1.25, cCyan, cBloom, 12
+    LightTrace ln, 1#, cTrace, cBloom, 5
 
-    ' Baseline closing the slab - orange, since it sits under the
-    ' utility half and completes that circuit.
+    ' Baseline closing the slab - deep in the orange half.
     Set ln = ws.Shapes.AddLine(ws.Range("A30").Left, ws.Range("A30").Top, _
                                ws.Range("F30").Left, ws.Range("A30").Top)
-    LightTrace ln, 1.25, cOrange, cAmber, 12
+    LightTrace ln, 1#, cOrange, cAmber, 6
+    On Error GoTo 0
+End Sub
+
+' Tron's own title. Navy & Gold pairs its title with a vector shield; the
+' Grid's own convention is lettering with nothing containing it, so this
+' is text alone - white-hot, with the widest halo on the sheet.
+Private Sub AddTronTitle(ByVal ws As Worksheet, ByVal caption As String)
+    On Error Resume Next
+    Dim shp As Shape, x As Single, w As Single
+    x = ws.Range("A1").Left + 14
+    w = ws.Range("A1:E1").Width - 28
+    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, _
+                                   x, ws.Range("A1").Top + 5, w, 24)
+    If shp Is Nothing Then Exit Sub
+    shp.Name = ADD_PFX & "TITLE"
+    shp.TextFrame.Characters.Text = caption
+    With shp.TextFrame.Characters.Font
+        .Name = "Segoe UI"
+        .Size = 15
+        .Bold = True
+        .Color = cCore
+    End With
+    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    StyleTitle shp
+    shp.ZOrder msoBringToFront
+    On Error GoTo 0
+End Sub
+
+' Navy & Gold groups the buttons inside two gold cards. Purging those
+' leaves the eight buttons floating on a flat slab with nothing tying each
+' group together, so Tron draws its own - dark, hairline-edged, unlit, and
+' sent to the back. Structure, not decoration: they say which buttons
+' belong to ACTION and which to UTILITY.
+Private Sub AddGroupCards(ByVal ws As Worksheet)
+    On Error Resume Next
+    AddOneCard ws, "A5", "A15", "ACT"
+    AddOneCard ws, "A18", "A28", "UTL"
+    On Error GoTo 0
+End Sub
+
+Private Sub AddOneCard(ByVal ws As Worksheet, ByVal topCell As String, _
+                       ByVal botCell As String, ByVal tag As String)
+    On Error Resume Next
+    Dim shp As Shape, x As Single, w As Single, y As Single, h As Single
+    x = ws.Range("A1").Left + 10
+    w = ws.Range("A1:E1").Width - 20
+    y = ws.Range(topCell).Top
+    h = ws.Range(botCell).Top + ws.Range(botCell).Height - y
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, y, w, h)
+    If shp Is Nothing Then Exit Sub
+    shp.Name = ADD_PFX & "CARD_" & tag
+    shp.Adjustments(1) = 0.06
+    With shp.Fill
+        .Visible = msoTrue: .Solid
+        .ForeColor.RGB = cVoid
+        .Transparency = 0.35
+    End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cTrace
+        .Weight = 0.75
+    End With
+    shp.Glow.Radius = 0
+    shp.Shadow.Visible = msoFalse
+    shp.ZOrder msoSendToBack
+    On Error GoTo 0
+End Sub
+
+' One half of the sidebar light run: a thin filled strip whose colour is
+' solid at one end and fades to fully transparent at the other, so that
+' where two of them overlap the colours blend instead of abutting.
+'
+' fadeUp = False means solid at the top fading downward (the cyan half);
+' True means solid at the bottom fading upward (the orange half).
+'
+' A gradient FILL on a narrow rectangle is used rather than a line,
+' because Excel's line format cannot carry a gradient - a line can only
+' be one flat colour, which is what forced the hard seam before.
+Private Sub AddLightRibbon(ByVal ws As Worksheet, ByVal x As Single, _
+                           ByVal yTop As Single, ByVal yBot As Single, _
+                           ByVal clr As Long, ByVal halo As Long, _
+                           ByVal fadeUp As Boolean)
+    On Error Resume Next
+    Const W As Single = 2.5
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRectangle, x - W / 2, yTop, W, yBot - yTop)
+    If shp Is Nothing Then Exit Sub
+
+    Static seq As Long
+    seq = seq + 1
+    shp.Name = ADD_PFX & "RIBBON" & Format$(seq, "00")
+    shp.Line.Visible = msoFalse
+
+    With shp.Fill
+        .Visible = msoTrue
+        .TwoColorGradient msoGradientVertical, 1
+        .ForeColor.RGB = clr
+        .BackColor.RGB = clr
+        ' Same hue at both stops - only the ALPHA ramps. Fading colour to
+        ' colour would pass through a muddy midpoint (cyan into orange
+        ' averages to a dusty brown); fading each to transparent lets the
+        ' two ribbons add together as light instead.
+        .GradientStops.Insert clr, 0, IIf(fadeUp, 1, 0)
+        .GradientStops.Insert clr, 1, IIf(fadeUp, 0, 1)
+    End With
+
+    With shp.Glow
+        .Color.RGB = halo
+        .Radius = 9
+        .Transparency = 0.5
+    End With
+    shp.Shadow.Visible = msoFalse
+    shp.Placement = xlFreeFloating
     On Error GoTo 0
 End Sub
 
@@ -495,7 +684,9 @@ Private Function ShapeRole(ByVal shp As Shape) As String
             ShapeRole = "BUTTON"
         End If
     ElseIf InStr(1, t, "UTILITY", vbTextCompare) > 0 Then
-        ShapeRole = "PANEL_ALT"        ' the orange half of the Grid
+        ShapeRole = "BADGE_ALT"        ' the orange half of the Grid
+    ElseIf InStr(1, t, "ACTION", vbTextCompare) > 0 Then
+        ShapeRole = "BADGE"
     End If
     On Error GoTo 0
 End Function
@@ -542,24 +733,32 @@ Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Lo
             .Name = "Segoe UI"
             .Bold = emphasise
             .Size = 9
-            .Color = IIf(emphasise, cCore, cCore)
+            .Color = cCore
         End With
-        LightText shp, halo, IIf(emphasise, GLOW_TEXT_R + 3, GLOW_TEXT_R)
+        ' No text glow at 9pt - see the note on the GLOW_ constants. The
+        ' caption has to stay readable; the halo around the shape is what
+        ' makes the button look lit.
+        ClearTextGlow shp
     End If
     On Error GoTo 0
 End Sub
 
-' Font.Glow is a SEPARATE object from Shape.Glow - putting a halo on the
-' shape does nothing to its caption. This is the single biggest reason
-' the earlier passes read as "dark mode with borders" rather than Tron:
-' the lettering was inert. Office 2010+ only, hence the guard.
+' Font.Glow is a separate object from Shape.Glow, so it has to be cleared
+' separately too - otherwise a caption keeps a halo left over from an
+' earlier run even after the shape's own glow is gone.
 Private Sub LightText(ByVal shp As Shape, ByVal halo As Long, ByVal radius As Single)
     On Error Resume Next
     With shp.TextFrame2.TextRange.Font.Glow
         .Color.RGB = halo
         .Radius = radius
-        .Transparency = GLOW_TEXT_T
+        .Transparency = 0.35
     End With
+    On Error GoTo 0
+End Sub
+
+Private Sub ClearTextGlow(ByVal shp As Shape)
+    On Error Resume Next
+    shp.TextFrame2.TextRange.Font.Glow.Radius = 0
     On Error GoTo 0
 End Sub
 
@@ -569,36 +768,74 @@ End Sub
 ' on the sheet instead of it existing only on the Reset button - and it
 ' maps onto a split the dashboard already has, so it carries meaning
 ' rather than being decoration.
-Private Sub StylePanel(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Long)
+' Section banners - Alert Related Information, Customer Information, and
+' so on. These are LABELS, not controls. There are four of them spanning
+' the full width of the sheet, so lighting them was most of what turned
+' the dashboard into a wall of cyan: they are the largest objects present
+' and they were glowing as hard as the buttons.
+'
+' Dark slab, hairline unlit edge, crisp cyan caption, NO glow at all. They
+' read as headers because of the fill and the colour, not because they
+' emit light.
+Private Sub StyleBanner(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
-        .Visible = msoTrue
-        .TwoColorGradient msoGradientVertical, 1
+        .Visible = msoTrue: .Solid
         .ForeColor.RGB = cSlab
-        .BackColor.RGB = cVoid
+        .Transparency = 0
+    End With
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cTrace
+        .Weight = 0.75
+        .Transparency = 0
+    End With
+    shp.Glow.Radius = 0
+    shp.Shadow.Visible = msoFalse
+    shp.SoftEdge.Type = 0
+    If shp.TextFrame.HasText Then
+        With shp.TextFrame.Characters.Font
+            .Name = "Segoe UI"
+            .Color = cCyan
+            .Bold = True
+            .Italic = False
+        End With
+        ClearTextGlow shp
+    End If
+    On Error GoTo 0
+End Sub
+
+' ACTION / UTILITY badges. Only two of them, and they head the sidebar, so
+' they carry a small halo in their faction colour - enough to tie them to
+' the buttons below without competing with them.
+Private Sub StyleBadge(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Long)
+    On Error Resume Next
+    With shp.Fill
+        .Visible = msoTrue: .Solid
+        .ForeColor.RGB = cSlab
         .Transparency = 0
     End With
     With shp.Line
         .Visible = msoTrue
         .ForeColor.RGB = edge
-        .Weight = 1.25
+        .Weight = 1#
         .Transparency = 0
     End With
     With shp.Glow
         .Color.RGB = halo
-        .Radius = GLOW_PANEL_R
-        .Transparency = GLOW_PANEL_T
+        .Radius = GLOW_BADGE_R
+        .Transparency = GLOW_BADGE_T
     End With
     shp.Shadow.Visible = msoFalse
     shp.SoftEdge.Type = 0
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
             .Name = "Segoe UI"
-            .Color = cCore
+            .Color = edge
             .Bold = True
             .Italic = False
         End With
-        LightText shp, halo, GLOW_TEXT_R
+        ClearTextGlow shp
     End If
     On Error GoTo 0
 End Sub
@@ -623,9 +860,10 @@ Private Sub StyleTitle(ByVal shp As Shape)
             .Bold = True
             .Italic = False
         End With
-        ' The title is pure light with no box around it, so its halo is
-        ' the widest on the sheet.
-        LightText shp, cBloom, 18
+        ' The only lit text on the sheet. It can carry a halo because it
+        ' is large - at 15pt the glow reads as a glow, where the same
+        ' treatment on a 9pt button caption just fills in the letterforms.
+        LightText shp, cBloom, GLOW_TITLE_TEXT_R
     End If
     On Error GoTo 0
 End Sub
