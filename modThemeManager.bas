@@ -60,20 +60,49 @@ Private busy As Boolean
 '=====================================================================
 ' THE REGISTRY - the single place that knows what themes exist.
 '
-' Columns:  key | name shown in the dropdown | apply proc | remove proc
+' Columns:
+'   0 key
+'   1 name shown in the dropdown
+'   2 apply proc
+'   3 remove proc
+'   4 EXTRA apply procs, comma separated - companion sheets
+'   5 EXTRA remove procs, comma separated
 '
-' A theme whose module is not installed is harmless: Application.Run
-' simply fails and is swallowed, so the row can sit here indefinitely.
+' Columns 4 and 5 exist because a theme is not a Sheet1 theme. Tron
+' styles Search Matrix and Backend_Settings inside its own apply, but
+' Navy & Gold does not: StyleSearchMatrix and StyleBackendSettings are
+' separate MANUAL macros its apply never calls. Without these columns,
+' switching Tron -> Navy & Gold left the dashboard themed and the other
+' two tabs bare, because Tron's restore had put them back and nothing
+' re-styled them.
+'
+' A proc that is not installed is harmless: Application.Run simply fails
+' and is swallowed, so a row can sit here indefinitely.
 '=====================================================================
 Private Function ThemeRegistry() As Variant
     ThemeRegistry = Array( _
-        Array(THEME_NONE, "Default (no theme)", "", ""), _
-        Array(THEME_TRON, "Tron Legacy", "ApplyTronLegacy", "RemoveTronLegacy"), _
-        Array(THEME_NAVY, "Navy & Gold", "ApplyNavyGold", "RemoveNavyGold"), _
-        Array("GLASSDARK", "Glass - Dark", "ApplyGlassStyle", "RemoveGlassStyle"), _
-        Array("GLASSLIGHT", "Glass - Light", "ApplyGlassStyleLight", "RemoveGlassStyle") _
+        Array(THEME_NONE, "Default (no theme)", "", "", "", ""), _
+        Array(THEME_TRON, "Tron Legacy", "ApplyTronLegacy", "RemoveTronLegacy", "", ""), _
+        Array(THEME_NAVY, "Navy & Gold", "ApplyNavyGold", "RemoveNavyGold", _
+              "StyleSearchMatrix,StyleBackendSettings", "RemoveSearchMatrixTheme"), _
+        Array("GLASSDARK", "Glass - Dark", "ApplyGlassStyle", "RemoveGlassStyle", "", ""), _
+        Array("GLASSLIGHT", "Glass - Light", "ApplyGlassStyleLight", "RemoveGlassStyle", "", "") _
     )
 End Function
+
+' Runs a comma-separated list of procedure names, skipping any that are
+' missing. Used for the companion-sheet stylers.
+Private Sub RunList(ByVal procs As String)
+    If Len(Trim$(procs)) = 0 Then Exit Sub
+    Dim parts() As String, i As Long
+    parts = Split(procs, ",")
+    On Error Resume Next
+    For i = LBound(parts) To UBound(parts)
+        If Len(Trim$(parts(i))) > 0 Then Application.Run Trim$(parts(i))
+        Err.Clear
+    Next i
+    On Error GoTo 0
+End Sub
 
 '---- setup ----------------------------------------------------------
 ' Run once. Also safe to re-run - refreshes the list after a theme is
@@ -151,13 +180,17 @@ Public Sub ApplyThemeByKey(ByVal key As String)
     If busy Then Exit Sub
     busy = True
 
-    Dim reg As Variant, i As Long, applyProc As String
+    Dim reg As Variant, i As Long, applyProc As String, extraApply As String
     reg = ThemeRegistry()
 
     ClearTheme True
 
     For i = LBound(reg) To UBound(reg)
-        If reg(i)(0) = key Then applyProc = reg(i)(2): Exit For
+        If reg(i)(0) = key Then
+            applyProc = reg(i)(2)
+            extraApply = reg(i)(4)
+            Exit For
+        End If
     Next i
 
     On Error Resume Next
@@ -175,6 +208,11 @@ Public Sub ApplyThemeByKey(ByVal key As String)
         End If
     End If
     On Error GoTo 0
+
+    ' Companion sheets. Runs after the main apply so a theme that styles
+    ' them itself (Tron) is untouched, while one that does not (Navy &
+    ' Gold) gets its manual stylers called for it.
+    RunList extraApply
 
     SetActiveTheme key
     SyncPicker key
@@ -207,11 +245,17 @@ Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
     Dim active As String
     active = ActiveTheme()
     For i = LBound(reg) To UBound(reg)
-        If reg(i)(0) = active And Len(reg(i)(3)) > 0 Then Application.Run reg(i)(3)
+        If reg(i)(0) = active And Len(reg(i)(3)) > 0 Then
+            Application.Run reg(i)(3)
+            RunList reg(i)(5)
+        End If
     Next i
     ' Then everything else.
     For i = LBound(reg) To UBound(reg)
-        If reg(i)(0) <> active And Len(reg(i)(3)) > 0 Then Application.Run reg(i)(3)
+        If reg(i)(0) <> active And Len(reg(i)(3)) > 0 Then
+            Application.Run reg(i)(3)
+            RunList reg(i)(5)
+        End If
     Next i
     Err.Clear
     On Error GoTo 0

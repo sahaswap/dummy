@@ -199,7 +199,13 @@ Sub ApplyTronLegacy()
     AddCircuitTraces ws
     AddCircuitTaps ws                ' the spine feeds each panel - see below
     AddTronTitle ws, titleText       ' after the cards, so it sits above them
-    ApplyTabColour ws
+
+    ' The theme is not a Sheet1 theme. An analyst moves between these
+    ' three tabs constantly, and leaving two of them on the stock white
+    ' grid made the dashboard look like the odd one out rather than the
+    ' product looking themed.
+    ApplySearchMatrix
+    ApplyBackendSettings
 
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
@@ -235,11 +241,12 @@ Sub RemoveTronLegacy()
             n = n + 1
         End If
     Next shp
-    RestoreCells ws
-    RestoreTabColour ws
+    RestoreAllCells                  ' all three sheets, from one table
 
     On Error Resume Next
     ActiveWindow.DisplayGridlines = True
+    ShowGridlines "Search Matrix"
+    ShowGridlines "Backend_Settings"
     On Error GoTo 0
 
     If wasProt Then ws.Protect Password:="p7ss"
@@ -366,21 +373,7 @@ End Sub
 
 '---- CELLS -----------------------------------------------------------
 Private Sub ApplyCells(ByVal ws As Worksheet)
-    Dim bak As Worksheet: Set bak = GetBak(True)
-    If bak Is Nothing Then Exit Sub
-
-    If Len(CStr(bak.Cells(1, 1).Value)) = 0 Then
-        Dim c As Range, i As Long: i = 0
-        For Each c In ws.Range(CANVAS).Cells
-            i = i + 1
-            bak.Cells(i, 1).Value = c.Address
-            bak.Cells(i, 2).Value = c.Interior.ColorIndex
-            bak.Cells(i, 3).Value = c.Interior.Color
-            bak.Cells(i, 4).Value = c.Font.Color
-            bak.Cells(i, 5).Value = c.Font.Italic
-        Next c
-    End If
-    bak.Visible = xlSheetVeryHidden
+    BackupSheetRange ws, CANVAS
 
     ' 1. The Grid floor - the whole canvas goes black. Light needs dark.
     With ws.Range(CANVAS)
@@ -464,61 +457,345 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End With
 End Sub
 
-Private Sub RestoreCells(ByVal ws As Worksheet)
-    Dim bak As Worksheet: Set bak = GetBak(False)
-    If bak Is Nothing Then Exit Sub
-    Dim i As Long, addr As String
-    With ws.Range(CANVAS)
-        .Borders(xlEdgeBottom).LineStyle = xlNone
-        .Borders(xlEdgeLeft).LineStyle = xlNone
-        .Borders(xlEdgeRight).LineStyle = xlNone
-        .Borders(xlInsideHorizontal).LineStyle = xlNone
-        .Borders(xlInsideVertical).LineStyle = xlNone
-    End With
-    i = 0
-    Do
-        i = i + 1
-        addr = CStr(bak.Cells(i, 1).Value)
-        If Len(addr) = 0 Then Exit Do
-        If bak.Cells(i, 2).Value = xlNone Then
-            ws.Range(addr).Interior.ColorIndex = xlNone
-        Else
-            ws.Range(addr).Interior.Color = bak.Cells(i, 3).Value
-        End If
-        ws.Range(addr).Font.Color = bak.Cells(i, 4).Value
-        ws.Range(addr).Font.Italic = bak.Cells(i, 5).Value
-    Loop
-    bak.Cells.Clear
+'=====================================================================
+' SEARCH MATRIX
+'
+' Laid out in 5-row blocks, one entity each (Customer, then CP1..CP6), so
+' the banding is drawn per BLOCK rather than per row - each entity reads
+' as one group instead of the rows striping against the grouping the data
+' actually has.
+'
+' Columns carry different weights: A is the entity title, B and C are
+' reference detail that should sit back, D is the naming convention an
+' analyst reads, E is the link. Same label/value discipline as Sheet1.
+'=====================================================================
+Private Sub ApplySearchMatrix()
     On Error Resume Next
-    bak.Visible = xlSheetVeryHidden
+    Dim ws As Worksheet, lastRow As Long, r As Long, blk As Long
+    Set ws = ThisWorkbook.Sheets("Search Matrix")
+    If ws Is Nothing Then Exit Sub
+
+    Dim wasProt As Boolean
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:="p7ss"
+
+    lastRow = ws.Cells(ws.Rows.count, "B").End(xlUp).Row
+    If lastRow < 1 Then lastRow = 1
+
+    BackupSheetRange ws, "A1:E" & lastRow
+
+    ' clean slate - A:E only, the helper columns past F stay hidden
+    With ws.Range("A1:E" & lastRow)
+        .Interior.Pattern = xlSolid
+        .Interior.Color = cPanel
+        .Borders.LineStyle = xlNone
+        .Font.Name = "Segoe UI"
+        .Font.Size = 9
+        .Font.Color = cCore
+        .Font.Bold = False
+        .Font.Italic = False
+        .VerticalAlignment = xlCenter
+        .WrapText = False
+    End With
+
+    ' header
+    With ws.Range("A1:E1")
+        .Interior.Color = cSlab
+        .Font.Color = cCyan
+        .Font.Bold = True
+        .Font.Size = 10
+        .HorizontalAlignment = xlCenter
+    End With
+    ws.Rows(1).RowHeight = 24
+    With ws.Range("A1:E1").Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous: .Weight = xlThin: .Color = cCyan
+    End With
+
+    If lastRow >= 2 Then
+        With ws.Range("A2:A" & lastRow)
+            .Font.Bold = True: .Font.Color = cCore
+            .HorizontalAlignment = xlLeft: .IndentLevel = 1
+        End With
+        ws.Range("B2:B" & lastRow).Font.Color = cDim
+        ws.Range("B2:B" & lastRow).HorizontalAlignment = xlLeft
+        With ws.Range("C2:C" & lastRow)
+            .Font.Size = 8: .Font.Color = cDim
+        End With
+        ws.Range("D2:D" & lastRow).Font.Color = cCore
+        ws.Range("D2:D" & lastRow).HorizontalAlignment = xlLeft
+        With ws.Range("E2:E" & lastRow)
+            .HorizontalAlignment = xlCenter
+            .Font.Color = cCyan
+            .Font.Underline = xlUnderlineStyleSingle
+        End With
+
+        For r = 2 To lastRow
+            blk = (r - 2) \ 5                       ' 0 = Customer, 1 = CP1, ...
+            ws.Range("A" & r & ":E" & r).Interior.Color = _
+                IIf(blk Mod 2 = 0, cPanel, cSlab)
+            With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
+                .LineStyle = xlContinuous: .Weight = xlHairline: .Color = cTrace
+            End With
+            ' the last row of each entity block gets a lit divider, so the
+            ' groups read even where two same-shade blocks meet
+            If (r - 1) Mod 5 = 0 Then
+                With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
+                    .LineStyle = xlContinuous: .Weight = xlThin: .Color = cTrace
+                End With
+            End If
+        Next r
+    End If
+
+    FrameRange ws.Range("A1:E" & lastRow)
+    KillGridlines ws
+    If wasProt Then ws.Protect Password:="p7ss"
     On Error GoTo 0
 End Sub
 
-' Tab colour is stored in the backup sheet's own header cells (row 1 of
-' columns G/H), which the per-cell replay above never reads.
-Private Sub ApplyTabColour(ByVal ws As Worksheet)
+'=====================================================================
+' BACKEND_SETTINGS - four visible cells, so it is all title bar and one
+' key/value row. Row 3 (Flow_1) is left exactly as it is: Module10 reads
+' the PAD merge URL from B4, and hiding or unhiding rows here would shift
+' that reference. The theme colours, it does not restructure.
+'=====================================================================
+Private Sub ApplyBackendSettings()
+    On Error Resume Next
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Backend_Settings")
+    If ws Is Nothing Then Exit Sub
+
+    Dim wasProt As Boolean
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:="p7ss"
+
+    BackupSheetRange ws, "A1:B4"
+
+    With ws.Range("A1:B4")
+        .Interior.Color = cPanel
+        .Borders.LineStyle = xlNone
+        .Font.Name = "Segoe UI"
+        .Font.Color = cCore
+        .Font.Size = 10
+        .Font.Bold = False
+        .Font.Italic = False
+        .VerticalAlignment = xlCenter
+        .WrapText = False
+    End With
+
+    With ws.Range("A1:B1")
+        .Interior.Color = cSlab
+        .Font.Color = cCyan
+        .Font.Bold = True
+        .Font.Size = 11
+        .HorizontalAlignment = xlLeft
+    End With
+    ws.Rows(1).RowHeight = 22
+    With ws.Range("A1:B1").Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous: .Weight = xlThin: .Color = cCyan
+    End With
+
+    With ws.Range("A4")                      ' key
+        .Font.Bold = True: .Font.Color = cDim
+        .HorizontalAlignment = xlLeft
+    End With
+    With ws.Range("B4")                      ' value
+        .Font.Color = cCore
+        .HorizontalAlignment = xlLeft
+    End With
+
+    FrameRange ws.Range("A1:B4")
+    KillGridlines ws
+    If wasProt Then ws.Protect Password:="p7ss"
+    On Error GoTo 0
+End Sub
+
+Private Sub FrameRange(ByVal rng As Range)
+    On Error Resume Next
+    Dim e As Variant
+    For Each e In Array(xlEdgeLeft, xlEdgeRight, xlEdgeTop, xlEdgeBottom)
+        With rng.Borders(CLng(e))
+            .LineStyle = xlContinuous: .Weight = xlThin: .Color = cCyan
+        End With
+    Next e
+    On Error GoTo 0
+End Sub
+
+' Gridlines are a WINDOW property, so the sheet has to be active to set
+' them - hence the activate-and-return dance.
+Private Sub KillGridlines(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim prev As Object
+    Set prev = ActiveSheet
+    ws.Activate
+    ActiveWindow.DisplayGridlines = False
+    If Not prev Is Nothing Then prev.Activate
+    On Error GoTo 0
+End Sub
+
+Private Sub ShowGridlines(ByVal nm As String)
+    On Error Resume Next
+    Dim prev As Object, ws As Worksheet
+    Set ws = ThisWorkbook.Sheets(nm)
+    If ws Is Nothing Then Exit Sub
+    Set prev = ActiveSheet
+    ws.Activate
+    ActiveWindow.DisplayGridlines = True
+    If Not prev Is Nothing Then prev.Activate
+    On Error GoTo 0
+End Sub
+
+'=====================================================================
+' BACKUP / RESTORE - now covers THREE sheets, not one.
+'
+' The backup table is keyed by sheet as well as address, because the
+' theme no longer touches Sheet1 alone:
+'
+'   A = sheet name   B = cell address   C = Interior.ColorIndex
+'   D = Interior.Color   E = Font.Color   F = Font.Italic
+'
+' A row whose address is "#TAB" carries that sheet's tab colour instead
+' of a cell's - it rides in the same table so there is one thing to read
+' back and one thing to clear, rather than a cell block plus a separate
+' corner of the sheet holding tab state.
+'
+' Cells are captured into an array and written in ONE go. Row-by-row
+' writes of ~1200 cells x 6 columns was the slowest part of applying the
+' theme, and it is exactly the kind of thing that crawls on VDI.
+'=====================================================================
+Private Sub BackupSheetRange(ByVal ws As Worksheet, ByVal addr As String)
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(True)
     If bak Is Nothing Then Exit Sub
-    If Len(CStr(bak.Range("G1").Value)) = 0 Then
-        bak.Range("G1").Value = ws.Tab.ColorIndex
-        bak.Range("H1").Value = ws.Tab.Color
-    End If
-    ws.Tab.Color = cTrace
+    bak.Visible = xlSheetVeryHidden
+
+    ' Already captured for this sheet - never re-capture, or a second
+    ' apply would record the FIRST theme's colours as the original.
+    If SheetIsBackedUp(bak, ws.Name) Then Exit Sub
+
+    Dim rng As Range: Set rng = ws.Range(addr)
+    Dim n As Long: n = rng.Cells.count
+    If n = 0 Then Exit Sub
+
+    Dim arr() As Variant
+    ReDim arr(1 To n + 1, 1 To 6)
+
+    Dim c As Range, i As Long
+    i = 0
+    For Each c In rng.Cells
+        i = i + 1
+        arr(i, 1) = ws.Name
+        arr(i, 2) = c.Address
+        arr(i, 3) = c.Interior.ColorIndex
+        arr(i, 4) = c.Interior.Color
+        arr(i, 5) = c.Font.Color
+        arr(i, 6) = c.Font.Italic
+    Next c
+
+    ' the tab-colour row
+    i = i + 1
+    arr(i, 1) = ws.Name
+    arr(i, 2) = "#TAB"
+    arr(i, 3) = ws.Tab.ColorIndex
+    arr(i, 4) = ws.Tab.Color
+    arr(i, 5) = 0
+    arr(i, 6) = False
+
+    bak.Cells(NextBakRow(bak), 1).Resize(i, 6).Value = arr
     On Error GoTo 0
 End Sub
 
-Private Sub RestoreTabColour(ByVal ws As Worksheet)
+Private Function NextBakRow(ByVal bak As Worksheet) As Long
+    NextBakRow = 1
+    On Error Resume Next
+    If Len(CStr(bak.Range("A1").Value)) > 0 Then
+        NextBakRow = bak.Cells(bak.Rows.count, 1).End(xlUp).Row + 1
+    End If
+    On Error GoTo 0
+End Function
+
+Private Function SheetIsBackedUp(ByVal bak As Worksheet, ByVal nm As String) As Boolean
+    On Error Resume Next
+    Dim last As Long
+    If Len(CStr(bak.Range("A1").Value)) = 0 Then Exit Function
+    last = bak.Cells(bak.Rows.count, 1).End(xlUp).Row
+    SheetIsBackedUp = Not IsError(Application.Match(nm, bak.Range(bak.Cells(1, 1), bak.Cells(last, 1)), 0))
+    On Error GoTo 0
+End Function
+
+' Replays every backed-up sheet, then empties the table.
+Private Sub RestoreAllCells()
     On Error Resume Next
     Dim bak As Worksheet: Set bak = GetBak(False)
     If bak Is Nothing Then Exit Sub
-    If Len(CStr(bak.Range("G1").Value)) = 0 Then Exit Sub
-    If bak.Range("G1").Value = xlColorIndexNone Then
-        ws.Tab.ColorIndex = xlColorIndexNone
-    Else
-        ws.Tab.Color = bak.Range("H1").Value
-    End If
-    bak.Range("G1:H1").ClearContents
+    If Len(CStr(bak.Range("A1").Value)) = 0 Then Exit Sub
+
+    Dim last As Long, data As Variant, i As Long
+    last = bak.Cells(bak.Rows.count, 1).End(xlUp).Row
+    data = bak.Range(bak.Cells(1, 1), bak.Cells(last, 6)).Value
+
+    ' OLD-FORMAT BACKUPS.
+    ' The first version of this table was Sheet1-only and had no sheet
+    ' column: A held the cell address. Reading one of those with the new
+    ' layout would look up a worksheet named "$A$1", find nothing, restore
+    ' nothing, and then clear the table - leaving the sheet permanently
+    ' dark with its original colours gone. An address always starts with
+    ' "$", and a sheet name never can, so the two are trivially told apart.
+    Dim legacy As Boolean
+    legacy = (Left$(CStr(data(1, 1)), 1) = "$")
+
+    Dim ws As Worksheet, curName As String
+    For i = 1 To last
+        If legacy Then
+            ' shift the row right by one into the new shape
+            data(i, 6) = data(i, 5)
+            data(i, 5) = data(i, 4)
+            data(i, 4) = data(i, 3)
+            data(i, 3) = data(i, 2)
+            data(i, 2) = data(i, 1)
+            data(i, 1) = SHEET_NAME
+        End If
+
+        If CStr(data(i, 1)) <> curName Then
+            curName = CStr(data(i, 1))
+            Set ws = Nothing
+            Set ws = ThisWorkbook.Sheets(curName)
+            If Not ws Is Nothing Then
+                ws.Unprotect Password:="p7ss"
+                ' Clear every border the theme could have drawn, across
+                ' the whole used area - cheaper and more thorough than
+                ' tracking which edges were set.
+                ws.Cells.Borders(xlEdgeBottom).LineStyle = xlNone
+                ws.Cells.Borders(xlEdgeLeft).LineStyle = xlNone
+                ws.Cells.Borders(xlEdgeRight).LineStyle = xlNone
+                ws.Cells.Borders(xlEdgeTop).LineStyle = xlNone
+                ws.Cells.Borders(xlInsideHorizontal).LineStyle = xlNone
+                ws.Cells.Borders(xlInsideVertical).LineStyle = xlNone
+            End If
+        End If
+        If ws Is Nothing Then GoTo NextRow
+
+        If CStr(data(i, 2)) = "#TAB" Then
+            If data(i, 3) = xlColorIndexNone Then
+                ws.Tab.ColorIndex = xlColorIndexNone
+            Else
+                ws.Tab.Color = data(i, 4)
+            End If
+        Else
+            With ws.Range(CStr(data(i, 2)))
+                If data(i, 3) = xlNone Then
+                    .Interior.ColorIndex = xlNone
+                Else
+                    .Interior.Color = data(i, 4)
+                End If
+                .Font.Color = data(i, 5)
+                .Font.Italic = data(i, 6)
+            End With
+        End If
+NextRow:
+    Next i
+
+    bak.Cells.Clear
+    bak.Visible = xlSheetVeryHidden
     On Error GoTo 0
 End Sub
 
