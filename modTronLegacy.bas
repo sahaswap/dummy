@@ -34,7 +34,30 @@ Private Const BAK As String = "_TronBak"
 ' short of them, so those rows keep the default white and show as a bright
 ' strip under a dark dashboard. This canvas covers them.
 Private Const CANVAS As String = "A1:AC36"
-Private Const CORNER As Single = 0.12               ' hard-edged Grid panel, not a soft card
+Private Const CORNER As Single = 0.08               ' size of the corner cut
+
+' CHAMFERED CORNERS - the single most Tron thing available here.
+'
+' The film's interfaces (and its hardware, and its architecture) are built
+' from rectangles with CUT corners, never rounded ones. A rounded button
+' reads as a generic dark UI no matter what colour it glows; a snipped
+' corner reads as the Grid immediately. It costs one property per shape.
+'
+' Numeric rather than the named MsoAutoShapeType constants on purpose: if
+' an Office build's type library lacks a name the module fails to COMPILE,
+' whereas an unsupported number just fails under On Error and the shape
+' keeps the type it already had. Wrong-looking beats not running.
+'   155 = msoShapeSnip1Rectangle       one cut corner, top-right
+'   157 = msoShapeSnip2DiagRectangle   two cut corners, opposite
+Private Const SHP_SNIP1 As Long = 155
+Private Const SHP_SNIP2DIAG As Long = 157
+
+' Tron's UI lettering is wide-tracked. Excel cannot letter-space cell
+' text, but TextFrame2 exposes Font.Spacing on SHAPES, which is where all
+' the labels live - so the banners and badges can carry it. Tracking is
+' what makes uppercase read as an interface label rather than a heading.
+Private Const TRACK_BANNER As Single = 2#
+Private Const TRACK_BADGE As Single = 2.5
 
 ' --- palette (set by InitPalette) ---
 Private cVoid As Long          ' Grid floor - near-black with a blue bias
@@ -174,6 +197,7 @@ Sub ApplyTronLegacy()
 
     AddGroupCards ws                 ' behind the buttons - restores sidebar structure
     AddCircuitTraces ws
+    AddCircuitTaps ws                ' the spine feeds each panel - see below
     AddTronTitle ws, titleText       ' after the cards, so it sits above them
     ApplyTabColour ws
 
@@ -618,6 +642,75 @@ Private Sub AddOneCard(ByVal ws As Worksheet, ByVal badge As Shape, _
     On Error GoTo 0
 End Sub
 
+' CIRCUIT TAPS - what turns a dark sidebar into a Grid.
+'
+' In Tron, light is never just an outline round a thing. It is POWER, and
+' it runs along routed paths: a spine, taps branching off it, and a bright
+' node at every junction. That reading - "this panel is connected to that
+' line, and the junction is live" - is the film's actual visual grammar,
+' and no amount of extra glow substitutes for it.
+'
+' So the sidebar ribbon becomes a spine, and each panel card is tapped off
+' it by a short trace ending in a node square sitting ON the spine. Two
+' taps, four small shapes. It costs almost nothing and it is the detail
+' that stops this reading as a generic dark theme.
+Private Sub AddCircuitTaps(ByVal ws As Worksheet)
+    On Error Resume Next
+    TapToCard ws, ADD_PFX & "CARD_ACT"
+    TapToCard ws, ADD_PFX & "CARD_UTL"
+    On Error GoTo 0
+End Sub
+
+Private Sub TapToCard(ByVal ws As Worksheet, ByVal cardName As String)
+    On Error Resume Next
+    Dim card As Shape, ln As Shape, node As Shape
+    Dim spineX As Single, y As Single, xEnd As Single
+
+    Set card = Nothing
+    Set card = ws.Shapes(cardName)
+    If card Is Nothing Then Exit Sub
+
+    spineX = ws.Range("F1").Left
+    y = card.Top + card.Height / 2
+    xEnd = card.Left + card.Width
+    If xEnd >= spineX Then Exit Sub          ' card overlaps the spine - no room
+
+    Static seq As Long
+    seq = seq + 1
+
+    ' the trace
+    Set ln = ws.Shapes.AddLine(xEnd, y, spineX, y)
+    If Not ln Is Nothing Then
+        ln.Name = ADD_PFX & "TAP" & Format$(seq, "00")
+        With ln.Line
+            .Visible = msoTrue
+            .ForeColor.RGB = cTrace
+            .Weight = 1#
+        End With
+        ln.Placement = xlFreeFloating
+    End If
+
+    ' the junction node, centred on the spine and lit - this is the bit
+    ' that reads as a live connection rather than a stray line
+    Const N As Single = 5
+    Set node = ws.Shapes.AddShape(msoShapeRectangle, spineX - N / 2, y - N / 2, N, N)
+    If Not node Is Nothing Then
+        node.Name = ADD_PFX & "NODE" & Format$(seq, "00")
+        With node.Fill
+            .Visible = msoTrue: .Solid
+            .ForeColor.RGB = cCyan
+        End With
+        node.Line.Visible = msoFalse
+        With node.Glow
+            .Color.RGB = cBloom
+            .Radius = 6
+            .Transparency = 0.35
+        End With
+        node.Placement = xlFreeFloating
+    End If
+    On Error GoTo 0
+End Sub
+
 ' The sidebar light run: a thin filled strip that fades in from
 ' transparent at the top, holds, and fades back out at the bottom.
 '
@@ -741,8 +834,7 @@ End Function
 Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Long, _
                         ByVal emphasise As Boolean)
     On Error Resume Next
-    shp.AutoShapeType = msoShapeRoundedRectangle
-    shp.Adjustments(1) = CORNER
+    SetChamfer shp, SHP_SNIP2DIAG          ' cut corners, not rounded
 
     ' Flat, and the same surface colour as every other shape on the sheet.
     ' A gradient here meant each button ran through two different blues,
@@ -802,6 +894,22 @@ Private Sub ClearTextGlow(ByVal shp As Shape)
     On Error GoTo 0
 End Sub
 
+' Swaps a shape to a cut-corner rectangle. Silently leaves the shape as it
+' was if this Office build does not know the type.
+Private Sub SetChamfer(ByVal shp As Shape, ByVal kind As Long)
+    On Error Resume Next
+    shp.AutoShapeType = kind
+    shp.Adjustments(1) = CORNER
+    On Error GoTo 0
+End Sub
+
+' Wide-tracked lettering. Set to 0 to clear it on removal.
+Private Sub SetTracking(ByVal shp As Shape, ByVal pts As Single)
+    On Error Resume Next
+    shp.TextFrame2.TextRange.Font.Spacing = pts
+    On Error GoTo 0
+End Sub
+
 ' Banners / section headers / panel badges. Takes its accent so the two
 ' faction colours can both appear: ACTION and the section banners run
 ' cyan, UTILITY runs orange. That is what gives the orange real presence
@@ -819,6 +927,10 @@ End Sub
 ' emit light.
 Private Sub StyleBanner(ByVal shp As Shape)
     On Error Resume Next
+    ' One cut corner, top-right - the same position Navy & Gold put its
+    ' paper fold, so the eye lands where it expects a corner detail, but
+    ' the language is now a chamfer instead of a dog-ear.
+    SetChamfer shp, SHP_SNIP1
     With shp.Fill
         .Visible = msoTrue: .Solid
         .ForeColor.RGB = cSlab
@@ -841,15 +953,17 @@ Private Sub StyleBanner(ByVal shp As Shape)
             .Italic = False
         End With
         ClearTextGlow shp
+        SetTracking shp, TRACK_BANNER
     End If
     On Error GoTo 0
 End Sub
 
 ' ACTION / UTILITY badges. Only two of them, and they head the sidebar, so
-' they carry a small halo in their faction colour - enough to tie them to
-' the buttons below without competing with them.
+' they carry a small halo - enough to tie them to the buttons below
+' without competing with them.
 Private Sub StyleBadge(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Long)
     On Error Resume Next
+    SetChamfer shp, SHP_SNIP2DIAG
     With shp.Fill
         .Visible = msoTrue: .Solid
         .ForeColor.RGB = cSlab
@@ -876,6 +990,7 @@ Private Sub StyleBadge(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Lon
             .Italic = False
         End With
         ClearTextGlow shp
+        SetTracking shp, TRACK_BADGE
     End If
     On Error GoTo 0
 End Sub
@@ -942,6 +1057,7 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
     ' still emitting light after the theme is supposedly gone.
     shp.Glow.Radius = 0
     shp.TextFrame2.TextRange.Font.Glow.Radius = 0
+    shp.TextFrame2.TextRange.Font.Spacing = 0    ' undo the wide tracking
     shp.SoftEdge.Type = 0
     shp.Shadow.Visible = msoFalse
 
