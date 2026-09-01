@@ -93,11 +93,38 @@ Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
     If active <> THEME_NAVY Then Application.Run "RemoveNavyGold"
     Application.Run "RemoveGlassStyle"          ' harmless if the module is absent
 
+    UnhideDashboardShapes
+
     Err.Clear
     On Error GoTo 0
 
     SetActiveTheme THEME_NONE
 End Function
+
+' Repairs a shape that a theme hid and never un-hid.
+'
+' modNavyGold does not restyle the Beta title - RepositionBeta hides the
+' workbook's real title shape and AddTitleBeta draws a gold replacement
+' as NGADD_* shapes. RemoveNavyGold then deletes its replacement without
+' ever setting the original back to visible, so removing Navy & Gold
+' leaves the nav bar with no title at all. That is a bug in the theme
+' module, but the manager is what promises a clean baseline, so the
+' repair belongs here too rather than only inside one theme.
+'
+' Generated shapes are skipped by name prefix: those are meant to come
+' and go with their theme.
+Private Sub UnhideDashboardShapes()
+    On Error Resume Next
+    Dim ws As Worksheet, shp As Shape
+    Set ws = ThisWorkbook.Sheets("Sheet1")
+    If ws Is Nothing Then Exit Sub
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, 8) <> "TRONADD_" And Left$(shp.Name, 6) <> "NGADD_" Then
+            If shp.Visible = msoFalse Then shp.Visible = msoTrue
+        End If
+    Next shp
+    On Error GoTo 0
+End Sub
 
 '---- state ----------------------------------------------------------
 ' Stored as a hidden workbook-level defined name: it survives save/close,

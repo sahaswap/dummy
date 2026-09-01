@@ -69,6 +69,7 @@ Sub ThemeDiagnostic()
 
     CheckForeignDecor dbg, ws, active
     CheckCrossedStashes dbg, ws, active
+    CheckHiddenShapes dbg, ws
     CheckUnclassified dbg, ws
     CheckOffPalette dbg, ws, active
     CheckCanvas dbg, ws, active
@@ -171,6 +172,31 @@ Private Sub CheckCrossedStashes(ByVal dbg As Worksheet, ByVal ws As Worksheet, B
     End If
 End Sub
 
+' A theme that hides a real shape and draws its own replacement leaves no
+' visible trace once the replacement is deleted - the shape is simply
+' absent, with nothing to click on and no error. modNavyGold hides the
+' Beta title this way (RepositionBeta) and never un-hides it on removal.
+Private Sub CheckHiddenShapes(ByVal dbg As Worksheet, ByVal ws As Worksheet)
+    Dim shp As Shape, n As Long, detail As String
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, 8) <> "TRONADD_" And Left$(shp.Name, 6) <> "NGADD_" Then
+            If shp.Visible = msoFalse Then
+                n = n + 1
+                If n <= 6 Then detail = detail & IIf(Len(detail) > 0, ", ", "") & _
+                    shp.Name & IIf(Len(CaptionOf(shp)) > 0, " (""" & Left$(CaptionOf(shp), 20) & """)", "")
+            End If
+        End If
+    Next shp
+    If n > 0 Then
+        Line1 dbg, "CRITICAL", n & " real dashboard shape(s) are hidden: " & detail & _
+            IIf(n > 6, ", ...", "") & ". A theme hid them and drew its own replacement, then did " & _
+            "not un-hide them on removal - so the shape is gone from the sheet with no error. " & _
+            "This is how the nav bar loses its title. Fix: modThemeManager.RemoveActiveTheme, " & _
+            "which un-hides them.", RGB(190, 40, 40)
+        nCrit = nCrit + 1
+    End If
+End Sub
+
 Private Sub CheckUnclassified(ByVal dbg As Worksheet, ByVal ws As Worksheet)
     Dim shp As Shape, n As Long, names As String
     For Each shp In ws.Shapes
@@ -224,7 +250,7 @@ Private Sub CheckCanvas(ByVal dbg As Worksheet, ByVal ws As Worksheet, ByVal act
     If active <> "TRON" Then Exit Sub
     Dim c As Range, n As Long, sample As String
     Dim void As Long, panel As Long, slab As Long
-    void = RGB(4, 7, 10): panel = RGB(9, 15, 21): slab = RGB(6, 11, 16)
+    void = RGB(4, 7, 10): panel = RGB(13, 22, 30): slab = RGB(8, 14, 20)
 
     For Each c In ws.Range(CANVAS).Cells
         If c.Interior.ColorIndex <> xlNone Then
@@ -265,11 +291,14 @@ Private Sub CheckBackupSheets(ByVal dbg As Worksheet, ByVal active As String)
 End Sub
 
 '---- palette knowledge ----------------------------------------------
+' Must stay in step with modTronLegacy.InitPalette, or every themed shape
+' gets reported as off-palette.
 Private Function InTronPalette(ByVal c As Long) As Boolean
     Select Case c
-        Case RGB(4, 7, 10), RGB(9, 15, 21), RGB(6, 11, 16), RGB(27, 108, 127), _
-             RGB(111, 195, 223), RGB(168, 232, 249), RGB(242, 254, 255), _
-             RGB(106, 145, 158), RGB(242, 111, 33)
+        Case RGB(4, 7, 10), RGB(8, 14, 20), RGB(13, 22, 30), RGB(22, 40, 52), _
+             RGB(38, 130, 156), RGB(122, 214, 245), RGB(180, 240, 255), _
+             RGB(240, 253, 255), RGB(118, 162, 178), _
+             RGB(255, 78, 26), RGB(255, 160, 51)
             InTronPalette = True
     End Select
 End Function
