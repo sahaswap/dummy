@@ -109,17 +109,32 @@ End Sub
 ' added to the registry.
 Sub BuildThemePicker()
     Dim ws As Worksheet, reg As Variant, i As Long, list As String
+    Dim wasProt As Boolean
+
     On Error Resume Next
     Set ws = ThisWorkbook.Sheets(SHEET_NAME)
     On Error GoTo 0
     If ws Is Nothing Then MsgBox SHEET_NAME & " not found.", vbCritical: Exit Sub
 
-    Dim wasProt As Boolean
-    On Error Resume Next
+    ' EVENTS OFF FIRST - this is not optional.
+    '
+    ' Writing to U28 below (ClearContents, then Value) raises
+    ' Worksheet_Change on Sheet1. That handler unprotects, does its work,
+    ' and RE-PROTECTS the sheet before returning - so without this guard
+    ' the sheet is locked again by the time this routine reaches the label
+    ' cell, and setting HorizontalAlignment fails with "Unable to set the
+    ' HorizontalAlignment property of the Range class". Protection blocks
+    ' formatting even on unlocked cells.
+    '
+    ' Once the picker stub is in Sheet1, the same write would also schedule
+    ' a theme apply - so building the picker would silently re-theme the
+    ' workbook. Off for the whole routine.
+    Application.EnableEvents = False
+    On Error GoTo CleanUp
+
     wasProt = ws.ProtectContents
     ws.Unprotect Password:=PWD
     ThisWorkbook.Unprotect Password:=PWD
-    On Error GoTo 0
 
     reg = ThemeRegistry()
     For i = LBound(reg) To UBound(reg)
@@ -146,14 +161,25 @@ Sub BuildThemePicker()
 
     If Len(Trim$(CStr(ws.Range(PICKER_LABEL).Value))) = 0 Then
         ws.Range(PICKER_LABEL).Value = "Theme"
-        ws.Range(PICKER_LABEL).HorizontalAlignment = xlCenter
     End If
+    ws.Range(PICKER_LABEL).HorizontalAlignment = xlCenter
 
     If wasProt Then ws.Protect Password:=PWD
+    Application.EnableEvents = True
+
     MsgBox "Theme picker ready in " & PICKER_CELL & "." & vbCrLf & vbCrLf & _
-           "If picking a theme does nothing, the Worksheet_Change stub is " & _
+           "If picking a theme does nothing, the Worksheet_Change block is " & _
            "not in the Sheet1 code module yet - see " & _
-           "Sheet1_ThemePicker_snippet.txt.", vbInformation, "Theme Manager"
+           "Sheet1_CodeModule_UPDATED.txt.", vbInformation, "Theme Manager"
+    Exit Sub
+
+CleanUp:
+    Dim d As String: d = Err.Description
+    On Error Resume Next
+    If wasProt Then ws.Protect Password:=PWD
+    Application.EnableEvents = True
+    On Error GoTo 0
+    MsgBox "BuildThemePicker failed: " & d, vbCritical, "Theme Manager"
 End Sub
 
 '---- the dropdown's entry point -------------------------------------
