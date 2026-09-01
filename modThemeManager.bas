@@ -23,6 +23,17 @@ Option Explicit
 '
 ' WIRE THE BUTTONS TO THESE, not to the theme modules directly:
 '     ApplyTron        ApplyNavyGold_Safe        ClearTheme
+'
+' EVERY cross-module call below goes through Application.Run, on purpose.
+' Do not "tidy" them into qualified calls like modTronLegacy.ApplyTronLegacy.
+' A qualified call is resolved at COMPILE time and needs a module of that
+' exact name to exist: if the .bas was pasted into the editor instead of
+' imported (File > Import File), the module is called Module15 or similar,
+' the qualifier resolves to nothing, and Option Explicit reports it as
+' "Variable not defined" - a compile error that stops the whole project,
+' not just this call. Application.Run resolves by PROCEDURE name at run
+' time, so it works whatever the module is called, and it also lets this
+' manager tolerate a theme module that is not installed at all.
 '=====================================================================
 Public Const THEME_NONE As String = "NONE"
 Public Const THEME_TRON As String = "TRON"
@@ -34,7 +45,7 @@ Private Const STATE_NAME As String = "_ActiveTheme"
 Sub ApplyTron()
     If Not ClearTheme(True) Then Exit Sub
     On Error GoTo Fail
-    modTronLegacy.ApplyTronLegacy
+    Application.Run "ApplyTronLegacy"
     SetActiveTheme THEME_TRON
     Exit Sub
 Fail:
@@ -74,11 +85,11 @@ Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
     ' and it recovers a workbook whose state marker was lost or was
     ' themed before this manager existed.
     Select Case active
-        Case THEME_TRON:  modTronLegacy.RemoveTronLegacy
+        Case THEME_TRON:  Application.Run "RemoveTronLegacy"
         Case THEME_NAVY:  Application.Run "RemoveNavyGold"
     End Select
 
-    If active <> THEME_TRON Then modTronLegacy.RemoveTronLegacy
+    If active <> THEME_TRON Then Application.Run "RemoveTronLegacy"
     If active <> THEME_NAVY Then Application.Run "RemoveNavyGold"
     Application.Run "RemoveGlassStyle"          ' harmless if the module is absent
 

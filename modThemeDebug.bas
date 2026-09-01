@@ -440,9 +440,15 @@ Private Function SheetExists(ByVal nm As String) As Boolean
     SheetExists = Not sh Is Nothing
 End Function
 
+' Application.Run, not modThemeManager.ActiveTheme: a qualified call is
+' resolved at compile time and needs a module of that exact name, which
+' a pasted (rather than imported) .bas will not have. This way the
+' diagnostic still runs even when the manager is missing entirely -
+' which is precisely when you most want to be able to run it.
 Private Function SafeActiveTheme() As String
     SafeActiveTheme = "NONE"
     On Error Resume Next
-    SafeActiveTheme = modThemeManager.ActiveTheme()
+    SafeActiveTheme = CStr(Application.Run("ActiveTheme"))
+    If Len(SafeActiveTheme) = 0 Then SafeActiveTheme = "NONE"
     On Error GoTo 0
 End Function
