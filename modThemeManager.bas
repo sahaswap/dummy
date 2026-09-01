@@ -49,9 +49,17 @@ Public Const THEME_NAVY As String = "NAVYGOLD"
 
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const PICKER_CELL As String = "U28"
-Private Const PICKER_LABEL As String = "U27"
 Private Const STATE_NAME As String = "_ActiveTheme"
 Private Const PWD As String = "p7ss"
+
+' Removers for themes that are NOT in the registry - older ones this
+' workbook has carried at some point. They are swept on every clear so a
+' leftover from one of them cannot sit under a new theme, but they are
+' deliberately not offered in the dropdown. modDarkTheme is still in the
+' project and this workbook has a _DarkBak sheet, so its remover is worth
+' calling; RemoveGlassStyle is listed only in case that module is ever
+' brought back. A missing procedure is skipped silently.
+Private Const LEGACY_REMOVERS As String = "RemoveDarkCells,RemoveGlassStyle"
 
 ' Guards against the picker's own Worksheet_Change firing again while a
 ' theme is being applied.
@@ -82,11 +90,9 @@ Private busy As Boolean
 Private Function ThemeRegistry() As Variant
     ThemeRegistry = Array( _
         Array(THEME_NONE, "Default (no theme)", "", "", "", ""), _
-        Array(THEME_TRON, "Tron Legacy", "ApplyTronLegacy", "RemoveTronLegacy", "", ""), _
+        Array(THEME_TRON, "Dark Blue", "ApplyTronLegacy", "RemoveTronLegacy", "", ""), _
         Array(THEME_NAVY, "Navy & Gold", "ApplyNavyGold", "RemoveNavyGold", _
-              "StyleSearchMatrix,StyleBackendSettings", "RemoveSearchMatrixTheme"), _
-        Array("GLASSDARK", "Glass - Dark", "ApplyGlassStyle", "RemoveGlassStyle", "", ""), _
-        Array("GLASSLIGHT", "Glass - Light", "ApplyGlassStyleLight", "RemoveGlassStyle", "", "") _
+              "StyleSearchMatrix,StyleBackendSettings", "RemoveSearchMatrixTheme") _
     )
 End Function
 
@@ -158,11 +164,6 @@ Sub BuildThemePicker()
         .HorizontalAlignment = xlCenter
         .Value = DisplayNameFor(ActiveTheme())
     End With
-
-    If Len(Trim$(CStr(ws.Range(PICKER_LABEL).Value))) = 0 Then
-        ws.Range(PICKER_LABEL).Value = "Theme"
-    End If
-    ws.Range(PICKER_LABEL).HorizontalAlignment = xlCenter
 
     If wasProt Then ws.Protect Password:=PWD
     Application.EnableEvents = True
@@ -240,6 +241,10 @@ Public Sub ApplyThemeByKey(ByVal key As String)
     ' Gold) gets its manual stylers called for it.
     RunList extraApply
 
+    ' Conventions that are NOT a theme's business, re-asserted last so
+    ' they survive whatever the theme just did.
+    NormaliseBackendSettings
+
     SetActiveTheme key
     SyncPicker key
     busy = False
@@ -283,12 +288,44 @@ Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
             RunList reg(i)(5)
         End If
     Next i
+    ' ...and themes that predate this manager and are not in the dropdown.
+    RunList LEGACY_REMOVERS
     Err.Clear
     On Error GoTo 0
 
     UnhideDashboardShapes
+    NormaliseBackendSettings          ' also true with no theme applied
     SetActiveTheme THEME_NONE
 End Function
+
+' Backend_Settings alignment is a property of the SHEET, not of a theme.
+'
+' Every theme sets its own alignment on this block - Navy & Gold's
+' StyleBackendSettings left-aligns the title and the key, and Tron did the
+' same - so fixing it inside one theme would only hold until you switched.
+' Re-asserting it here, after the theme has finished, makes it true under
+' every theme and under no theme, and means a future theme cannot quietly
+' undo it either.
+'
+' Kept deliberately narrow: alignment only. No colours, no fills, nothing
+' that belongs to whichever theme is active.
+Private Sub NormaliseBackendSettings()
+    On Error Resume Next
+    Dim ws As Worksheet, wasProt As Boolean
+    Set ws = ThisWorkbook.Sheets("Backend_Settings")
+    If ws Is Nothing Then Exit Sub
+
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:=PWD
+
+    With ws.Range("A1:B4")
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    If wasProt Then ws.Protect Password:=PWD
+    On Error GoTo 0
+End Sub
 
 ' Repairs a shape that a theme hid and never un-hid.
 '

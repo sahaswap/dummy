@@ -436,15 +436,10 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
         Next r
     Next addr
 
-    ' 4. The theme picker (U28) and its label. Both sit inside CANVAS, so
-    '    without this they take the plain ground fill and dim text and the
-    '    one control that switches themes becomes the least visible thing
-    '    on the sheet. Styled as a control: surface colour, lit caption.
-    With ws.Range("U27")
-        .Font.Name = "Segoe UI": .Font.Size = 8
-        .Font.Color = cDim: .Font.Bold = False: .Font.Italic = False
-        .HorizontalAlignment = xlCenter
-    End With
+    ' 4. The theme picker (U28). It sits inside CANVAS, so without this it
+    '    takes the plain ground fill and dim text and the one control that
+    '    switches themes becomes the least visible thing on the sheet.
+    '    Styled as a control: surface colour, lit caption.
     With ws.Range("U28")
         .Interior.Color = cSlab
         .Font.Name = "Segoe UI": .Font.Size = 9
@@ -582,26 +577,24 @@ Private Sub ApplyBackendSettings()
         .WrapText = False
     End With
 
+    ' Alignment is deliberately NOT set here. modThemeManager re-asserts
+    ' centre/middle on this block after every theme, so setting it in the
+    ' theme would only be overwritten - and would give the false
+    ' impression that alignment is a theme decision.
     With ws.Range("A1:B1")
         .Interior.Color = cSlab
         .Font.Color = cCyan
         .Font.Bold = True
         .Font.Size = 11
-        .HorizontalAlignment = xlLeft
     End With
     ws.Rows(1).RowHeight = 22
     With ws.Range("A1:B1").Borders(xlEdgeBottom)
         .LineStyle = xlContinuous: .Weight = xlThin: .Color = cCyan
     End With
 
-    With ws.Range("A4")                      ' key
-        .Font.Bold = True: .Font.Color = cDim
-        .HorizontalAlignment = xlLeft
-    End With
-    With ws.Range("B4")                      ' value
-        .Font.Color = cCore
-        .HorizontalAlignment = xlLeft
-    End With
+    ws.Range("A4").Font.Bold = True          ' key
+    ws.Range("A4").Font.Color = cDim
+    ws.Range("B4").Font.Color = cCore        ' value
 
     FrameRange ws.Range("A1:B4")
     KillGridlines ws
