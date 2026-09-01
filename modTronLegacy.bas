@@ -3,39 +3,42 @@ Option Explicit
 '=====================================================================
 ' modTronLegacy - "Tron: Legacy" restyle for the Sheet1 dashboard.
 '
-' Full treatment, not shapes-only: the canvas goes to Grid-black first,
-' then every shape is relit. Styling a glowing button on top of a pearl
-' canvas was what made the first pass read wrong - the light had nothing
-' dark to sit in.
+' DO NOT call ApplyTronLegacy directly from a button. Route through
+' modThemeManager.ApplyTron, which guarantees any other theme is fully
+' removed first. Applying one theme on top of another makes the second
+' theme stash the FIRST theme's colours as "the original", and neither
+' can be cleanly removed afterwards.
 '
-'   ApplyTronLegacy   - black canvas, unlit sidebar slab, cyan circuit
-'                       traces, real Office Glow on buttons/banners,
-'                       Rinzler orange on Reset
-'   RemoveTronLegacy  - restores cells from the backup sheet and every
-'                       shape from its own AltText stash, deletes traces
+'   ApplyTronLegacy   - Grid-black canvas, unlit sidebar slab, circuit
+'                       traces, native Office Glow on lit objects
+'   RemoveTronLegacy  - restores cells from the hidden backup sheet and
+'                       every shape from its own AltText stash
 '
-' PALETTE NOTE: the cyan here is #6FC3DF, the screen-accurate Tron
-' Legacy blue - a cold, desaturated ice blue, NOT #00FFFF. Pure neon
-' cyan is what makes a "Tron" theme look like a generic gamer skin.
-' The brightness comes from the white-hot core (#F2FEFF) on text and
-' the bloom (#A8E8F9) in the Glow, layered over an almost-black ground.
+' PALETTE: the cyan is #6FC3DF, the screen-accurate Tron Legacy blue -
+' cold and desaturated, NOT #00FFFF. Pure neon cyan is what makes a
+' "Tron" theme read as a gaming skin. The brightness comes from the
+' white-hot core (#F2FEFF) on text and the bloom (#A8E8F9) in the Glow,
+' layered over an almost-black ground.
 '
-' Idempotent: re-running re-stashes nothing and re-adds no duplicates.
+' LIT vs UNLIT is the organising rule: only things you can click get a
+' lit cyan edge. Panels, banners and rules use the dim trace colour, so
+' the eye lands on the controls.
 '=====================================================================
 Private Const SHEET_NAME As String = "Sheet1"
 Private Const TAG As String = "TRONORIG|"
 Private Const ADD_PFX As String = "TRONADD_"
+Private Const FOREIGN_PFX As String = "NGADD_"     ' modNavyGold's decorations
 Private Const BAK As String = "_TronBak"
 Private Const CANVAS As String = "A1:AC30"
-Private Const CORNER As Single = 0.12          ' hard-edged Grid panel, not a soft card
+Private Const CORNER As Single = 0.12               ' hard-edged Grid panel, not a soft card
 
-' --- palette (film-accurate, set by InitPalette) ---
+' --- palette (set by InitPalette) ---
 Private cVoid As Long          ' Grid floor - near-black with a blue bias
 Private cPanel As Long         ' raised panel / data cell
 Private cSlab As Long          ' sidebar slab - the unlit block light sits on
 Private cTrace As Long         ' unlit circuit trace
 Private cCyan As Long          ' lit circuit - THE Tron Legacy blue
-Private cBloom As Long         ' glow bloom
+Private cBloom As Long         ' glow bloom / primary action edge
 Private cCore As Long          ' white-hot core (text)
 Private cDim As Long           ' secondary / de-emphasised text
 Private cOrange As Long        ' Rinzler - Reset only
@@ -73,24 +76,29 @@ Sub ApplyTronLegacy()
     Application.ScreenUpdating = False
     ws.Activate
 
-    RemoveAdded ws                  ' clear traces from any previous run
-    ApplyCells ws                   ' Grid-black canvas + sidebar slab (backed up first)
+    ' Order matters. Clear every inherited artefact BEFORE stashing any
+    ' shape, or the stash records another theme's colours as "original".
+    PurgeAllSheetBackgroundImages ThisWorkbook   ' the mottled wash behind the data
+    PurgeForeignDecor ws                         ' NavyGold folds / cards / icon shapes
+    RemoveAdded ws                               ' our own traces from a previous run
+    ApplyCells ws                                ' Grid-black canvas + sidebar slab
 
     For Each shp In ws.Shapes
         If IsStylable(shp) Then
             StashOriginal shp
-            If IsTitle(shp) Then
-                StyleTitle shp
-            ElseIf HasMacro(shp) Then
-                StyleButton shp
-            Else
-                StylePanel shp
-            End If
+            Select Case ShapeRole(shp)
+                Case "TITLE":   StyleTitle shp
+                Case "PRIMARY": StyleButton shp, cBloom, True     ' Start
+                Case "DANGER":  StyleButton shp, cOrange, True    ' Reset
+                Case "BUTTON":  StyleButton shp, cCyan, False
+                Case Else:      StylePanel shp
+            End Select
             n = n + 1
         End If
     Next shp
 
-    AddCircuitTraces ws             ' the detail that reads as "Grid" rather than "dark mode"
+    AddCircuitTraces ws
+    ApplyTabColour ws
 
     On Error Resume Next
     ActiveWindow.DisplayGridlines = False
@@ -99,8 +107,8 @@ Sub ApplyTronLegacy()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Tron Legacy applied - canvas, " & n & " shape(s) and circuit traces." & vbCrLf & vbCrLf & _
-           "Run RemoveTronLegacy to restore everything.", vbInformation, "Tron Legacy"
+    MsgBox "Tron Legacy applied - canvas, " & n & " shape(s) and circuit traces.", _
+           vbInformation, "Tron Legacy"
 End Sub
 
 Sub RemoveTronLegacy()
@@ -127,6 +135,7 @@ Sub RemoveTronLegacy()
         End If
     Next shp
     RestoreCells ws
+    RestoreTabColour ws
 
     On Error Resume Next
     ActiveWindow.DisplayGridlines = True
@@ -135,15 +144,48 @@ Sub RemoveTronLegacy()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Tron Legacy removed; canvas and " & n & " shape(s) restored.", vbInformation, "Tron Legacy"
+    MsgBox "Tron Legacy removed; canvas and " & n & " shape(s) restored.", _
+           vbInformation, "Tron Legacy"
+End Sub
+
+'---- INHERITED-ARTEFACT CLEANUP -------------------------------------
+' A sheet background image set by an earlier theme survives every cell
+' fill - Interior.Color paints OVER it only where cells are opaque, so
+' it shows through as a mottled wash. It must be deleted, not covered.
+Private Sub PurgeAllSheetBackgroundImages(ByVal wb As Workbook)
+    On Error Resume Next
+    Dim sh As Worksheet, prev As Object
+    Set prev = ActiveSheet
+    For Each sh In wb.Worksheets
+        Dim wasP As Boolean
+        wasP = sh.ProtectContents
+        sh.Unprotect Password:="p7ss"
+        sh.Activate
+        Application.CommandBars.ExecuteMso "SheetBackgroundDelete"
+        If wasP Then sh.Protect Password:="p7ss"
+    Next sh
+    If Not prev Is Nothing Then prev.Activate
+    On Error GoTo 0
+End Sub
+
+' modNavyGold generates its own decorations - corner folds, panel cards,
+' inline icon glyphs - all named NGADD_*. They are Navy & Gold objects,
+' not dashboard content, so Tron deletes them rather than restyling them.
+' ApplyNavyGold regenerates every one of them, so this is not destructive.
+Private Sub PurgeForeignDecor(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim i As Long
+    For i = ws.Shapes.count To 1 Step -1
+        If Left$(ws.Shapes(i).Name, Len(FOREIGN_PFX)) = FOREIGN_PFX Then ws.Shapes(i).Delete
+    Next i
+    On Error GoTo 0
 End Sub
 
 '---- CELLS -----------------------------------------------------------
-' Same backup-sheet mechanism modNavyGold uses (proven against this
-' workbook), and the same validated ranges - so the sidebar slab and the
-' data bands land exactly where the existing theme puts them.
 Private Sub ApplyCells(ByVal ws As Worksheet)
     Dim bak As Worksheet: Set bak = GetBak(True)
+    If bak Is Nothing Then Exit Sub
+
     If Len(CStr(bak.Cells(1, 1).Value)) = 0 Then
         Dim c As Range, i As Long: i = 0
         For Each c In ws.Range(CANVAS).Cells
@@ -152,6 +194,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             bak.Cells(i, 2).Value = c.Interior.ColorIndex
             bak.Cells(i, 3).Value = c.Interior.Color
             bak.Cells(i, 4).Value = c.Font.Color
+            bak.Cells(i, 5).Value = c.Font.Italic
         Next c
     End If
     bak.Visible = xlSheetVeryHidden
@@ -164,12 +207,15 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
         .Borders(xlInsideHorizontal).LineStyle = xlNone
     End With
 
-    ' 2. Sidebar slab - a shade off the floor so the panel reads as a
-    '    solid object rather than a hole in the background.
+    ' 2. Sidebar slab - a shade off the floor, so it reads as a solid
+    '    object rather than a hole in the background.
     ws.Range("A1:E29").Interior.Color = cSlab
 
-    ' 3. Data bands - raised panel, cyan hairline rules. Unlit trace
-    '    colour on the borders: only interactive things get lit cyan.
+    ' 3. Data bands - raised panel, white-hot text, unlit hairline rules.
+    '    Italic is cleared: Grid typography is upright, and the inherited
+    '    italic labels were a Navy & Gold mannerism that read as a glitch
+    '    against this palette. Bold is left alone - it carries the real
+    '    label/value distinction in the sheet.
     Dim bands As Variant, addr As Variant, sec As Range, r As Long, rr As Range
     bands = Array("G5:T10", "G13:T14", "G17:T23", "G26:T27")
     For Each addr In bands
@@ -179,6 +225,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             rr.Interior.Color = cPanel
             rr.Font.Color = cCore
             rr.Font.Name = "Segoe UI"
+            rr.Font.Italic = False
             With rr.Borders(xlEdgeBottom)
                 .LineStyle = xlContinuous: .Weight = xlThin: .Color = cTrace
             End With
@@ -214,6 +261,7 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
             ws.Range(addr).Interior.Color = bak.Cells(i, 3).Value
         End If
         ws.Range(addr).Font.Color = bak.Cells(i, 4).Value
+        ws.Range(addr).Font.Italic = bak.Cells(i, 5).Value
     Loop
     bak.Cells.Clear
     On Error Resume Next
@@ -221,20 +269,46 @@ Private Sub RestoreCells(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
+' Tab colour is stored in the backup sheet's own header cells (row 1 of
+' columns G/H), which the per-cell replay above never reads.
+Private Sub ApplyTabColour(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(True)
+    If bak Is Nothing Then Exit Sub
+    If Len(CStr(bak.Range("G1").Value)) = 0 Then
+        bak.Range("G1").Value = ws.Tab.ColorIndex
+        bak.Range("H1").Value = ws.Tab.Color
+    End If
+    ws.Tab.Color = cTrace
+    On Error GoTo 0
+End Sub
+
+Private Sub RestoreTabColour(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(False)
+    If bak Is Nothing Then Exit Sub
+    If Len(CStr(bak.Range("G1").Value)) = 0 Then Exit Sub
+    If bak.Range("G1").Value = xlColorIndexNone Then
+        ws.Tab.ColorIndex = xlColorIndexNone
+    Else
+        ws.Tab.Color = bak.Range("H1").Value
+    End If
+    bak.Range("G1:H1").ClearContents
+    On Error GoTo 0
+End Sub
+
 '---- CIRCUIT TRACES --------------------------------------------------
 ' Thin lit lines with a glow, anchored to cell geometry (not to shapes,
-' whose positions we can't assume). These are what separate "Tron" from
+' whose positions we cannot assume). These are what separate "Tron" from
 ' "someone turned the lights off": the Grid is defined by light running
 ' along the edges of dark slabs.
 Private Sub AddCircuitTraces(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim x As Single, y1 As Single, y2 As Single, ln As Shape
+    Dim x As Single, ln As Shape
 
     ' Vertical ribbon down the sidebar's outer edge, full slab height.
     x = ws.Range("F1").Left
-    y1 = ws.Range("A1").Top
-    y2 = ws.Range("A30").Top
-    Set ln = ws.Shapes.AddLine(x, y1, x, y2)
+    Set ln = ws.Shapes.AddLine(x, ws.Range("A1").Top, x, ws.Range("A30").Top)
     LightTrace ln, 1.5, cCyan, 10
 
     ' Horizontal rule capping the sidebar header block.
@@ -242,7 +316,7 @@ Private Sub AddCircuitTraces(ByVal ws As Worksheet)
                                ws.Range("F4").Left - 8, ws.Range("A4").Top)
     LightTrace ln, 1#, cTrace, 6
 
-    ' Baseline under the sidebar, closing the slab.
+    ' Baseline closing the slab.
     Set ln = ws.Shapes.AddLine(ws.Range("A30").Left, ws.Range("A30").Top, _
                                ws.Range("F30").Left, ws.Range("A30").Top)
     LightTrace ln, 1#, cTrace, 6
@@ -252,7 +326,9 @@ End Sub
 Private Sub LightTrace(ByVal shp As Shape, ByVal w As Single, _
                        ByVal clr As Long, ByVal glowR As Single)
     On Error Resume Next
-    shp.Name = ADD_PFX & Format$(Timer * 1000, "0") & "_" & Int(Rnd * 10000)
+    Static seq As Long
+    seq = seq + 1
+    shp.Name = ADD_PFX & Format$(seq, "000")
     With shp.Line
         .Visible = msoTrue
         .ForeColor.RGB = clr
@@ -285,64 +361,78 @@ Private Function IsStylable(ByVal shp As Shape) As Boolean
     On Error GoTo 0
 End Function
 
-Private Function HasMacro(ByVal shp As Shape) As Boolean
+' Returns TITLE / PRIMARY / DANGER / BUTTON / PANEL.
+'
+' The title test matches "Beta" ANYWHERE in the text, not just at
+' position 1. modNavyGold prepends an icon glyph to shape captions, so
+' an anchored test silently failed on a themed workbook and the title
+' fell through to the button branch - which is exactly why "Beta 3.6"
+' came out looking like a control instead of a title.
+Private Function ShapeRole(ByVal shp As Shape) As String
     On Error Resume Next
-    HasMacro = (Len(shp.OnAction) > 0)
-    On Error GoTo 0
-End Function
+    Dim t As String, hasMac As Boolean
+    ShapeRole = "PANEL"
+    hasMac = (Len(shp.OnAction) > 0)
+    If shp.TextFrame.HasText Then t = Trim$(shp.TextFrame.Characters.Text)
 
-Private Function IsTitle(ByVal shp As Shape) As Boolean
-    On Error Resume Next
-    If Len(shp.OnAction) = 0 And shp.TextFrame.HasText Then
-        IsTitle = (InStr(1, Trim$(shp.TextFrame.Characters.Text), "Beta", vbTextCompare) = 1)
+    If Len(t) > 0 Then
+        If InStr(1, t, "Beta", vbTextCompare) > 0 And Not hasMac Then
+            ShapeRole = "TITLE": Exit Function
+        End If
+    End If
+
+    If hasMac Then
+        If InStr(1, t, "Reset", vbTextCompare) > 0 Then
+            ShapeRole = "DANGER"
+        ElseIf InStr(1, t, "Start", vbTextCompare) > 0 Then
+            ShapeRole = "PRIMARY"
+        Else
+            ShapeRole = "BUTTON"
+        End If
     End If
     On Error GoTo 0
 End Function
 
 '---- styling ---------------------------------------------------------
-' Buttons are the only LIT objects on the sheet. Everything else uses
-' the unlit trace colour, so the eye goes straight to what's clickable.
-Private Sub StyleButton(ByVal shp As Shape)
+' One button routine, three intensities. Start and Reset are the two
+' consequential controls on the sheet, so both are lit harder than the
+' rest: Start in the bright bloom cyan, Reset in Rinzler orange. The
+' neutral buttons stay at standard cyan and recede.
+Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal emphasise As Boolean)
     On Error Resume Next
-    Dim isReset As Boolean, edge As Long
-    If shp.TextFrame.HasText Then
-        isReset = (InStr(1, shp.TextFrame.Characters.Text, "Reset", vbTextCompare) > 0)
-    End If
-    edge = IIf(isReset, cOrange, cCyan)
-
     shp.AutoShapeType = msoShapeRoundedRectangle
     shp.Adjustments(1) = CORNER
     With shp.Fill
         .Visible = msoTrue: .Solid
         .ForeColor.RGB = cPanel
-        .Transparency = 0.05          ' near-solid: the slab, not frosted glass
+        .Transparency = 0.05           ' near-solid: a slab, not frosted glass
     End With
     With shp.Line
         .Visible = msoTrue
         .ForeColor.RGB = edge
-        .Weight = 1.25
+        .Weight = IIf(emphasise, 2#, 1.25)
         .Transparency = 0
     End With
-    ' Real Office glow - this is the bloom. Shadow can't do it.
+    ' Native Office glow - this is the bloom. Shadow cannot do it.
     With shp.Glow
-        .Color.RGB = IIf(isReset, cOrange, cBloom)
-        .Radius = 8
-        .Transparency = 0.45
+        .Color.RGB = edge
+        .Radius = IIf(emphasise, 16, 8)
+        .Transparency = IIf(emphasise, 0.2, 0.45)
     End With
     shp.Shadow.Visible = msoFalse
-    shp.SoftEdge.Type = 0             ' Grid edges are hard
+    shp.SoftEdge.Type = 0              ' Grid edges are hard
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
             .Name = "Segoe UI"
-            .Bold = False              ' the letterspacing does the work, not weight
+            .Bold = emphasise
             .Size = 9
-            .Color = IIf(isReset, cOrange, cCore)
+            .Color = IIf(emphasise, edge, cCore)
         End With
     End If
     On Error GoTo 0
 End Sub
 
-' Banners / section headers - dark slab, unlit trace edge, cyan label.
+' Banners / section headers - dark slab, unlit edge, cyan label.
 Private Sub StylePanel(ByVal shp As Shape)
     On Error Resume Next
     With shp.Fill
@@ -359,20 +449,22 @@ Private Sub StylePanel(ByVal shp As Shape)
     With shp.Glow
         .Color.RGB = cBloom
         .Radius = 4
-        .Transparency = 0.75          ' barely there - panels sit back
+        .Transparency = 0.75           ' barely there - panels sit back
     End With
     shp.Shadow.Visible = msoFalse
     shp.SoftEdge.Type = 0
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
+            .Name = "Segoe UI"
             .Color = cCyan
             .Bold = True
+            .Italic = False
         End With
     End If
     On Error GoTo 0
 End Sub
 
-' Title - no box at all. Just white-hot text with a cyan bloom, the way
+' Title - no box at all. White-hot text with a wide cyan bloom, the way
 ' the film sets its titles: light with nothing containing it.
 Private Sub StyleTitle(ByVal shp As Shape)
     On Error Resume Next
@@ -382,13 +474,15 @@ Private Sub StyleTitle(ByVal shp As Shape)
     shp.Shadow.Visible = msoFalse
     With shp.Glow
         .Color.RGB = cCyan
-        .Radius = 12
-        .Transparency = 0.35
+        .Radius = 20
+        .Transparency = 0.25
     End With
     If shp.TextFrame.HasText Then
         With shp.TextFrame.Characters.Font
+            .Name = "Segoe UI"
             .Color = cCore
-            .Bold = False
+            .Bold = True
+            .Italic = False
         End With
     End If
     On Error GoTo 0
@@ -423,7 +517,7 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
     p = Split(GetAlt(shp), "|")
     If UBound(p) < 7 Then Exit Sub
 
-    shp.Glow.Radius = 0               ' kill the bloom first
+    shp.Glow.Radius = 0                ' kill the bloom first
     shp.SoftEdge.Type = 0
     shp.Shadow.Visible = msoFalse
 
