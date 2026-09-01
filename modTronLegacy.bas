@@ -49,6 +49,26 @@ Private cDim As Long           ' secondary / de-emphasised text
 Private cOrange As Long        ' Rinzler - Reset, Utility faction
 Private cAmber As Long         ' the orange side's bloom
 
+' Excel's Glow.Transparency runs 0 (solid halo) to 1 (invisible), so a
+' stronger glow means a LOWER number, not a higher one. The first pass
+' used 0.45-0.75 with radii of 4-8, which is why nothing appeared to be
+' emitting light. These are the values that actually bloom.
+'
+' These live here, in the module's declarations section, because VBA only
+' accepts module-level Const and Dim before the first procedure. Put one
+' after an End Sub and the whole module fails to compile with "Only
+' comments may appear after End Sub, End Function, or End Property".
+Private Const GLOW_TITLE_R As Single = 28
+Private Const GLOW_TITLE_T As Single = 0.05
+Private Const GLOW_HERO_R As Single = 24        ' Start / Reset
+Private Const GLOW_HERO_T As Single = 0.05
+Private Const GLOW_BTN_R As Single = 14
+Private Const GLOW_BTN_T As Single = 0.25
+Private Const GLOW_PANEL_R As Single = 10
+Private Const GLOW_PANEL_T As Single = 0.5
+Private Const GLOW_TEXT_R As Single = 7         ' Font.Glow - the big win
+Private Const GLOW_TEXT_T As Single = 0.15
+
 Private Sub InitPalette()
     ' Surfaces. Frame analysis of the film describes the Grid not as black
     ' but as "very desaturated metallic light blue" - dark, reflective
@@ -76,21 +96,6 @@ Private Sub InitPalette()
     cOrange = RGB(255, 78, 26)      ' #FF4E1A  Rinzler - the reddish end
     cAmber = RGB(255, 160, 51)      ' #FFA033  its halo - the yellow end
 End Sub
-
-' Excel's Glow.Transparency runs 0 (solid halo) to 1 (invisible), so a
-' stronger glow means a LOWER number, not a higher one. The first pass
-' used 0.45-0.75 with radii of 4-8, which is why nothing appeared to be
-' emitting light. These are the values that actually bloom.
-Private Const GLOW_TITLE_R As Single = 28
-Private Const GLOW_TITLE_T As Single = 0.05
-Private Const GLOW_HERO_R As Single = 24        ' Start / Reset
-Private Const GLOW_HERO_T As Single = 0.05
-Private Const GLOW_BTN_R As Single = 14
-Private Const GLOW_BTN_T As Single = 0.25
-Private Const GLOW_PANEL_R As Single = 10
-Private Const GLOW_PANEL_T As Single = 0.5
-Private Const GLOW_TEXT_R As Single = 7         ' Font.Glow - the big win
-Private Const GLOW_TEXT_T As Single = 0.15
 
 '--------------------------------------------------------------------
 Sub ApplyTronLegacy()
