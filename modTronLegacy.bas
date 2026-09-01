@@ -46,8 +46,8 @@ Private cCyan As Long          ' lit circuit - the icy Tron blue
 Private cBloom As Long         ' glow bloom / primary action edge
 Private cCore As Long          ' white-hot core (text)
 Private cDim As Long           ' secondary / de-emphasised text
-Private cOrange As Long        ' Rinzler - Reset, Utility faction
-Private cAmber As Long         ' the orange side's bloom
+Private cOrange As Long        ' Reset button ONLY - the sheet's one accent
+Private cAmber As Long         ' its halo
 
 ' Glow.Transparency runs 0 (solid halo) to 1 (invisible), so a stronger
 ' glow is a LOWER number.
@@ -79,15 +79,18 @@ Private Const GLOW_BADGE_R As Single = 6        ' ACTION / UTILITY badges
 Private Const GLOW_BADGE_T As Single = 0.6
 
 Private Sub InitPalette()
-    ' Surfaces. Frame analysis of the film describes the Grid not as black
-    ' but as "very desaturated metallic light blue" - dark, reflective
-    ' structure rather than void. So the panels carry a blue-grey cast
-    ' instead of being pure near-black, which is also what gives the glow
-    ' something to reflect off.
-    cVoid = RGB(4, 7, 10)           ' #04070A  deepest ground
-    cSlab = RGB(8, 14, 20)          ' #080E14  sidebar slab
-    cPanel = RGB(13, 22, 30)        ' #0D161E  metallic panel
-    cPanelLift = RGB(22, 40, 52)    ' #162834  top of the button gradient
+    ' SURFACES - one blue, three steps, nothing else.
+    '
+    ' Everything that is a surface uses one of exactly these three values,
+    ' and they are the same hue at different lightness. The previous pass
+    ' also put a GRADIENT on every button and banner, so each object ran
+    ' from #162834 at its top to #04070A at its bottom - meaning no two
+    ' objects on the sheet ever shared a colour, and the whole dashboard
+    ' read as a muddled blue wash. Flat fills are what make it consistent.
+    cVoid = RGB(6, 16, 24)          ' #061018  ground / canvas
+    cPanel = RGB(11, 24, 35)        ' #0B1823  data rows - one step up
+    cSlab = RGB(14, 30, 44)         ' #0E1E2C  EVERY shape: banners, buttons, badges
+    cPanelLift = cSlab              ' kept for compatibility; no gradients any more
 
     ' Light sources. These are emitters, so unlike the surfaces they are
     ' bright and cold - the icy near-white blue of a lit circuit.
@@ -101,13 +104,17 @@ Private Sub InitPalette()
     cCore = RGB(240, 253, 255)      ' #F0FDFF  white-hot core
     cDim = RGB(118, 162, 178)       ' #76A2B2  secondary text
 
-    ' Orange is deliberately NOT one hue. The film's own rule is that its
-    ' orange light sources "span from saturated yellow to a darker reddish
-    ' hue" - the variation is what stops the orange side reading as a
-    ' single flat warning colour. So the edge runs hot red-orange and the
-    ' halo around it runs yellower, and the pair reads as one light.
-    cOrange = RGB(255, 78, 26)      ' #FF4E1A  Rinzler - the reddish end
-    cAmber = RGB(255, 160, 51)      ' #FFA033  its halo - the yellow end
+    ' ORANGE IS FOR RESET AND NOTHING ELSE.
+    '
+    ' It was previously also the Utility faction colour - the UTILITY
+    ' badge and the lower half of the sidebar light run. That gave the
+    ' sheet two competing accents and made Reset stop reading as the one
+    ' destructive control, which is the only job the colour has here. One
+    ' orange object on the sheet means it can never be missed.
+    ' The edge runs hot red-orange, the halo around it runs yellower, so
+    ' the single object still reads as a light rather than a flat swatch.
+    cOrange = RGB(255, 78, 26)      ' #FF4E1A  Reset edge
+    cAmber = RGB(255, 160, 51)      ' #FFA033  its halo
 End Sub
 
 '--------------------------------------------------------------------
@@ -156,8 +163,9 @@ Sub ApplyTronLegacy()
                 Case "PRIMARY":   StyleButton shp, cBloom, cBloom, True    ' Start
                 Case "DANGER":    StyleButton shp, cOrange, cAmber, True   ' Reset
                 Case "BUTTON":    StyleButton shp, cCyan, cBloom, False
+                ' Both badges are cyan. Orange is reserved for Reset.
                 Case "BADGE":     StyleBadge shp, cCyan, cBloom            ' ACTION
-                Case "BADGE_ALT": StyleBadge shp, cOrange, cAmber          ' UTILITY
+                Case "BADGE_ALT": StyleBadge shp, cCyan, cBloom            ' UTILITY
                 Case Else:        StyleBanner shp                          ' section headers
             End Select
             n = n + 1
@@ -271,7 +279,17 @@ End Sub
 Private Function CaptureTitleText(ByVal ws As Worksheet) As String
     On Error Resume Next
     Dim shp As Shape, t As String
-    CaptureTitleText = "Beta"                    ' last-resort fallback
+
+    ' Fall back to the workbook's own filename, not the bare word "Beta".
+    ' Once a previous run has deleted the title shape there is no caption
+    ' left on the sheet to read, and every run after that would render a
+    ' title reading just "Beta" - which is exactly what happened. The
+    ' filename always carries the real version.
+    CaptureTitleText = ThisWorkbook.Name
+    Dim dot As Long
+    dot = InStrRev(CaptureTitleText, ".")
+    If dot > 1 Then CaptureTitleText = Left$(CaptureTitleText, dot - 1)
+
     For Each shp In ws.Shapes
         t = ""
         If shp.TextFrame.HasText Then t = Trim$(shp.TextFrame.Characters.Text)
@@ -469,37 +487,22 @@ Private Sub AddCircuitTraces(ByVal ws As Worksheet)
     On Error Resume Next
     Dim x As Single, ln As Shape
 
-    ' The sidebar's outer edge is the sheet's main light run: cyan down
-    ' the Action half, orange down the Utility half.
+    ' The sidebar's outer edge is the sheet's one continuous light run.
     '
-    ' They are drawn as TWO OVERLAPPING RIBBONS, not two lines meeting at
-    ' a point. Each ribbon runs its colour at full strength at its own end
-    ' and fades to fully transparent past the middle, so through the
-    ' overlap both are partly present and the eye reads one continuous run
-    ' of light changing hue - not "orange stops here, cyan starts here".
-    ' Two lights meeting should mix, the way they would on the Grid; a
-    ' butt joint between two saturated colours always reads as a seam.
+    ' It is a single cyan ribbon now. It used to be cyan over the Action
+    ' half and orange over the Utility half, but orange belongs to Reset
+    ' alone - a second accent running half the sidebar was competing with
+    ' the one control that actually needs to stand out.
     '
-    ' The overlap is deliberately wide (rows 10-22 against a 1-30 run).
-    ' A narrow crossfade still reads as an edge; it needs room to blend.
-    Dim xTop As Single, xBot As Single
+    ' It still fades at BOTH ends rather than starting and stopping at
+    ' full strength. A light that begins abruptly reads as a drawn line;
+    ' one that fades in reads as light. Same principle as before, applied
+    ' to the ends instead of to a mid-point join.
     x = ws.Range("F1").Left
-    xTop = ws.Range("A1").Top
-    xBot = ws.Range("A30").Top
+    AddLightRibbon ws, x, ws.Range("A1").Top, ws.Range("A30").Top, cCyan, cBloom
 
-    AddLightRibbon ws, x, xTop, ws.Range("A22").Top, cCyan, cBloom, False
-    AddLightRibbon ws, x, ws.Range("A10").Top, xBot, cOrange, cAmber, True
-
-    ' Horizontal rule capping the sidebar header block. Sits in the cyan
-    ' half, so it stays cyan.
-    Set ln = ws.Shapes.AddLine(ws.Range("A4").Left + 8, ws.Range("A4").Top, _
-                               ws.Range("F4").Left - 8, ws.Range("A4").Top)
-    LightTrace ln, 1#, cTrace, cBloom, 5
-
-    ' Baseline closing the slab - deep in the orange half.
-    Set ln = ws.Shapes.AddLine(ws.Range("A30").Left, ws.Range("A30").Top, _
-                               ws.Range("F30").Left, ws.Range("A30").Top)
-    LightTrace ln, 1#, cOrange, cAmber, 6
+    ' No horizontal rule at row 4 any more - it ran straight through the
+    ' title's glow and read as a strike-through.
     On Error GoTo 0
 End Sub
 
@@ -508,22 +511,41 @@ End Sub
 ' is text alone - white-hot, with the widest halo on the sheet.
 Private Sub AddTronTitle(ByVal ws As Worksheet, ByVal caption As String)
     On Error Resume Next
-    Dim shp As Shape, x As Single, w As Single
+    Dim shp As Shape, badge As Shape
+    Dim x As Single, w As Single, y As Single, h As Single
+
     x = ws.Range("A1").Left + 14
     w = ws.Range("A1:E1").Width - 28
-    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, _
-                                   x, ws.Range("A1").Top + 5, w, 24)
+    y = ws.Range("A1").Top + 4
+
+    ' Fit the title into the clear space ABOVE the ACTION badge, the same
+    ' way Navy & Gold sizes its own header. Sizing it blind made it
+    ' overlap the badge and the rule beneath it.
+    Set badge = FindBadge(ws, "ACTION")
+    If Not badge Is Nothing Then
+        h = (badge.Top - y) - 8              ' 8pt of clear air above the badge
+    Else
+        h = 22
+    End If
+    If h > 24 Then h = 24
+    If h < 16 Then h = 16
+
+    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, x, y, w, h)
     If shp Is Nothing Then Exit Sub
     shp.Name = ADD_PFX & "TITLE"
     shp.TextFrame.Characters.Text = caption
     With shp.TextFrame.Characters.Font
         .Name = "Segoe UI"
-        .Size = 15
+        .Size = 13
         .Bold = True
         .Color = cCore
     End With
-    shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
-    shp.TextFrame2.VerticalAnchor = msoAnchorMiddle
+    With shp.TextFrame2
+        .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        .VerticalAnchor = msoAnchorMiddle
+        .MarginTop = 0: .MarginBottom = 0
+        .WordWrap = msoFalse
+    End With
     StyleTitle shp
     shp.ZOrder msoBringToFront
     On Error GoTo 0
@@ -536,32 +558,59 @@ End Sub
 ' belong to ACTION and which to UTILITY.
 Private Sub AddGroupCards(ByVal ws As Worksheet)
     On Error Resume Next
-    AddOneCard ws, "A5", "A15", "ACT"
-    AddOneCard ws, "A18", "A28", "UTL"
+    AddOneCard ws, FindBadge(ws, "ACTION"), "A5", "A14", "ACT"
+    AddOneCard ws, FindBadge(ws, "UTILITY"), "A18", "A27", "UTL"
     On Error GoTo 0
 End Sub
 
-Private Sub AddOneCard(ByVal ws As Worksheet, ByVal topCell As String, _
-                       ByVal botCell As String, ByVal tag As String)
+Private Function FindBadge(ByVal ws As Worksheet, ByVal key As String) As Shape
+    On Error Resume Next
+    Dim shp As Shape, t As String
+    For Each shp In ws.Shapes
+        If Len(shp.OnAction) = 0 And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            t = ""
+            If shp.TextFrame.HasText Then t = shp.TextFrame.Characters.Text
+            If InStr(1, t, key, vbTextCompare) > 0 Then Set FindBadge = shp: Exit For
+        End If
+    Next shp
+    On Error GoTo 0
+End Function
+
+' The card must start BELOW its badge, not at the badge's own row.
+'
+' Anchoring it to a hardcoded row was wrong because the badge sits on that
+' same row, so the card wrapped up and around the badge instead of
+' enclosing only the buttons. Navy & Gold anchors to the badge SHAPE -
+' top = badge.Top + badge.Height + 5 - and that is correct, because the
+' badge is repositioned at runtime and its row is not fixed. Matching it
+' exactly, including the transparent fill: the card is a boundary line,
+' not a filled panel, so the sidebar slab shows through and the sheet
+' keeps one surface colour.
+Private Sub AddOneCard(ByVal ws As Worksheet, ByVal badge As Shape, _
+                       ByVal fallbackTop As String, ByVal botCell As String, _
+                       ByVal tag As String)
     On Error Resume Next
     Dim shp As Shape, x As Single, w As Single, y As Single, h As Single
     x = ws.Range("A1").Left + 10
     w = ws.Range("A1:E1").Width - 20
-    y = ws.Range(topCell).Top
-    h = ws.Range(botCell).Top + ws.Range(botCell).Height - y
+
+    If Not badge Is Nothing Then
+        y = badge.Top + badge.Height + 5
+    Else
+        y = ws.Range(fallbackTop).Top - 1
+    End If
+    h = (ws.Range(botCell).Top + ws.Range(botCell).Height) - y + 1
+    If h < 10 Then Exit Sub                    ' badge not found where expected
+
     Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, y, w, h)
     If shp Is Nothing Then Exit Sub
     shp.Name = ADD_PFX & "CARD_" & tag
     shp.Adjustments(1) = 0.06
-    With shp.Fill
-        .Visible = msoTrue: .Solid
-        .ForeColor.RGB = cVoid
-        .Transparency = 0.35
-    End With
+    shp.Fill.Visible = msoFalse                ' boundary only - slab shows through
     With shp.Line
         .Visible = msoTrue
         .ForeColor.RGB = cTrace
-        .Weight = 0.75
+        .Weight = 1#
     End With
     shp.Glow.Radius = 0
     shp.Shadow.Visible = msoFalse
@@ -569,29 +618,24 @@ Private Sub AddOneCard(ByVal ws As Worksheet, ByVal topCell As String, _
     On Error GoTo 0
 End Sub
 
-' One half of the sidebar light run: a thin filled strip whose colour is
-' solid at one end and fades to fully transparent at the other, so that
-' where two of them overlap the colours blend instead of abutting.
-'
-' fadeUp = False means solid at the top fading downward (the cyan half);
-' True means solid at the bottom fading upward (the orange half).
+' The sidebar light run: a thin filled strip that fades in from
+' transparent at the top, holds, and fades back out at the bottom.
 '
 ' A gradient FILL on a narrow rectangle is used rather than a line,
-' because Excel's line format cannot carry a gradient - a line can only
-' be one flat colour, which is what forced the hard seam before.
+' because Excel's line format cannot carry a gradient - a line is one flat
+' colour, so it can only ever start and stop abruptly. Only the ALPHA
+' ramps here; the hue is constant, so the ribbon never passes through a
+' muddy intermediate colour on its way to transparent.
 Private Sub AddLightRibbon(ByVal ws As Worksheet, ByVal x As Single, _
                            ByVal yTop As Single, ByVal yBot As Single, _
-                           ByVal clr As Long, ByVal halo As Long, _
-                           ByVal fadeUp As Boolean)
+                           ByVal clr As Long, ByVal halo As Long)
     On Error Resume Next
     Const W As Single = 2.5
     Dim shp As Shape
     Set shp = ws.Shapes.AddShape(msoShapeRectangle, x - W / 2, yTop, W, yBot - yTop)
     If shp Is Nothing Then Exit Sub
 
-    Static seq As Long
-    seq = seq + 1
-    shp.Name = ADD_PFX & "RIBBON" & Format$(seq, "00")
+    shp.Name = ADD_PFX & "RIBBON"
     shp.Line.Visible = msoFalse
 
     With shp.Fill
@@ -599,12 +643,10 @@ Private Sub AddLightRibbon(ByVal ws As Worksheet, ByVal x As Single, _
         .TwoColorGradient msoGradientVertical, 1
         .ForeColor.RGB = clr
         .BackColor.RGB = clr
-        ' Same hue at both stops - only the ALPHA ramps. Fading colour to
-        ' colour would pass through a muddy midpoint (cyan into orange
-        ' averages to a dusty brown); fading each to transparent lets the
-        ' two ribbons add together as light instead.
-        .GradientStops.Insert clr, 0, IIf(fadeUp, 1, 0)
-        .GradientStops.Insert clr, 1, IIf(fadeUp, 0, 1)
+        .GradientStops.Insert clr, 0#, 1        ' transparent at the top
+        .GradientStops.Insert clr, 0.14, 0      ' full strength
+        .GradientStops.Insert clr, 0.88, 0
+        .GradientStops.Insert clr, 1#, 1        ' transparent at the bottom
     End With
 
     With shp.Glow
@@ -702,14 +744,12 @@ Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Lo
     shp.AutoShapeType = msoShapeRoundedRectangle
     shp.Adjustments(1) = CORNER
 
-    ' A flat fill reads as a sticker. A dark vertical gradient makes the
-    ' slab look lit from its own edges, which is where the depth comes
-    ' from once a strong glow sits around it.
+    ' Flat, and the same surface colour as every other shape on the sheet.
+    ' A gradient here meant each button ran through two different blues,
+    ' so no two objects matched and the dashboard lost its base colour.
     With shp.Fill
-        .Visible = msoTrue
-        .TwoColorGradient msoGradientVertical, 1
-        .ForeColor.RGB = cPanelLift
-        .BackColor.RGB = cVoid
+        .Visible = msoTrue: .Solid
+        .ForeColor.RGB = cSlab
         .Transparency = 0
     End With
 
