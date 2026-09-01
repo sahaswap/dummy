@@ -442,6 +442,26 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             End With
         Next r
     Next addr
+
+    ' 4. The theme picker (U28) and its label. Both sit inside CANVAS, so
+    '    without this they take the plain ground fill and dim text and the
+    '    one control that switches themes becomes the least visible thing
+    '    on the sheet. Styled as a control: surface colour, lit caption.
+    With ws.Range("U27")
+        .Font.Name = "Segoe UI": .Font.Size = 8
+        .Font.Color = cDim: .Font.Bold = False: .Font.Italic = False
+        .HorizontalAlignment = xlCenter
+    End With
+    With ws.Range("U28")
+        .Interior.Color = cSlab
+        .Font.Name = "Segoe UI": .Font.Size = 9
+        .Font.Color = cCyan: .Font.Bold = True: .Font.Italic = False
+        .HorizontalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+        .Borders.Color = cCyan
+        .Locked = False                 ' the sheet is re-protected on exit
+    End With
 End Sub
 
 Private Sub RestoreCells(ByVal ws As Worksheet)

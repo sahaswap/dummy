@@ -1,7 +1,7 @@
 Attribute VB_Name = "modThemeManager"
 Option Explicit
 '=====================================================================
-' modThemeManager - one active theme at a time, cleanly.
+' modThemeManager - one active theme at a time, chosen from a dropdown.
 '
 ' WHY THIS EXISTS
 ' Each theme module saves the "original" look of every shape it touches
@@ -11,118 +11,271 @@ Option Explicit
 '
 ' Apply Tron on top of a live Navy & Gold sheet and Tron records Navy &
 ' Gold's navy fills and gold fonts as "the original". Removing Tron then
-' returns the sheet to Navy & Gold - and Navy & Gold's own stash has
-' been overwritten, so it can never be removed either. The two themes
-' are now permanently fused, which is exactly the state that produced
-' gold corner folds sitting on a black Grid canvas.
+' returns the sheet to Navy & Gold - and Navy & Gold's own stash has been
+' overwritten, so it can never be removed either. The two themes are now
+' permanently fused, which is the state that produced gold corner folds
+' sitting on a black Grid canvas.
 '
-' The fix is a single entry point. Every Apply here removes whatever is
-' currently active FIRST, then applies the requested theme to a clean
-' baseline. Themes coexist in the workbook; they never overlap on the
-' sheet.
+' So every apply here removes whatever is active FIRST, then applies the
+' requested theme to a clean baseline. Themes coexist in the workbook;
+' they never overlap on the sheet.
 '
-' WIRE THE BUTTONS TO THESE, not to the theme modules directly:
-'     ApplyTron        ApplyNavyGold_Safe        ClearTheme
+' ---------------------------------------------------------------------
+' ADDING A THEME LATER: add ONE row to ThemeRegistry below. Nothing else
+' in this module, or anywhere else, needs to change - the dropdown, the
+' clear-everything sweep and the state marker are all driven from that
+' table. Then re-run BuildThemePicker once to refresh the list.
+' ---------------------------------------------------------------------
 '
-' EVERY cross-module call below goes through Application.Run, on purpose.
-' Do not "tidy" them into qualified calls like modTronLegacy.ApplyTronLegacy.
-' A qualified call is resolved at COMPILE time and needs a module of that
-' exact name to exist: if the .bas was pasted into the editor instead of
-' imported (File > Import File), the module is called Module15 or similar,
+' SETUP (once):  run BuildThemePicker
+'                then paste the Worksheet_Change stub from
+'                Sheet1_ThemePicker_snippet.txt into the Sheet1 code
+'                module, so picking from the dropdown actually fires.
+'
+' EVERY cross-module call goes through Application.Run on purpose. Do not
+' "tidy" them into qualified calls like modTronLegacy.ApplyTronLegacy: a
+' qualified call is resolved at COMPILE time and needs a module of that
+' exact name to exist, so if a .bas was pasted into the editor rather than
+' imported (File > Import File) the module is called Module15 or similar,
 ' the qualifier resolves to nothing, and Option Explicit reports it as
-' "Variable not defined" - a compile error that stops the whole project,
-' not just this call. Application.Run resolves by PROCEDURE name at run
-' time, so it works whatever the module is called, and it also lets this
-' manager tolerate a theme module that is not installed at all.
+' "Variable not defined" - a compile error that stops the whole project.
+' Application.Run resolves by PROCEDURE name at run time, so it works
+' whatever the module is called, and it lets this manager tolerate a theme
+' module that is not installed at all.
 '=====================================================================
 Public Const THEME_NONE As String = "NONE"
 Public Const THEME_TRON As String = "TRON"
 Public Const THEME_NAVY As String = "NAVYGOLD"
 
+Private Const SHEET_NAME As String = "Sheet1"
+Private Const PICKER_CELL As String = "U28"
+Private Const PICKER_LABEL As String = "U27"
 Private Const STATE_NAME As String = "_ActiveTheme"
+Private Const PWD As String = "p7ss"
 
-'---- public entry points --------------------------------------------
-Sub ApplyTron()
-    If Not ClearTheme(True) Then Exit Sub
-    On Error GoTo Fail
-    Application.Run "ApplyTronLegacy"
-    SetActiveTheme THEME_TRON
-    Exit Sub
-Fail:
-    MsgBox "Tron Legacy failed to apply: " & Err.Description, vbCritical, "Theme Manager"
-End Sub
+' Guards against the picker's own Worksheet_Change firing again while a
+' theme is being applied.
+Private busy As Boolean
 
-Sub ApplyNavyGold_Safe()
-    If Not ClearTheme(True) Then Exit Sub
-    On Error GoTo Fail
-    Application.Run "ApplyNavyGold"
-    SetActiveTheme THEME_NAVY
-    Exit Sub
-Fail:
-    MsgBox "Navy & Gold failed to apply: " & Err.Description, vbCritical, "Theme Manager"
-End Sub
+'=====================================================================
+' THE REGISTRY - the single place that knows what themes exist.
+'
+' Columns:  key | name shown in the dropdown | apply proc | remove proc
+'
+' A theme whose module is not installed is harmless: Application.Run
+' simply fails and is swallowed, so the row can sit here indefinitely.
+'=====================================================================
+Private Function ThemeRegistry() As Variant
+    ThemeRegistry = Array( _
+        Array(THEME_NONE, "Default (no theme)", "", ""), _
+        Array(THEME_TRON, "Tron Legacy", "ApplyTronLegacy", "RemoveTronLegacy"), _
+        Array(THEME_NAVY, "Navy & Gold", "ApplyNavyGold", "RemoveNavyGold"), _
+        Array("GLASSDARK", "Glass - Dark", "ApplyGlassStyle", "RemoveGlassStyle"), _
+        Array("GLASSLIGHT", "Glass - Light", "ApplyGlassStyleLight", "RemoveGlassStyle") _
+    )
+End Function
 
-' Strips whatever is active and leaves the sheet in its baseline look.
-Sub RemoveActiveTheme()
-    If ClearTheme(True) Then
-        MsgBox "Theme removed. Sheet1 is back to its baseline look.", _
-               vbInformation, "Theme Manager"
+'---- setup ----------------------------------------------------------
+' Run once. Also safe to re-run - refreshes the list after a theme is
+' added to the registry.
+Sub BuildThemePicker()
+    Dim ws As Worksheet, reg As Variant, i As Long, list As String
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    On Error GoTo 0
+    If ws Is Nothing Then MsgBox SHEET_NAME & " not found.", vbCritical: Exit Sub
+
+    Dim wasProt As Boolean
+    On Error Resume Next
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:=PWD
+    ThisWorkbook.Unprotect Password:=PWD
+    On Error GoTo 0
+
+    reg = ThemeRegistry()
+    For i = LBound(reg) To UBound(reg)
+        list = list & IIf(Len(list) > 0, ",", "") & reg(i)(1)
+    Next i
+
+    With ws.Range(PICKER_CELL)
+        .ClearContents
+        With .Validation
+            .Delete
+            .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+                 Operator:=xlBetween, Formula1:=list
+            .IgnoreBlank = True
+            .InCellDropdown = True
+            .ShowInput = False
+            .ShowError = False
+        End With
+        ' Must stay unlocked or the dropdown is dead once Sheet1 is
+        ' protected again - which every theme does on the way out.
+        .Locked = False
+        .HorizontalAlignment = xlCenter
+        .Value = DisplayNameFor(ActiveTheme())
+    End With
+
+    If Len(Trim$(CStr(ws.Range(PICKER_LABEL).Value))) = 0 Then
+        ws.Range(PICKER_LABEL).Value = "Theme"
+        ws.Range(PICKER_LABEL).HorizontalAlignment = xlCenter
     End If
+
+    If wasProt Then ws.Protect Password:=PWD
+    MsgBox "Theme picker ready in " & PICKER_CELL & "." & vbCrLf & vbCrLf & _
+           "If picking a theme does nothing, the Worksheet_Change stub is " & _
+           "not in the Sheet1 code module yet - see " & _
+           "Sheet1_ThemePicker_snippet.txt.", vbInformation, "Theme Manager"
 End Sub
 
-' Returns False only if a removal genuinely failed, so callers can stop
-' rather than stacking a second theme on a half-stripped sheet.
-Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
-    Dim active As String
-    active = ActiveTheme()
-    ClearTheme = True
+'---- the dropdown's entry point -------------------------------------
+' Called by Worksheet_Change on Sheet1 when U28 is edited.
+Public Sub OnThemePicked()
+    If busy Then Exit Sub
+
+    Dim ws As Worksheet, picked As String
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    picked = Trim$(CStr(ws.Range(PICKER_CELL).Value))
+    If Len(picked) = 0 Then Exit Sub
+
+    ApplyThemeByKey KeyForDisplayName(picked)
+End Sub
+
+'---- apply ----------------------------------------------------------
+' The one road in. Clears whatever is active, then runs the requested
+' theme's apply proc.
+Public Sub ApplyThemeByKey(ByVal key As String)
+    If busy Then Exit Sub
+    busy = True
+
+    Dim reg As Variant, i As Long, applyProc As String
+    reg = ThemeRegistry()
+
+    ClearTheme True
+
+    For i = LBound(reg) To UBound(reg)
+        If reg(i)(0) = key Then applyProc = reg(i)(2): Exit For
+    Next i
 
     On Error Resume Next
-    Err.Clear
+    If Len(applyProc) > 0 Then
+        Err.Clear
+        Application.Run applyProc
+        If Err.Number <> 0 Then
+            busy = False
+            MsgBox "Could not apply that theme: " & Err.Description & vbCrLf & vbCrLf & _
+                   "Its module may not be installed in this workbook.", _
+                   vbExclamation, "Theme Manager"
+            SetActiveTheme THEME_NONE
+            SyncPicker THEME_NONE
+            Exit Sub
+        End If
+    End If
+    On Error GoTo 0
 
-    ' Remove the recorded theme first, then sweep the others. A sweep is
-    ' cheap - each Remove is a no-op when its own stash tag is absent -
-    ' and it recovers a workbook whose state marker was lost or was
-    ' themed before this manager existed.
-    Select Case active
-        Case THEME_TRON:  Application.Run "RemoveTronLegacy"
-        Case THEME_NAVY:  Application.Run "RemoveNavyGold"
-    End Select
+    SetActiveTheme key
+    SyncPicker key
+    busy = False
+End Sub
 
-    If active <> THEME_TRON Then Application.Run "RemoveTronLegacy"
-    If active <> THEME_NAVY Then Application.Run "RemoveNavyGold"
-    Application.Run "RemoveGlassStyle"          ' harmless if the module is absent
+' Kept so existing buttons wired to these names keep working.
+Sub ApplyTron():          ApplyThemeByKey THEME_TRON:  End Sub
+Sub ApplyNavyGold_Safe(): ApplyThemeByKey THEME_NAVY:  End Sub
 
-    UnhideDashboardShapes
+Sub RemoveActiveTheme()
+    ApplyThemeByKey THEME_NONE
+    MsgBox "Theme removed. " & SHEET_NAME & " is back to its baseline look.", _
+           vbInformation, "Theme Manager"
+End Sub
 
+'---- clear ----------------------------------------------------------
+' Sweeps EVERY remove proc in the registry, not just the recorded one.
+' A sweep is cheap - each Remove is a no-op when its own stash tag is
+' absent - and it recovers a workbook whose state marker was lost, or one
+' themed before this manager existed.
+Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
+    Dim reg As Variant, i As Long
+    ClearTheme = True
+    reg = ThemeRegistry()
+
+    On Error Resume Next
+    ' The recorded theme first, so its own restore runs against the state
+    ' it actually saved.
+    Dim active As String
+    active = ActiveTheme()
+    For i = LBound(reg) To UBound(reg)
+        If reg(i)(0) = active And Len(reg(i)(3)) > 0 Then Application.Run reg(i)(3)
+    Next i
+    ' Then everything else.
+    For i = LBound(reg) To UBound(reg)
+        If reg(i)(0) <> active And Len(reg(i)(3)) > 0 Then Application.Run reg(i)(3)
+    Next i
     Err.Clear
     On Error GoTo 0
 
+    UnhideDashboardShapes
     SetActiveTheme THEME_NONE
 End Function
 
 ' Repairs a shape that a theme hid and never un-hid.
 '
 ' modNavyGold does not restyle the Beta title - RepositionBeta hides the
-' workbook's real title shape and AddTitleBeta draws a gold replacement
-' as NGADD_* shapes. RemoveNavyGold then deletes its replacement without
-' ever setting the original back to visible, so removing Navy & Gold
-' leaves the nav bar with no title at all. That is a bug in the theme
-' module, but the manager is what promises a clean baseline, so the
-' repair belongs here too rather than only inside one theme.
-'
-' Generated shapes are skipped by name prefix: those are meant to come
-' and go with their theme.
+' workbook's real title shape and AddTitleBeta draws a gold replacement as
+' NGADD_* shapes. RemoveNavyGold then deletes its replacement without ever
+' setting the original back to visible, so removing Navy & Gold leaves the
+' nav bar with no title at all. That is a bug in the theme module, but the
+' manager is what promises a clean baseline, so the repair belongs here
+' too rather than only inside one theme.
 Private Sub UnhideDashboardShapes()
     On Error Resume Next
     Dim ws As Worksheet, shp As Shape
-    Set ws = ThisWorkbook.Sheets("Sheet1")
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
     If ws Is Nothing Then Exit Sub
     For Each shp In ws.Shapes
         If Left$(shp.Name, 8) <> "TRONADD_" And Left$(shp.Name, 6) <> "NGADD_" Then
             If shp.Visible = msoFalse Then shp.Visible = msoTrue
         End If
     Next shp
+    On Error GoTo 0
+End Sub
+
+'---- registry lookups -----------------------------------------------
+Private Function DisplayNameFor(ByVal key As String) As String
+    Dim reg As Variant, i As Long
+    reg = ThemeRegistry()
+    DisplayNameFor = reg(LBound(reg))(1)          ' default to the NONE row
+    For i = LBound(reg) To UBound(reg)
+        If reg(i)(0) = key Then DisplayNameFor = reg(i)(1): Exit For
+    Next i
+End Function
+
+Private Function KeyForDisplayName(ByVal nm As String) As String
+    Dim reg As Variant, i As Long
+    reg = ThemeRegistry()
+    KeyForDisplayName = THEME_NONE
+    For i = LBound(reg) To UBound(reg)
+        If StrComp(reg(i)(1), nm, vbTextCompare) = 0 Then
+            KeyForDisplayName = reg(i)(0): Exit For
+        End If
+    Next i
+End Function
+
+' Writes the picker back without re-triggering Worksheet_Change.
+Private Sub SyncPicker(ByVal key As String)
+    On Error Resume Next
+    Dim ws As Worksheet, wasProt As Boolean
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    If ws Is Nothing Then Exit Sub
+    Application.EnableEvents = False
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:=PWD
+    ws.Range(PICKER_CELL).Value = DisplayNameFor(key)
+    ws.Range(PICKER_CELL).Locked = False
+    If wasProt Then ws.Protect Password:=PWD
+    Application.EnableEvents = True
     On Error GoTo 0
 End Sub
 
@@ -141,7 +294,7 @@ End Function
 
 Public Sub SetActiveTheme(ByVal v As String)
     On Error Resume Next
-    ThisWorkbook.Unprotect Password:="p7ss"
+    ThisWorkbook.Unprotect Password:=PWD
     ThisWorkbook.Names(STATE_NAME).Delete
     ThisWorkbook.Names.Add Name:=STATE_NAME, RefersTo:="=""" & v & """", Visible:=False
     On Error GoTo 0
