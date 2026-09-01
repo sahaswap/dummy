@@ -479,7 +479,11 @@ Private Sub ApplySearchMatrix()
 
     BackupSheetRange ws, "A1:E" & lastRow
 
-    ' clean slate - A:E only, the helper columns past F stay hidden
+    ' clean slate - A:E only, the helper columns past F stay hidden.
+    ' Alignment is deliberately NOT set anywhere in here: modThemeManager
+    ' re-asserts centre/middle across this sheet after every theme, so
+    ' setting it would only be overwritten, and would imply alignment is a
+    ' theme decision when it is a property of the sheet.
     With ws.Range("A1:E" & lastRow)
         .Interior.Pattern = xlSolid
         .Interior.Color = cPanel
@@ -489,7 +493,6 @@ Private Sub ApplySearchMatrix()
         .Font.Color = cCore
         .Font.Bold = False
         .Font.Italic = False
-        .VerticalAlignment = xlCenter
         .WrapText = False
     End With
 
@@ -499,7 +502,6 @@ Private Sub ApplySearchMatrix()
         .Font.Color = cCyan
         .Font.Bold = True
         .Font.Size = 10
-        .HorizontalAlignment = xlCenter
     End With
     ws.Rows(1).RowHeight = 24
     With ws.Range("A1:E1").Borders(xlEdgeBottom)
@@ -509,17 +511,13 @@ Private Sub ApplySearchMatrix()
     If lastRow >= 2 Then
         With ws.Range("A2:A" & lastRow)
             .Font.Bold = True: .Font.Color = cCore
-            .HorizontalAlignment = xlLeft: .IndentLevel = 1
         End With
         ws.Range("B2:B" & lastRow).Font.Color = cDim
-        ws.Range("B2:B" & lastRow).HorizontalAlignment = xlLeft
         With ws.Range("C2:C" & lastRow)
             .Font.Size = 8: .Font.Color = cDim
         End With
         ws.Range("D2:D" & lastRow).Font.Color = cCore
-        ws.Range("D2:D" & lastRow).HorizontalAlignment = xlLeft
         With ws.Range("E2:E" & lastRow)
-            .HorizontalAlignment = xlCenter
             .Font.Color = cCyan
             .Font.Underline = xlUnderlineStyleSingle
         End With
@@ -573,7 +571,6 @@ Private Sub ApplyBackendSettings()
         .Font.Size = 10
         .Font.Bold = False
         .Font.Italic = False
-        .VerticalAlignment = xlCenter
         .WrapText = False
     End With
 

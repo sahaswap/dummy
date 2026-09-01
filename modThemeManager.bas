@@ -243,7 +243,7 @@ Public Sub ApplyThemeByKey(ByVal key As String)
 
     ' Conventions that are NOT a theme's business, re-asserted last so
     ' they survive whatever the theme just did.
-    NormaliseBackendSettings
+    NormaliseSheetConventions
 
     SetActiveTheme key
     SyncPicker key
@@ -294,21 +294,29 @@ Public Function ClearTheme(ByVal quiet As Boolean) As Boolean
     On Error GoTo 0
 
     UnhideDashboardShapes
-    NormaliseBackendSettings          ' also true with no theme applied
+    NormaliseSheetConventions         ' also true with no theme applied
     SetActiveTheme THEME_NONE
 End Function
 
-' Backend_Settings alignment is a property of the SHEET, not of a theme.
+'=====================================================================
+' SHEET CONVENTIONS - things that are true regardless of theme.
 '
-' Every theme sets its own alignment on this block - Navy & Gold's
-' StyleBackendSettings left-aligns the title and the key, and Tron did the
-' same - so fixing it inside one theme would only hold until you switched.
-' Re-asserting it here, after the theme has finished, makes it true under
-' every theme and under no theme, and means a future theme cannot quietly
-' undo it either.
+' Alignment on the companion sheets is a property of the SHEET, not a
+' styling choice. Every theme sets its own - Navy & Gold's
+' StyleSearchMatrix left-aligns the entity column and indents it, and
+' Tron did the same - so fixing it inside one theme would only hold until
+' you switched. Re-asserting it here, after the theme and its companion
+' stylers have finished, makes it true under every theme and under no
+' theme, and means a future theme cannot quietly undo it either.
 '
-' Kept deliberately narrow: alignment only. No colours, no fills, nothing
-' that belongs to whichever theme is active.
+' Deliberately narrow: alignment only. No colours, no fills, nothing that
+' belongs to whichever theme is active.
+'=====================================================================
+Private Sub NormaliseSheetConventions()
+    NormaliseBackendSettings
+    NormaliseSearchMatrix
+End Sub
+
 Private Sub NormaliseBackendSettings()
     On Error Resume Next
     Dim ws As Worksheet, wasProt As Boolean
@@ -317,13 +325,43 @@ Private Sub NormaliseBackendSettings()
 
     wasProt = ws.ProtectContents
     ws.Unprotect Password:=PWD
+    CentreMiddle ws.Range("A1:B4")
+    If wasProt Then ws.Protect Password:=PWD
+    On Error GoTo 0
+End Sub
 
-    With ws.Range("A1:B4")
+Private Sub NormaliseSearchMatrix()
+    On Error Resume Next
+    Dim ws As Worksheet, wasProt As Boolean, lastRow As Long, lastA As Long, lastB As Long
+    Set ws = ThisWorkbook.Sheets("Search Matrix")
+    If ws Is Nothing Then Exit Sub
+
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:=PWD
+
+    ' Take the deeper of A and B. The stylers key off B alone, which
+    ' misses any block whose Type-of-Search cell happens to be blank.
+    lastA = ws.Cells(ws.Rows.count, "A").End(xlUp).Row
+    lastB = ws.Cells(ws.Rows.count, "B").End(xlUp).Row
+    lastRow = IIf(lastA > lastB, lastA, lastB)
+    If lastRow < 1 Then lastRow = 1
+
+    CentreMiddle ws.Range("A1:E" & lastRow)
+    If wasProt Then ws.Protect Password:=PWD
+    On Error GoTo 0
+End Sub
+
+' IndentLevel is cleared FIRST. Navy & Gold indents the entity column,
+' and Excel only honours an indent with left/right alignment - leaving a
+' stale indent set while switching to centre can make the write fail
+' outright rather than simply being ignored.
+Private Sub CentreMiddle(ByVal rng As Range)
+    On Error Resume Next
+    With rng
+        .IndentLevel = 0
         .HorizontalAlignment = xlCenter
         .VerticalAlignment = xlCenter
     End With
-
-    If wasProt Then ws.Protect Password:=PWD
     On Error GoTo 0
 End Sub
 
