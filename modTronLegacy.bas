@@ -377,6 +377,9 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
 
     ' 1. The Grid floor - the whole canvas goes black. Light needs dark.
     With ws.Range(CANVAS)
+        ' Pattern first - see the note in modDesert. A leftover
+        ' xlPatternCrissCross under a .Color assignment washes the fill out.
+        .Interior.Pattern = xlSolid
         .Interior.Color = cVoid
         .Font.Color = cDim
         .Borders(xlEdgeBottom).LineStyle = xlNone
@@ -385,6 +388,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
 
     ' 2. Sidebar slab - a shade off the floor, so it reads as a solid
     '    object rather than a hole in the background.
+    ws.Range("A1:E29").Interior.Pattern = xlSolid
     ws.Range("A1:E29").Interior.Color = cSlab
 
     ' 3. Data bands.
@@ -412,6 +416,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             Set rr = ws.Range("G" & r & ":T" & r)
             rr.Font.Name = "Segoe UI"
             rr.Font.Italic = False
+            rr.Interior.Pattern = xlSolid
 
             If r = 17 Or r = 26 Then
                 ' column-header row - lit, so the table reads as a table
@@ -441,6 +446,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     '    switches themes becomes the least visible thing on the sheet.
     '    Styled as a control: surface colour, lit caption.
     With ws.Range("U28")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cSlab
         .Font.Name = "Segoe UI": .Font.Size = 9
         .Font.Color = cCyan: .Font.Bold = True: .Font.Italic = False
@@ -564,6 +570,7 @@ Private Sub ApplyBackendSettings()
     BackupSheetRange ws, "A1:B4"
 
     With ws.Range("A1:B4")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cPanel
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
@@ -579,6 +586,7 @@ Private Sub ApplyBackendSettings()
     ' theme would only be overwritten - and would give the false
     ' impression that alignment is a theme decision.
     With ws.Range("A1:B1")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cSlab
         .Font.Color = cCyan
         .Font.Bold = True

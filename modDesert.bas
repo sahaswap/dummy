@@ -340,6 +340,13 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     BackupSheetRange ws, CANVAS
 
     With ws.Range(CANVAS)
+        ' Pattern FIRST, every time. Setting .Color while a pattern is
+        ' still active blends the new colour with the pattern colour, and
+        ' a near-black fill under a leftover CrissCross comes out as pale
+        ' khaki - which is exactly how this sheet rendered. Navy & Gold
+        ' and Sheet1's own Worksheet_Change both apply xlPatternCrissCross
+        ' to ranges here, so there is always a pattern to inherit.
+        .Interior.Pattern = xlSolid
         .Interior.Color = cNight
         .Font.Color = cSand
         .Borders(xlEdgeBottom).LineStyle = xlNone
@@ -347,6 +354,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End With
 
     ' the dune face, crest to slipface
+    ws.Range("A1:E29").Interior.Pattern = xlSolid
     ws.Range("A1:E6").Interior.Color = cFace1
     ws.Range("A7:E14").Interior.Color = cFace2
     ws.Range("A15:E22").Interior.Color = cFace3
@@ -363,6 +371,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             Set rr = ws.Range("G" & r & ":T" & r)
             rr.Font.Name = "Segoe UI"
             rr.Font.Italic = False
+            rr.Interior.Pattern = xlSolid
 
             If r = 17 Or r = 26 Then
                 rr.Interior.Color = cSlab
@@ -385,6 +394,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     ' control that switches themes takes the plain ground fill and
     ' becomes the least visible thing on the sheet.
     With ws.Range("U28")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cSlab
         .Font.Name = "Segoe UI": .Font.Size = 9
         .Font.Color = cSand: .Font.Bold = True: .Font.Italic = False
@@ -487,6 +497,7 @@ Private Sub ApplyBackendSettings()
     BackupSheetRange ws, "A1:B4"
 
     With ws.Range("A1:B4")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cRock
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
@@ -498,6 +509,7 @@ Private Sub ApplyBackendSettings()
     End With
 
     With ws.Range("A1:B1")
+        .Interior.Pattern = xlSolid
         .Interior.Color = cSlab
         .Font.Color = cSand
         .Font.Bold = True
