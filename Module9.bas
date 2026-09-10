@@ -397,7 +397,19 @@ If exportMode = "EN" Then
         GoTo CancelHandler
     End If
     lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)
-    lbEnd = lastAlertedLB
+
+    ' End of the MONTH the last alerted transaction falls in, not the
+    ' alerted date itself. Last alerted 09/10 -> window ends 09/30.
+    '
+    ' Day 0 of the following month is the last day of this one, and
+    ' DateSerial rolls a month of 13 over into January of the next year,
+    ' so a December alert correctly gives 12/31 rather than erroring.
+    ' This is the same idiom the Non Alerted window already uses below.
+    '
+    ' Previously this was the alerted date itself, which meant a
+    ' non-alerted transaction later in the same month fell outside the
+    ' lookback even though the Non Alerted export included it.
+    lbEnd = DateSerial(Year(lastAlertedLB), Month(lastAlertedLB) + 1, 0)
 
     Set newWb = Workbooks.Add
     Set wsLB = newWb.Sheets(1)
