@@ -364,13 +364,27 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End With
 
     ' the dune face, crest to slipface
-    ' ONE flat colour. Four stepped fills were meant to read as a dune
-    ' face turning into the light, but their boundaries fall at rows 6/7,
-    ' 14/15 and 22/23 - fixed rows that line up with nothing, so on screen
-    ' they were three hard horizontal seams cutting across the button
-    ' stack at arbitrary points. A gradient you cannot align to the
-    ' content is just banding.
-    PaintCells ws.Range("A1:E29"), cSlab
+    ' THE RAIL RECEDES. One flat colour, and DARKER than the data rows.
+    '
+    ' Two faults were stacked here. Four stepped fills were meant to read
+    ' as a dune face turning into the light, but their boundaries fell at
+    ' rows 6/7, 14/15 and 22/23 - fixed rows that line up with nothing, so
+    ' on screen they were three hard seams cutting across the button stack
+    ' at arbitrary points. A gradient you cannot align to the content is
+    ' just banding.
+    '
+    ' Worse, the lightest of those steps (#342D24) sat at the TOP, which
+    ' is where the eye lands first - so the sidebar read as a pale slab
+    ' dominating the sheet. A probe of the live workbook confirmed the
+    ' paint was landing exactly as specified; the value was simply wrong.
+    '
+    ' The rail now takes the ground colour. A navigation rail should sit
+    ' BEHIND the content it launches, not in front of it, and here that
+    ' means the darkest tone on the sheet, not a raised panel. The region
+    ' is defined by the buttons and labels standing on it - which is also
+    ' the more monolithic reading, and the data bands are then the only
+    ' thing that lifts off the ground.
+    PaintCells ws.Range("A1:E29"), cNight
 
     ' Data bands follow Sheet1's own merge map: every row is G:I label +
     ' J:T value. Labels sit back in sand, values come forward in bone.
