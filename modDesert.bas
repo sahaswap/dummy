@@ -67,6 +67,7 @@ Private Const CANVAS As String = "A1:AC36"
 Private Const SHP_LINTEL As Long = 156
 Private Const SHP_SLAB As Long = 1
 Private Const CUT As Single = 0.14          ' depth of the lintel cut
+Private Const GAP As Single = 16            ' air between the two button groups
 
 ' Tracking. Dune's titles are set very wide - wider than Tron's, which is
 ' why these are larger than that theme's equivalents.
@@ -183,7 +184,8 @@ Sub ApplyDesert()
     ' was behind. The light well and the ridge went with them: all three
     ' were set dressing competing with the only things on this sidebar
     ' anyone actually uses. What is left is the buttons.
-    AddSidebarPlinth ws              ' stepped base, clear of the button stack
+    TightenUtilityGap ws             ' close Navy & Gold's inherited dead space
+    AddMoon ws                       ' low, clear of the title
     AddBadgeRules ws                 ' after the badges are styled
     AddBannerMarks ws                ' chapter ticks, after the banners are styled
     AddDesertTitle ws, titleText
@@ -224,6 +226,7 @@ Sub RemoveDesert()
             n = n + 1
         End If
     Next shp
+    UndoShift ws                     ' before the backup is cleared
     RestoreAllCells
 
     On Error Resume Next
@@ -631,60 +634,155 @@ Private Sub AddBannerMarks(ByVal ws As Worksheet)
 End Sub
 
 
-'=====================================================================
-' THE PLINTH - the stepped base the whole sidebar stands on.
-'
-' A ziggurat is the first name on Vermette's reference list, and it is
-' the one form Excel can draw exactly, because it is only stacked
-' rectangles set back from a wide base.
-'
-' An earlier pass put a three-step plinth under each button GROUP, which
-' was wrong twice over. Architecturally, a ziggurat's base sits at the
-' bottom of the structure - not floating halfway up it. And practically,
-' the card those steps hung off ended at row 14, which is exactly where
-' the last button of the action group ends, so the steps were drawn
-' behind "Generate Narrative" and were mostly invisible.
-'
-' One plinth, at the foot of the sidebar in rows 28-29, where the button
-' stack has already finished and nothing can cover it.
-'=====================================================================
-Private Sub AddSidebarPlinth(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim x0 As Single, w As Single, yBase As Single
-    Dim k As Long, bw As Single, shp As Shape
-    Const H As Single = 3
-
-    x0 = ws.Range("A1").Left
-    w = ws.Range("A1:E1").Width
-    yBase = ws.Range("A29").Top + ws.Range("A29").Height
-
-    ' widest tier at the bottom, each one set back above it
-    For k = 0 To 2
-        bw = w * (0.9 - k * 0.17)
-        Set shp = ws.Shapes.AddShape(SHP_SLAB, _
-                      x0 + (w - bw) / 2, yBase - H - (k * H), bw, H)
-        If Not shp Is Nothing Then
-            shp.Name = ADD_PFX & "PLINTH" & k
-            With shp.Fill
-                .Visible = msoTrue: .Solid
-                .ForeColor.RGB = cStone
-                .Transparency = 0.35 + k * 0.15     ' fades as it rises
-            End With
-            shp.Line.Visible = msoFalse
-            shp.Shadow.Visible = msoFalse
-            shp.Glow.Radius = 0
-            shp.Placement = xlFreeFloating
-            shp.ZOrder msoSendToBack
-        End If
-    Next k
-    On Error GoTo 0
-End Sub
 
 ' Finds a panel badge by its caption. Used by the title, which sizes
 ' itself to the clear space above the ACTION badge rather than guessing.
 '
 ' Left as a Function on purpose: it returns a Shape, and the title needs
 ' the object, not just whether one exists.
+'=====================================================================
+' THE MOON - two concentric rings, low in the sidebar.
+'
+' It was removed for a good reason and is back for a better position.
+' Sitting behind the title it cut straight through "Beta 3.6.2": a ring
+' and a line of type occupying the same space is interference, not
+' layering, and no amount of transparency fixes that.
+'
+' Down here it has the whole foot of the sidebar to itself - the button
+' stack finishes at row 27 - so it can be larger and still touch nothing.
+' Offset right of centre on purpose: dead-centre would line it up with
+' the title and the badges above and read as a fourth thing on the same
+' axis, where off-axis reads as something in the distance.
+'
+' Two rings at a small offset rather than one circle - that is the Carlo
+' Scarpa detail from Vermette's reference list, the same profile repeated
+' at a step.
+'=====================================================================
+Private Sub AddMoon(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim d As Single, cx As Single, cy As Single
+    d = 54
+    cx = ws.Range("A1").Left + ws.Range("A1:E1").Width * 0.62
+    cy = ws.Range("A29").Top + 4
+
+    MoonRing ws, cx - d / 2, cy - d / 2, d, 1#, 0.55, "MOON1"
+    MoonRing ws, cx - (d - 12) / 2, cy - (d - 12) / 2, d - 12, 0.75, 0.72, "MOON2"
+    On Error GoTo 0
+End Sub
+
+Private Sub MoonRing(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, _
+                     ByVal d As Single, ByVal wt As Single, ByVal trans As Single, _
+                     ByVal nm As String)
+    On Error Resume Next
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeOval, x, y, d, d)
+    If shp Is Nothing Then Exit Sub
+    shp.Name = ADD_PFX & nm
+    shp.Fill.Visible = msoFalse
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cStone
+        .Weight = wt
+        .Transparency = trans
+    End With
+    shp.Shadow.Visible = msoFalse
+    shp.Glow.Radius = 0
+    shp.Placement = xlFreeFloating
+    shp.ZOrder msoSendToBack
+    On Error GoTo 0
+End Sub
+
+'=====================================================================
+' CLOSING THE UTILITY GAP.
+'
+' Navy & Gold anchors the UTILITY badge to the Counterparty Information
+' banner - utlLbl.Top = cpBanner.Top - so the two panels line up across
+' the sheet. That symmetry costs a large dead space between "Generate
+' Narrative" and "UTILITY PANEL", because the action group is shorter
+' than the alert section it sits beside. Desert does not inherit that
+' trade: nothing in this theme lines the sidebar up with the main area,
+' so the gap buys nothing and just reads as a hole.
+'
+' The shapes are moved by a single DELTA, and that delta is written to
+' the backup sheet. Removal shifts the same shapes back by the same
+' amount, so this is exactly reversible without storing a position per
+' shape. One number, not twenty.
+'
+' Guarded three ways: only ever moves UP, never runs if the gap is
+' already tight, and refuses a shift larger than 200pt in case the badge
+' was not found where expected and the arithmetic went wrong.
+'=====================================================================
+Private Sub TightenUtilityGap(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim badge As Shape, shp As Shape
+    Dim sbRight As Single, lastActionBottom As Single, delta As Single
+
+    Set badge = FindBadge(ws, "UTILITY")
+    If badge Is Nothing Then Exit Sub
+    sbRight = ws.Range("F1").Left
+
+    ' the lowest thing in the sidebar that sits ABOVE the utility badge
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            If shp.Left < sbRight And shp.Top < badge.Top Then
+                If shp.Top + shp.Height > lastActionBottom Then
+                    lastActionBottom = shp.Top + shp.Height
+                End If
+            End If
+        End If
+    Next shp
+    If lastActionBottom = 0 Then Exit Sub
+
+    delta = (lastActionBottom + GAP) - badge.Top
+    If delta >= -2 Then Exit Sub             ' already tight, or would move down
+    If delta < -200 Then Exit Sub            ' implausible - do not touch anything
+
+    ShiftSidebarBelow ws, badge.Top - 1, delta
+    StoreShift delta
+    On Error GoTo 0
+End Sub
+
+' Moves every non-generated sidebar shape at or below fromTop by delta.
+Private Sub ShiftSidebarBelow(ByVal ws As Worksheet, ByVal fromTop As Single, _
+                              ByVal delta As Single)
+    On Error Resume Next
+    Dim shp As Shape, sbRight As Single
+    sbRight = ws.Range("F1").Left
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            If shp.Left < sbRight And shp.Top >= fromTop Then
+                shp.Top = shp.Top + delta
+            End If
+        End If
+    Next shp
+    On Error GoTo 0
+End Sub
+
+Private Sub StoreShift(ByVal delta As Single)
+    On Error Resume Next
+    Dim bak As Worksheet: Set bak = GetBak(True)
+    If bak Is Nothing Then Exit Sub
+    bak.Range("J1").Value = delta
+    On Error GoTo 0
+End Sub
+
+' Read and undo the shift. Must run BEFORE RestoreAllCells, which clears
+' the backup sheet.
+Private Sub UndoShift(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim bak As Worksheet, delta As Single, badge As Shape
+    Set bak = GetBak(False)
+    If bak Is Nothing Then Exit Sub
+    If Len(CStr(bak.Range("J1").Value)) = 0 Then Exit Sub
+    delta = CSng(bak.Range("J1").Value)
+    If delta = 0 Then Exit Sub
+
+    Set badge = FindBadge(ws, "UTILITY")
+    If Not badge Is Nothing Then ShiftSidebarBelow ws, badge.Top - 1, -delta
+    bak.Range("J1").ClearContents
+    On Error GoTo 0
+End Sub
+
 Private Function FindBadge(ByVal ws As Worksheet, ByVal key As String) As Shape
     On Error Resume Next
     Dim shp As Shape, t As String
