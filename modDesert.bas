@@ -680,6 +680,24 @@ Private Sub AddSidebarPlinth(ByVal ws As Worksheet)
     On Error GoTo 0
 End Sub
 
+' Finds a panel badge by its caption. Used by the title, which sizes
+' itself to the clear space above the ACTION badge rather than guessing.
+'
+' Left as a Function on purpose: it returns a Shape, and the title needs
+' the object, not just whether one exists.
+Private Function FindBadge(ByVal ws As Worksheet, ByVal key As String) As Shape
+    On Error Resume Next
+    Dim shp As Shape, t As String
+    For Each shp In ws.Shapes
+        If Len(shp.OnAction) = 0 And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            t = ""
+            If shp.TextFrame.HasText Then t = shp.TextFrame.Characters.Text
+            If InStr(1, t, key, vbTextCompare) > 0 Then Set FindBadge = shp: Exit For
+        End If
+    Next shp
+    On Error GoTo 0
+End Function
+
 Private Sub AddDesertTitle(ByVal ws As Worksheet, ByVal caption As String)
     On Error Resume Next
     Dim shp As Shape, badge As Shape
