@@ -97,11 +97,6 @@ Private cSand As Long          ' secondary text, strata highs
 Private cBone As Long          ' primary text, Start
 Private cOxide As Long         ' Reset only
 
-' The four steps of the sidebar's dune face, lightest at the crest.
-Private cFace1 As Long
-Private cFace2 As Long
-Private cFace3 As Long
-Private cFace4 As Long
 
 Private Sub InitPalette()
     ' Value-stepped, all one warm family. Three surface steps exactly as
@@ -116,17 +111,6 @@ Private Sub InitPalette()
     cBone = RGB(237, 225, 200)     ' #EDE1C8  primary text, Start
     cOxide = RGB(163, 74, 42)      ' #A34A2A  Reset - muted, not risk-red
 
-    ' A dune face is not one colour. It is bright where it turns into the
-    ' light at the crest and it falls away into the slipface below, and
-    ' the sidebar is painted as those four steps rather than one flat
-    ' block. Cells cannot carry a gradient, but four stepped fills read as
-    ' one anyway - and because the buttons all share a single face colour,
-    ' the ones near the top now sit on lighter ground than the ones near
-    ' the bottom. That is the light doing the work, not the shapes.
-    cFace1 = RGB(52, 45, 36)       ' #342D24  crest
-    cFace2 = RGB(42, 36, 29)       ' #2A241D
-    cFace3 = RGB(34, 29, 23)       ' #221D17
-    cFace4 = RGB(27, 23, 18)       ' #1B1712  slipface
 End Sub
 
 '--------------------------------------------------------------------
@@ -185,7 +169,6 @@ Sub ApplyDesert()
     ' were set dressing competing with the only things on this sidebar
     ' anyone actually uses. What is left is the buttons.
     TightenUtilityGap ws             ' close Navy & Gold's inherited dead space
-    AddMoon ws                       ' low, clear of the title
     AddBadgeRules ws                 ' after the badges are styled
     AddBannerMarks ws                ' chapter ticks, after the banners are styled
     AddDesertTitle ws, titleText
@@ -381,10 +364,13 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End With
 
     ' the dune face, crest to slipface
-    PaintCells ws.Range("A1:E6"), cFace1
-    PaintCells ws.Range("A7:E14"), cFace2
-    PaintCells ws.Range("A15:E22"), cFace3
-    PaintCells ws.Range("A23:E29"), cFace4
+    ' ONE flat colour. Four stepped fills were meant to read as a dune
+    ' face turning into the light, but their boundaries fall at rows 6/7,
+    ' 14/15 and 22/23 - fixed rows that line up with nothing, so on screen
+    ' they were three hard horizontal seams cutting across the button
+    ' stack at arbitrary points. A gradient you cannot align to the
+    ' content is just banding.
+    PaintCells ws.Range("A1:E29"), cSlab
 
     ' Data bands follow Sheet1's own merge map: every row is G:I label +
     ' J:T value. Labels sit back in sand, values come forward in bone.
@@ -640,57 +626,7 @@ End Sub
 '
 ' Left as a Function on purpose: it returns a Shape, and the title needs
 ' the object, not just whether one exists.
-'=====================================================================
-' THE MOON - two concentric rings, low in the sidebar.
-'
-' It was removed for a good reason and is back for a better position.
-' Sitting behind the title it cut straight through "Beta 3.6.2": a ring
-' and a line of type occupying the same space is interference, not
-' layering, and no amount of transparency fixes that.
-'
-' Down here it has the whole foot of the sidebar to itself - the button
-' stack finishes at row 27 - so it can be larger and still touch nothing.
-' Offset right of centre on purpose: dead-centre would line it up with
-' the title and the badges above and read as a fourth thing on the same
-' axis, where off-axis reads as something in the distance.
-'
-' Two rings at a small offset rather than one circle - that is the Carlo
-' Scarpa detail from Vermette's reference list, the same profile repeated
-' at a step.
-'=====================================================================
-Private Sub AddMoon(ByVal ws As Worksheet)
-    On Error Resume Next
-    Dim d As Single, cx As Single, cy As Single
-    d = 54
-    cx = ws.Range("A1").Left + ws.Range("A1:E1").Width * 0.62
-    cy = ws.Range("A29").Top + 4
 
-    MoonRing ws, cx - d / 2, cy - d / 2, d, 1#, 0.55, "MOON1"
-    MoonRing ws, cx - (d - 12) / 2, cy - (d - 12) / 2, d - 12, 0.75, 0.72, "MOON2"
-    On Error GoTo 0
-End Sub
-
-Private Sub MoonRing(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, _
-                     ByVal d As Single, ByVal wt As Single, ByVal trans As Single, _
-                     ByVal nm As String)
-    On Error Resume Next
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeOval, x, y, d, d)
-    If shp Is Nothing Then Exit Sub
-    shp.Name = ADD_PFX & nm
-    shp.Fill.Visible = msoFalse
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cStone
-        .Weight = wt
-        .Transparency = trans
-    End With
-    shp.Shadow.Visible = msoFalse
-    shp.Glow.Radius = 0
-    shp.Placement = xlFreeFloating
-    shp.ZOrder msoSendToBack
-    On Error GoTo 0
-End Sub
 
 '=====================================================================
 ' CLOSING THE UTILITY GAP.
@@ -917,13 +853,13 @@ End Function
 '
 ' Three ideas, each doing work beyond decoration:
 '
-' 1. THE STONE IS CUT, NOT DRAWN.
-'    A flat fill inside a 1pt outline is a rectangle with a line round
-'    it - the edge is drawn ON the shape rather than being a property of
-'    it. Office's ThreeD bevel gives the block a real chamfered lip that
-'    catches the light, so the button reads as a face cut into stone.
-'    Kept tiny (2-3pt): a large bevel is the Office 2007 plastic look,
-'    which is the exact opposite of carved masonry.
+' 1. THE CUT IS IN THE OUTLINE, NOT IN A BEVEL.
+'    An earlier pass used Office's ThreeD bevel to give the block a
+'    carved lip. Excel renders a bevel through its own 3-D lighting,
+'    which softens and lightens the whole face - it came out looking like
+'    moulded plastic. The snipped top corners carry the "cut stone" idea
+'    on their own; a crisp flat fill inside a thin line is sharper than
+'    anything the bevel adds.
 '
 ' 2. THE CAPTION IS AN INSCRIPTION, NOT A LABEL.
 '    Left-aligned on a deep margin with slight tracking, the way text is
@@ -965,16 +901,14 @@ Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal finish As 
         .Transparency = 0
     End With
 
-    ' the carved lip
-    With shp.ThreeD
-        If finish = 0 Then
-            .BevelTopType = msoBevelNone          ' Reset - left rough
-        Else
-            .BevelTopType = msoBevelAngle
-            .BevelTopInset = IIf(finish >= 2, 4, 2)
-            .BevelTopDepth = IIf(finish >= 2, 3, 2)
-        End If
-    End With
+    ' NO BEVEL. It was here to give the block a carved lip, and I flagged
+    ' the risk when adding it: Excel renders a ThreeD bevel through its own
+    ' 3-D lighting, which softens and lightens the whole face. On screen it
+    ' read as moulded plastic - the Office 2007 look - which is the exact
+    ' opposite of cut stone, and it was what changed the buttons' character
+    ' for the worse. A crisp 1pt line on a flat fill is sharper and more
+    ' like masonry than any bevel Excel can draw.
+    shp.ThreeD.BevelTopType = msoBevelNone
 
     shp.Glow.Radius = 0                 ' explicitly none
     With shp.Shadow
@@ -1353,6 +1287,65 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
     SetAlt shp, ""
     On Error GoTo 0
 End Sub
+
+'=====================================================================
+' COLOUR PROBE - reads back what is ACTUALLY on the sheet.
+'
+' The sidebar keeps rendering as pale khaki when it is being painted
+' #2A241D, which is nearly black. I have guessed at the cause twice from
+' photographs and fixed two real bugs without the symptom going away, so
+' this stops guessing: run it after applying Desert and it reports what
+' Excel says the cells and shapes are, not what the code asked for.
+'
+' If the reported values ARE the palette, the paint is landing and the
+' problem is display - screen colour profile, or a phone camera's white
+' balance on a dark room. If they are not, the number it reports says
+' what is overriding them.
+'
+' Alt+F8 > DesertColourProbe.
+'=====================================================================
+Public Sub DesertColourProbe()
+    Dim ws As Worksheet, m As String, shp As Shape, n As Long
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    If ws Is Nothing Then Exit Sub
+    InitPalette
+
+    m = "EXPECTED" & vbCrLf & _
+        "  sidebar   " & Hx(cSlab) & vbCrLf & _
+        "  canvas    " & Hx(cNight) & vbCrLf & _
+        "  data row  " & Hx(cRock) & vbCrLf & vbCrLf & "ACTUAL" & vbCrLf
+
+    m = m & "  A5  fill " & Hx(ws.Range("A5").Interior.Color) & _
+            "   pattern " & ws.Range("A5").Interior.Pattern & _
+            "   tint " & Format$(ws.Range("A5").Interior.TintAndShade, "0.00") & vbCrLf
+    m = m & "  C20 fill " & Hx(ws.Range("C20").Interior.Color) & _
+            "   pattern " & ws.Range("C20").Interior.Pattern & _
+            "   tint " & Format$(ws.Range("C20").Interior.TintAndShade, "0.00") & vbCrLf
+    m = m & "  W3  fill " & Hx(ws.Range("W3").Interior.Color) & "   (canvas)" & vbCrLf
+    m = m & "  H6  fill " & Hx(ws.Range("H6").Interior.Color) & "   (data row)" & vbCrLf & vbCrLf
+
+    For Each shp In ws.Shapes
+        If Len(shp.OnAction) > 0 And n < 2 Then
+            n = n + 1
+            m = m & "  btn '" & Left$(shp.TextFrame.Characters.Text, 12) & "' fill " & _
+                Hx(shp.Fill.ForeColor.RGB) & "  line " & Hx(shp.Line.ForeColor.RGB) & _
+                "  bevel " & shp.ThreeD.BevelTopType & vbCrLf
+        End If
+    Next shp
+
+    MsgBox m, vbInformation, "Desert colour probe"
+    On Error GoTo 0
+End Sub
+
+' VBA colours are &HBBGGRR - flipped here to the #RRGGBB people read.
+Private Function Hx(ByVal c As Long) As String
+    On Error Resume Next
+    Hx = "#" & Right$("0" & Hex$(c Mod 256), 2) & _
+               Right$("0" & Hex$((c \ 256) Mod 256), 2) & _
+               Right$("0" & Hex$((c \ 65536) Mod 256), 2)
+    On Error GoTo 0
+End Function
 
 '---- helpers ---------------------------------------------------------
 Private Function GetAlt(ByVal shp As Shape) As String
