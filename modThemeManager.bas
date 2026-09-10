@@ -45,6 +45,7 @@ Option Explicit
 '=====================================================================
 Public Const THEME_NONE As String = "NONE"
 Public Const THEME_TRON As String = "TRON"
+Public Const THEME_DESERT As String = "DESERT"
 Public Const THEME_NAVY As String = "NAVYGOLD"
 
 Private Const SHEET_NAME As String = "Sheet1"
@@ -59,7 +60,7 @@ Private Const PWD As String = "p7ss"
 ' project and this workbook has a _DarkBak sheet, so its remover is worth
 ' calling; RemoveGlassStyle is listed only in case that module is ever
 ' brought back. A missing procedure is skipped silently.
-Private Const LEGACY_REMOVERS As String = "RemoveDarkCells,RemoveGlassStyle"
+Private Const LEGACY_REMOVERS As String = "RemoveDarkCells,RemoveGlassStyle,RemoveDune"
 
 ' Guards against the picker's own Worksheet_Change firing again while a
 ' theme is being applied.
@@ -91,6 +92,7 @@ Private Function ThemeRegistry() As Variant
     ThemeRegistry = Array( _
         Array(THEME_NONE, "Default (no theme)", "", "", "", ""), _
         Array(THEME_TRON, "Dark Blue", "ApplyTronLegacy", "RemoveTronLegacy", "", ""), _
+        Array(THEME_DESERT, "Desert", "ApplyDesert", "RemoveDesert", "", ""), _
         Array(THEME_NAVY, "Navy & Gold", "ApplyNavyGold", "RemoveNavyGold", _
               "StyleSearchMatrix,StyleBackendSettings", "RemoveSearchMatrixTheme") _
     )
