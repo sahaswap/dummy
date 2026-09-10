@@ -214,8 +214,6 @@ Sub ApplyTronLegacy()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Tron Legacy applied - canvas, " & n & " shape(s) and circuit traces.", _
-           vbInformation, "Tron Legacy"
 End Sub
 
 Sub RemoveTronLegacy()
@@ -252,8 +250,6 @@ Sub RemoveTronLegacy()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Tron Legacy removed; canvas and " & n & " shape(s) restored.", _
-           vbInformation, "Tron Legacy"
 End Sub
 
 '---- INHERITED-ARTEFACT CLEANUP -------------------------------------
@@ -372,15 +368,44 @@ Private Sub PurgeForeignDecor(ByVal ws As Worksheet)
 End Sub
 
 '---- CELLS -----------------------------------------------------------
+' A COMPLETE Interior reset before the colour.
+'
+' Setting .Color alone is not enough on this sheet, and that is why a
+' near-black #342D24 sidebar rendered as pale khaki. Sheet1's own
+' Worksheet_Change applies xlPatternCrissCross with ThemeColor
+' xlThemeColorDark1 and TintAndShade -0.15 to ranges here, and Navy &
+' Gold uses patterns too. Two separate leftovers then survive a plain
+' .Color assignment:
+'
+'   PATTERN blends the new colour with the pattern colour - a dark fill
+'   under a CrissCross comes out light, because most of the cell is still
+'   showing the pattern's background.
+'
+'   TINTANDSHADE is applied AFTER the colour, so a stale -0.15 silently
+'   shifts whatever you just set. It is not reset by setting .Color.
+'
+' Every cell paint in this module goes through here so neither can come
+' back.
+Private Sub PaintCells(ByVal rng As Range, ByVal clr As Long)
+    On Error Resume Next
+    With rng.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .PatternTintAndShade = 0
+        .TintAndShade = 0
+        .Color = clr
+    End With
+    On Error GoTo 0
+End Sub
+
 Private Sub ApplyCells(ByVal ws As Worksheet)
     BackupSheetRange ws, CANVAS
 
     ' 1. The Grid floor - the whole canvas goes black. Light needs dark.
+    PaintCells ws.Range(CANVAS), cVoid
     With ws.Range(CANVAS)
         ' Pattern first - see the note in modDesert. A leftover
         ' xlPatternCrissCross under a .Color assignment washes the fill out.
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cVoid
         .Font.Color = cDim
         .Borders(xlEdgeBottom).LineStyle = xlNone
         .Borders(xlInsideHorizontal).LineStyle = xlNone
@@ -388,8 +413,7 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
 
     ' 2. Sidebar slab - a shade off the floor, so it reads as a solid
     '    object rather than a hole in the background.
-    ws.Range("A1:E29").Interior.Pattern = xlSolid
-    ws.Range("A1:E29").Interior.Color = cSlab
+    PaintCells ws.Range("A1:E29"), cSlab
 
     ' 3. Data bands.
     '
@@ -416,15 +440,14 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             Set rr = ws.Range("G" & r & ":T" & r)
             rr.Font.Name = "Segoe UI"
             rr.Font.Italic = False
-            rr.Interior.Pattern = xlSolid
 
             If r = 17 Or r = 26 Then
                 ' column-header row - lit, so the table reads as a table
-                rr.Interior.Color = cSlab
+                PaintCells rr, cSlab
                 rr.Font.Color = cCyan
                 rr.Font.Bold = True
             Else
-                rr.Interior.Color = cPanel
+                PaintCells rr, cPanel
                 ws.Range("G" & r & ":I" & r).Font.Color = cDim     ' label
                 ws.Range("G" & r & ":I" & r).Font.Bold = False
                 ws.Range("J" & r & ":T" & r).Font.Color = cCore    ' value
@@ -445,9 +468,8 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     '    takes the plain ground fill and dim text and the one control that
     '    switches themes becomes the least visible thing on the sheet.
     '    Styled as a control: surface colour, lit caption.
+    PaintCells ws.Range("U28"), cSlab
     With ws.Range("U28")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cSlab
         .Font.Name = "Segoe UI": .Font.Size = 9
         .Font.Color = cCyan: .Font.Bold = True: .Font.Italic = False
         .HorizontalAlignment = xlCenter
@@ -490,9 +512,8 @@ Private Sub ApplySearchMatrix()
     ' re-asserts centre/middle across this sheet after every theme, so
     ' setting it would only be overwritten, and would imply alignment is a
     ' theme decision when it is a property of the sheet.
+    PaintCells ws.Range("A1:E" & lastRow), cPanel
     With ws.Range("A1:E" & lastRow)
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cPanel
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
         .Font.Size = 9
@@ -503,8 +524,8 @@ Private Sub ApplySearchMatrix()
     End With
 
     ' header
+    PaintCells ws.Range("A1:E1"), cSlab
     With ws.Range("A1:E1")
-        .Interior.Color = cSlab
         .Font.Color = cCyan
         .Font.Bold = True
         .Font.Size = 10
@@ -530,7 +551,7 @@ Private Sub ApplySearchMatrix()
 
         For r = 2 To lastRow
             blk = (r - 2) \ 5                       ' 0 = Customer, 1 = CP1, ...
-            ws.Range("A" & r & ":E" & r).Interior.Color = _
+            PaintCells ws.Range("A" & r & ":E" & r), _
                 IIf(blk Mod 2 = 0, cPanel, cSlab)
             With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
                 .LineStyle = xlContinuous: .Weight = xlHairline: .Color = cTrace
@@ -569,9 +590,8 @@ Private Sub ApplyBackendSettings()
 
     BackupSheetRange ws, "A1:B4"
 
+    PaintCells ws.Range("A1:B4"), cPanel
     With ws.Range("A1:B4")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cPanel
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
         .Font.Color = cCore
@@ -585,9 +605,8 @@ Private Sub ApplyBackendSettings()
     ' centre/middle on this block after every theme, so setting it in the
     ' theme would only be overwritten - and would give the false
     ' impression that alignment is a theme decision.
+    PaintCells ws.Range("A1:B1"), cSlab
     With ws.Range("A1:B1")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cSlab
         .Font.Color = cCyan
         .Font.Bold = True
         .Font.Size = 11
@@ -1162,6 +1181,16 @@ Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal halo As Lo
             .Size = 9
             .Color = cCore
         End With
+        ' Centred EXPLICITLY, not by inheritance. Desert left-aligns its
+        ' captions, so a theme that simply left alignment alone would show
+        ' Desert's left-aligned text after a switch. Stating it here means
+        ' the two themes cannot bleed into each other whichever order they
+        ' are applied in. Chamfers on opposite corners are a symmetrical
+        ' figure and want a centred caption anyway.
+        On Error Resume Next
+        shp.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        shp.TextFrame2.MarginLeft = 4
+        On Error Resume Next
         ' No text glow at 9pt - see the note on the GLOW_ constants. The
         ' caption has to stay readable; the halo around the shape is what
         ' makes the button look lit.

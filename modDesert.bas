@@ -183,8 +183,7 @@ Sub ApplyDesert()
     ' was behind. The light well and the ridge went with them: all three
     ' were set dressing competing with the only things on this sidebar
     ' anyone actually uses. What is left is the buttons.
-    AddGroupCards ws
-    AddSunDisc ws                    ' the one circular motif
+    AddSidebarPlinth ws              ' stepped base, clear of the button stack
     AddBadgeRules ws                 ' after the badges are styled
     AddBannerMarks ws                ' chapter ticks, after the banners are styled
     AddDesertTitle ws, titleText
@@ -199,8 +198,6 @@ Sub ApplyDesert()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Desert applied - canvas and " & n & " shape(s).", _
-           vbInformation, "Desert"
 End Sub
 
 Sub RemoveDesert()
@@ -238,8 +235,6 @@ Sub RemoveDesert()
     If wasProt Then ws.Protect Password:="p7ss"
     If wbProt Then ThisWorkbook.Protect Password:="p7ss", Structure:=True
     Application.ScreenUpdating = True
-    MsgBox "Desert removed; canvas and " & n & " shape(s) restored.", _
-           vbInformation, "Desert"
 End Sub
 
 '---- INHERITED-ARTEFACT CLEANUP -------------------------------------
@@ -336,9 +331,40 @@ Private Sub RemoveAdded(ByVal ws As Worksheet)
 End Sub
 
 '---- CELLS -----------------------------------------------------------
+' A COMPLETE Interior reset before the colour.
+'
+' Setting .Color alone is not enough on this sheet, and that is why a
+' near-black #342D24 sidebar rendered as pale khaki. Sheet1's own
+' Worksheet_Change applies xlPatternCrissCross with ThemeColor
+' xlThemeColorDark1 and TintAndShade -0.15 to ranges here, and Navy &
+' Gold uses patterns too. Two separate leftovers then survive a plain
+' .Color assignment:
+'
+'   PATTERN blends the new colour with the pattern colour - a dark fill
+'   under a CrissCross comes out light, because most of the cell is still
+'   showing the pattern's background.
+'
+'   TINTANDSHADE is applied AFTER the colour, so a stale -0.15 silently
+'   shifts whatever you just set. It is not reset by setting .Color.
+'
+' Every cell paint in this module goes through here so neither can come
+' back.
+Private Sub PaintCells(ByVal rng As Range, ByVal clr As Long)
+    On Error Resume Next
+    With rng.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .PatternTintAndShade = 0
+        .TintAndShade = 0
+        .Color = clr
+    End With
+    On Error GoTo 0
+End Sub
+
 Private Sub ApplyCells(ByVal ws As Worksheet)
     BackupSheetRange ws, CANVAS
 
+    PaintCells ws.Range(CANVAS), cNight
     With ws.Range(CANVAS)
         ' Pattern FIRST, every time. Setting .Color while a pattern is
         ' still active blends the new colour with the pattern colour, and
@@ -346,19 +372,16 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
         ' khaki - which is exactly how this sheet rendered. Navy & Gold
         ' and Sheet1's own Worksheet_Change both apply xlPatternCrissCross
         ' to ranges here, so there is always a pattern to inherit.
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cNight
         .Font.Color = cSand
         .Borders(xlEdgeBottom).LineStyle = xlNone
         .Borders(xlInsideHorizontal).LineStyle = xlNone
     End With
 
     ' the dune face, crest to slipface
-    ws.Range("A1:E29").Interior.Pattern = xlSolid
-    ws.Range("A1:E6").Interior.Color = cFace1
-    ws.Range("A7:E14").Interior.Color = cFace2
-    ws.Range("A15:E22").Interior.Color = cFace3
-    ws.Range("A23:E29").Interior.Color = cFace4
+    PaintCells ws.Range("A1:E6"), cFace1
+    PaintCells ws.Range("A7:E14"), cFace2
+    PaintCells ws.Range("A15:E22"), cFace3
+    PaintCells ws.Range("A23:E29"), cFace4
 
     ' Data bands follow Sheet1's own merge map: every row is G:I label +
     ' J:T value. Labels sit back in sand, values come forward in bone.
@@ -371,14 +394,13 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
             Set rr = ws.Range("G" & r & ":T" & r)
             rr.Font.Name = "Segoe UI"
             rr.Font.Italic = False
-            rr.Interior.Pattern = xlSolid
 
             If r = 17 Or r = 26 Then
-                rr.Interior.Color = cSlab
+                PaintCells rr, cSlab
                 rr.Font.Color = cSand
                 rr.Font.Bold = True
             Else
-                rr.Interior.Color = cRock
+                PaintCells rr, cRock
                 ws.Range("G" & r & ":I" & r).Font.Color = cStone     ' label
                 ws.Range("G" & r & ":I" & r).Font.Bold = False
                 ws.Range("J" & r & ":T" & r).Font.Color = cBone      ' value
@@ -393,9 +415,8 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     ' The theme picker. It sits inside CANVAS, so without this the one
     ' control that switches themes takes the plain ground fill and
     ' becomes the least visible thing on the sheet.
+    PaintCells ws.Range("U28"), cSlab
     With ws.Range("U28")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cSlab
         .Font.Name = "Segoe UI": .Font.Size = 9
         .Font.Color = cSand: .Font.Bold = True: .Font.Italic = False
         .Borders.LineStyle = xlContinuous
@@ -424,9 +445,8 @@ Private Sub ApplySearchMatrix()
 
     BackupSheetRange ws, "A1:E" & lastRow
 
+    PaintCells ws.Range("A1:E" & lastRow), cRock
     With ws.Range("A1:E" & lastRow)
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cRock
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
         .Font.Size = 9
@@ -436,8 +456,8 @@ Private Sub ApplySearchMatrix()
         .WrapText = False
     End With
 
+    PaintCells ws.Range("A1:E1"), cSlab
     With ws.Range("A1:E1")
-        .Interior.Color = cSlab
         .Font.Color = cSand
         .Font.Bold = True
         .Font.Size = 10
@@ -465,7 +485,7 @@ Private Sub ApplySearchMatrix()
         ' entity per block, so row striping would fight the grouping.
         For r = 2 To lastRow
             blk = (r - 2) \ 5
-            ws.Range("A" & r & ":E" & r).Interior.Color = _
+            PaintCells ws.Range("A" & r & ":E" & r), _
                 IIf(blk Mod 2 = 0, cRock, cSlab)
             With ws.Range("A" & r & ":E" & r).Borders(xlEdgeBottom)
                 .LineStyle = xlContinuous: .Weight = xlHairline: .Color = cSeam
@@ -496,9 +516,8 @@ Private Sub ApplyBackendSettings()
 
     BackupSheetRange ws, "A1:B4"
 
+    PaintCells ws.Range("A1:B4"), cRock
     With ws.Range("A1:B4")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cRock
         .Borders.LineStyle = xlNone
         .Font.Name = "Segoe UI"
         .Font.Color = cBone
@@ -508,9 +527,8 @@ Private Sub ApplyBackendSettings()
         .WrapText = False
     End With
 
+    PaintCells ws.Range("A1:B1"), cSlab
     With ws.Range("A1:B1")
-        .Interior.Pattern = xlSolid
-        .Interior.Color = cSlab
         .Font.Color = cSand
         .Font.Bold = True
         .Font.Size = 11
@@ -613,142 +631,55 @@ Private Sub AddBannerMarks(ByVal ws As Worksheet)
 End Sub
 
 
-' The one circular motif - the sun, or the eclipse the film opens on.
-' An outline only, at low contrast, sitting behind the title. It is
-' texture rather than ornament: you should notice it second, not first.
-' TWO concentric rings, not one.
+'=====================================================================
+' THE PLINTH - the stepped base the whole sidebar stands on.
 '
-' Carlo Scarpa is the last name on Vermette's reference list, and he is
-' there for the detailing rather than the mass: Scarpa's signature is the
-' stepped concentric recess, the same profile repeated at a small offset.
-' A single ring is a circle; two rings at an offset is a detail, and it
-' rhymes with the stepped plinths under the cards - which is what turns a
-' set of separate motifs into one vocabulary.
-Private Sub AddSunDisc(ByVal ws As Worksheet)
+' A ziggurat is the first name on Vermette's reference list, and it is
+' the one form Excel can draw exactly, because it is only stacked
+' rectangles set back from a wide base.
+'
+' An earlier pass put a three-step plinth under each button GROUP, which
+' was wrong twice over. Architecturally, a ziggurat's base sits at the
+' bottom of the structure - not floating halfway up it. And practically,
+' the card those steps hung off ended at row 14, which is exactly where
+' the last button of the action group ends, so the steps were drawn
+' behind "Generate Narrative" and were mostly invisible.
+'
+' One plinth, at the foot of the sidebar in rows 28-29, where the button
+' stack has already finished and nothing can cover it.
+'=====================================================================
+Private Sub AddSidebarPlinth(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim d As Single, x As Single, y As Single
-    d = 46
-    x = ws.Range("A1").Left + (ws.Range("A1:E1").Width - d) / 2
-    y = ws.Range("A1").Top + 2
-    SunRing ws, x, y, d, 1#, 0.55, "SUN1"
-    SunRing ws, x + 5, y + 5, d - 10, 0.75, 0.72, "SUN2"
-    On Error GoTo 0
-End Sub
+    Dim x0 As Single, w As Single, yBase As Single
+    Dim k As Long, bw As Single, shp As Shape
+    Const H As Single = 3
 
-Private Sub SunRing(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, _
-                    ByVal d As Single, ByVal wt As Single, ByVal trans As Single, _
-                    ByVal nm As String)
-    On Error Resume Next
-    Dim shp As Shape
-    Set shp = ws.Shapes.AddShape(msoShapeOval, x, y, d, d)
-    If shp Is Nothing Then Exit Sub
-    shp.Name = ADD_PFX & nm
-    shp.Fill.Visible = msoFalse
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cStone
-        .Weight = wt
-        .Transparency = trans
-    End With
-    shp.Shadow.Visible = msoFalse
-    shp.Glow.Radius = 0
-    shp.Placement = xlFreeFloating
-    shp.ZOrder msoSendToBack
-    On Error GoTo 0
-End Sub
+    x0 = ws.Range("A1").Left
+    w = ws.Range("A1:E1").Width
+    yBase = ws.Range("A29").Top + ws.Range("A29").Height
 
-'---- GROUP CARDS -----------------------------------------------------
-' Anchored to the badge SHAPE - top = badge.Top + badge.Height + 5 - so
-' the card starts below its badge and encloses only the buttons. A
-' hardcoded row would put the card's top on the badge's own row and wrap
-' it around the badge. Transparent fill: a boundary, not a panel.
-Private Sub AddGroupCards(ByVal ws As Worksheet)
-    On Error Resume Next
-    AddOneCard ws, FindBadge(ws, "ACTION"), "A5", "A14", "ACT"
-    AddOneCard ws, FindBadge(ws, "UTILITY"), "A18", "A27", "UTL"
-    On Error GoTo 0
-End Sub
-
-Private Function FindBadge(ByVal ws As Worksheet, ByVal key As String) As Shape
-    On Error Resume Next
-    Dim shp As Shape, t As String
-    For Each shp In ws.Shapes
-        If Len(shp.OnAction) = 0 And Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-            t = ""
-            If shp.TextFrame.HasText Then t = shp.TextFrame.Characters.Text
-            If InStr(1, t, key, vbTextCompare) > 0 Then Set FindBadge = shp: Exit For
-        End If
-    Next shp
-    On Error GoTo 0
-End Function
-
-Private Sub AddOneCard(ByVal ws As Worksheet, ByVal badge As Shape, _
-                       ByVal fallbackTop As String, ByVal botCell As String, _
-                       ByVal tag As String)
-    On Error Resume Next
-    Dim shp As Shape, x As Single, w As Single, y As Single, h As Single
-    x = ws.Range("A1").Left + 10
-    w = ws.Range("A1:E1").Width - 20
-
-    If Not badge Is Nothing Then
-        y = badge.Top + badge.Height + 5
-    Else
-        y = ws.Range(fallbackTop).Top - 1
-    End If
-    h = (ws.Range(botCell).Top + ws.Range(botCell).Height) - y + 1
-    If h < 10 Then Exit Sub
-
-    Set shp = ws.Shapes.AddShape(SHP_SLAB, x, y, w, h)
-    If shp Is Nothing Then Exit Sub
-    shp.Name = ADD_PFX & "CARD_" & tag
-    shp.Fill.Visible = msoFalse
-    With shp.Line
-        .Visible = msoTrue
-        .ForeColor.RGB = cSeam
-        .Weight = 1#
-    End With
-    shp.Shadow.Visible = msoFalse
-    shp.ZOrder msoSendToBack
-
-    ' A STEPPED PLINTH, not a single drift line.
-    '
-    ' The top reference on Vermette's own list is the ziggurat, and the
-    ' first pass used none of it. A ziggurat is not a taper - it is
-    ' discrete tiers set back from a wide base, and that is a form Excel
-    ' can draw exactly, because it is just stacked rectangles.
-    '
-    ' Three bars of decreasing width at the foot of each card. It reads as
-    ' the structure standing on a built base rather than floating in a
-    ' hairline box, and it is the same silhouette at 6pt that the
-    ' architecture has at 60 metres.
-    Dim k As Long, bw As Single, bh As Single
-    bh = 2
+    ' widest tier at the bottom, each one set back above it
     For k = 0 To 2
-        Dim step_ As Shape, frac As Single
-        frac = 1# - k * 0.18
-        bw = (w - 6) * frac
-        Set step_ = ws.Shapes.AddShape(SHP_SLAB, _
-                        x + (w - bw) / 2, y + h - 2 - (k * bh), bw, bh)
-        If Not step_ Is Nothing Then
-            step_.Name = ADD_PFX & "PLINTH_" & tag & k
-            With step_.Fill
+        bw = w * (0.9 - k * 0.17)
+        Set shp = ws.Shapes.AddShape(SHP_SLAB, _
+                      x0 + (w - bw) / 2, yBase - H - (k * H), bw, H)
+        If Not shp Is Nothing Then
+            shp.Name = ADD_PFX & "PLINTH" & k
+            With shp.Fill
                 .Visible = msoTrue: .Solid
                 .ForeColor.RGB = cStone
-                .Transparency = 0.4 + k * 0.15      ' fades as it rises
+                .Transparency = 0.35 + k * 0.15     ' fades as it rises
             End With
-            step_.Line.Visible = msoFalse
-            step_.Shadow.Visible = msoFalse
-            step_.Placement = xlFreeFloating
-            step_.ZOrder msoSendToBack
+            shp.Line.Visible = msoFalse
+            shp.Shadow.Visible = msoFalse
+            shp.Glow.Radius = 0
+            shp.Placement = xlFreeFloating
+            shp.ZOrder msoSendToBack
         End If
     Next k
     On Error GoTo 0
 End Sub
 
-'---- TITLE -----------------------------------------------------------
-' Set the way the film sets its title cards: wide tracking, no box, a
-' hairline rule beneath it and a lot of air. No glow - the letters are
-' carved, not lit.
 Private Sub AddDesertTitle(ByVal ws As Worksheet, ByVal caption As String)
     On Error Resume Next
     Dim shp As Shape, badge As Shape
@@ -879,12 +810,18 @@ End Function
 '    which is the exact opposite of carved masonry.
 '
 ' 2. THE CAPTION IS AN INSCRIPTION, NOT A LABEL.
-'    Left-aligned with a deep margin and slight tracking, the way text is
-'    cut into a lintel. This is also the more USEFUL choice: eight
+'    Left-aligned on a deep margin with slight tracking, the way text is
+'    cut into a lintel. It is also the more useful arrangement: eight
 '    centred captions of different widths give eight different starting
-'    points, and the eye has to re-find the line on every row. Aligned
-'    left, they form one vertical edge and the stack scans in a single
-'    pass. Better looking and faster to read is not a trade.
+'    points, and the eye re-finds the line on every row, where aligning
+'    them left forms one vertical edge and the stack scans in a single
+'    pass.
+'
+'    This is DESERT ONLY. Dark Blue keeps its captions centred - that
+'    theme's buttons are chamfered on opposite corners, which is a
+'    symmetrical figure, and a left-aligned caption inside a symmetrical
+'    block reads as a mistake rather than a decision. The alignment
+'    follows the shape, so the two themes differ on purpose.
 '
 ' 3. HIERARCHY BY DEGREE OF FINISH.
 '    Not just colour. Start is the most finished block - deepest cut,
@@ -1227,11 +1164,25 @@ Private Sub StashOriginal(ByVal shp As Shape)
         End With
     End If
 
+    ' Field 14 is the paragraph alignment. Desert is the only theme that
+    ' CHANGES alignment - it left-aligns button captions - so it is the
+    ' only one that has to be able to put it back. Without this, removing
+    ' Desert or switching to Dark Blue would leave every caption stranded
+    ' on the left, because nothing else on the sheet ever sets it.
+    '
+    ' Appending rather than inserting keeps older stashes readable: the
+    ' restore below only reads field 14 when it is actually present.
+    Dim al As Long
+    al = msoAlignCenter
+    On Error Resume Next
+    al = shp.TextFrame2.TextRange.ParagraphFormat.Alignment
+    On Error Resume Next
+
     Dim s As String
     s = TAG & shp.AutoShapeType & "|" & shp.Fill.Visible & "|" & _
         shp.Fill.ForeColor.RGB & "|" & CLng(shp.Fill.Transparency * 1000) & "|" & _
         shp.Line.Visible & "|" & shp.Line.ForeColor.RGB & "|" & CLng(shp.Line.Weight * 100) & "|" & _
-        ht & "|" & fn & "|" & CLng(fs * 10) & "|" & fb & "|" & fi & "|" & fc
+        ht & "|" & fn & "|" & CLng(fs * 10) & "|" & fb & "|" & fi & "|" & fc & "|" & al
     SetAlt shp, s
     On Error GoTo 0
 End Sub
@@ -1274,6 +1225,13 @@ Private Sub RestoreOriginal(ByVal shp As Shape)
                 .Color = CLng(p(13))
             End With
         End If
+    End If
+
+    ' field 14 - only present on stashes written since alignment was added
+    If UBound(p) >= 14 Then
+        On Error Resume Next
+        shp.TextFrame2.TextRange.ParagraphFormat.Alignment = CLng(p(14))
+        On Error Resume Next
     End If
 
     SetAlt shp, ""

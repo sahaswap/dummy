@@ -34,6 +34,24 @@ Private Function TEXTCLR() As Long:    TEXTCLR = RGB(37, 37, 37):     End Functi
 Private Function TEXT2() As Long:      TEXT2 = RGB(107, 107, 107):    End Function   ' #6B6B6B
 Private Function WARMBORDER() As Long: WARMBORDER = RGB(217, 212, 200): End Function ' #D9D4C8
 
+' Silent when the theme manager is driving, chatty when you run these
+' macros by hand.
+'
+' Switching themes used to raise a dialog from every routine involved -
+' the two stylers here, the remover, plus the theme modules - and each
+' one blocked the next until it was dismissed. These macros are still
+' useful standalone, so the announcements are not deleted, only gated.
+'
+' Application.Run rather than a qualified call: if modThemeManager is not
+' installed, or was pasted in under a different module name, this simply
+' fails and returns False, and the macros behave exactly as they always
+' did.
+Private Function Quiet() As Boolean
+    On Error Resume Next
+    Quiet = CBool(Application.Run("ThemeIsQuiet"))
+    On Error GoTo 0
+End Function
+
 Sub StyleSearchMatrix()
     Dim ws As Worksheet, r As Long, lastRow As Long, blk As Long
     On Error GoTo Fail
@@ -155,7 +173,7 @@ Sub StyleSearchMatrix()
 
     If wasProt Then ws.Protect Password:="p7ss"
     Application.ScreenUpdating = True
-    MsgBox "Search Matrix restyled to match Sheet1 (Navy & Gold).", vbInformation, "Theme applied"
+    If Not Quiet() Then MsgBox "Search Matrix restyled to match Sheet1 (Navy & Gold).", vbInformation, "Theme applied"
     Exit Sub
 
 Fail:
@@ -197,9 +215,94 @@ Sub RemoveSearchMatrixTheme()
 
     If wasProt Then ws.Protect Password:="p7ss"
     Application.ScreenUpdating = True
-    MsgBox "Search Matrix theme removed (reset to plain).", vbInformation
+    If Not Quiet() Then MsgBox "Search Matrix theme removed (reset to plain).", vbInformation
     Exit Sub
 Fail:
     Application.ScreenUpdating = True
     MsgBox "RemoveSearchMatrixTheme failed: " & Err.Description, vbCritical
+End Sub
+
+
+'=====================================================================
+' StyleBackendSettings - same Navy & Gold thematics for the tiny
+' Backend_Settings config sheet, and hide the unused Flow_1 row.
+'
+' Flow_1 (row 3) is HIDDEN, not deleted: Module10 reads the PAD merge
+' URL from B4, so deleting row 3 would shift Flow_Merge up to B3 and
+' break the merge button. Hiding leaves B4 exactly where it is.
+'=====================================================================
+Sub StyleBackendSettings()
+    Dim ws As Worksheet
+    On Error GoTo Fail
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets("Backend_Settings")
+    On Error GoTo Fail
+    If ws Is Nothing Then MsgBox "Backend_Settings sheet not found.", vbCritical: Exit Sub
+
+    Dim wasProt As Boolean
+    On Error Resume Next
+    wasProt = ws.ProtectContents
+    ws.Unprotect Password:="p7ss"
+    On Error GoTo Fail
+
+    Application.ScreenUpdating = False
+
+    ' Hide the unused Flow_1 row (keeps Flow_Merge at B4 - do NOT delete).
+    ws.Rows(3).Hidden = True
+
+    ' base look for the whole visible block
+    With ws.Range("A1:B4")
+        .Interior.Color = WARMWHITE
+        .Borders.LineStyle = xlNone
+        .Font.Name = "Segoe UI"
+        .Font.Color = TEXTCLR
+        .Font.Size = 10
+        .Font.Bold = False
+        .Font.Italic = False
+        .VerticalAlignment = xlCenter
+        .WrapText = False
+    End With
+
+    ' Title bar (row 1) - navy fill, gold text, like the other sheets.
+    ws.Range("A1").Value = "Backend Settings"
+    With ws.Range("A1:B1")
+        .Interior.Color = NAVY
+        .Font.Color = GOLD
+        .Font.Bold = True
+        .Font.Size = 11
+        .HorizontalAlignment = xlLeft
+    End With
+    ws.Rows(1).RowHeight = 22
+    With ws.Range("A1:B1").Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous: .Weight = xlMedium: .Color = GOLD
+    End With
+
+    ' Setting row (row 4): key = navy bold on pearl, value = body on warm white.
+    With ws.Range("A4")
+        .Font.Bold = True: .Font.Color = NAVY_DEEP
+        .Interior.Color = PEARL
+        .HorizontalAlignment = xlLeft
+    End With
+    ws.Range("B4").HorizontalAlignment = xlLeft
+
+    ' gold frame around the visible block (hidden row 3 just doesn't show)
+    With ws.Range("A1:B4")
+        .Borders(xlEdgeLeft).LineStyle = xlContinuous: .Borders(xlEdgeLeft).Weight = xlThin: .Borders(xlEdgeLeft).Color = GOLD
+        .Borders(xlEdgeRight).LineStyle = xlContinuous: .Borders(xlEdgeRight).Weight = xlThin: .Borders(xlEdgeRight).Color = GOLD
+        .Borders(xlEdgeTop).LineStyle = xlContinuous: .Borders(xlEdgeTop).Weight = xlMedium: .Borders(xlEdgeTop).Color = GOLD
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous: .Borders(xlEdgeBottom).Weight = xlMedium: .Borders(xlEdgeBottom).Color = GOLD
+    End With
+
+    On Error Resume Next
+    ws.Activate
+    ActiveWindow.DisplayGridlines = False
+    On Error GoTo Fail
+
+    If wasProt Then ws.Protect Password:="p7ss"
+    Application.ScreenUpdating = True
+    If Not Quiet() Then MsgBox "Backend_Settings restyled (Navy & Gold); Flow_1 row hidden.", vbInformation, "Theme applied"
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "StyleBackendSettings failed: " & Err.Description, vbCritical
 End Sub

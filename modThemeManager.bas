@@ -66,6 +66,25 @@ Private Const LEGACY_REMOVERS As String = "RemoveDarkCells,RemoveGlassStyle,Remo
 ' theme is being applied.
 Private busy As Boolean
 
+' SEAMLESS SWITCHING.
+'
+' One theme change used to raise up to SEVEN dialogs: ClearTheme sweeps
+' every remover in the registry and each announced itself, then the apply
+' announced itself, then Navy & Gold's two companion stylers announced
+' themselves. Every one of them needed an OK before the next could run.
+'
+' Success messages are noise here anyway - the picker cell already shows
+' which theme is active, which is better confirmation than a dialog you
+' dismiss and forget. So while the manager is driving, theme modules stay
+' silent and progress goes to the status bar, which does not block.
+'
+' FAILURES still raise a dialog. Silence on success, never on error.
+Private quietMode As Boolean
+
+Public Function ThemeIsQuiet() As Boolean
+    ThemeIsQuiet = quietMode
+End Function
+
 '=====================================================================
 ' THE REGISTRY - the single place that knows what themes exist.
 '
@@ -208,6 +227,9 @@ End Sub
 Public Sub ApplyThemeByKey(ByVal key As String)
     If busy Then Exit Sub
     busy = True
+    quietMode = True
+    Application.ScreenUpdating = False
+    Application.StatusBar = "Applying theme..."
 
     Dim reg As Variant, i As Long, applyProc As String, extraApply As String
     reg = ThemeRegistry()
@@ -228,6 +250,9 @@ Public Sub ApplyThemeByKey(ByVal key As String)
         Application.Run applyProc
         If Err.Number <> 0 Then
             busy = False
+            quietMode = False
+            Application.ScreenUpdating = True
+            Application.StatusBar = False
             MsgBox "Could not apply that theme: " & Err.Description & vbCrLf & vbCrLf & _
                    "Its module may not be installed in this workbook.", _
                    vbExclamation, "Theme Manager"
@@ -249,6 +274,10 @@ Public Sub ApplyThemeByKey(ByVal key As String)
 
     SetActiveTheme key
     SyncPicker key
+
+    quietMode = False
+    Application.ScreenUpdating = True
+    Application.StatusBar = False        ' hand the status bar back to Excel
     busy = False
 End Sub
 
@@ -258,8 +287,6 @@ Sub ApplyNavyGold_Safe(): ApplyThemeByKey THEME_NAVY:  End Sub
 
 Sub RemoveActiveTheme()
     ApplyThemeByKey THEME_NONE
-    MsgBox "Theme removed. " & SHEET_NAME & " is back to its baseline look.", _
-           vbInformation, "Theme Manager"
 End Sub
 
 '---- clear ----------------------------------------------------------
