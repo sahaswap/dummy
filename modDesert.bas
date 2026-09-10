@@ -110,7 +110,13 @@ Private Sub InitPalette()
     cStone = RGB(140, 111, 82)     ' #8C6F52  sandstone - button edges
     cSand = RGB(201, 178, 138)     ' #C9B28A  secondary text
     cBone = RGB(237, 225, 200)     ' #EDE1C8  primary text, Start
-    cOxide = RGB(163, 74, 42)      ' #A34A2A  Reset - muted, not risk-red
+    ' Reset is bright, not muted. It was #A34A2A - a dull rust chosen to
+    ' stay well clear of the reds the risk-class conditional formatting
+    ' owns. Too far: against a warm sand palette a dark warm red does not
+    ' register as an accent at all, it just looks like another brown. This
+    ' is luminous enough to read as a signal, and still an ORANGE rather
+    ' than the saturated reds used for High and Prohibited risk.
+    cOxide = RGB(226, 112, 58)     ' #E2703A  Reset
 
     ' The rail sits ABOVE the ground and BELOW the shapes on it. Painting
     ' it the same as the canvas made the sidebar vanish as a region - the
@@ -161,7 +167,7 @@ Sub ApplyDesert()
             Select Case ShapeRole(shp)
                 Case "TITLE":     StyleTitle shp
                 Case "PRIMARY":   StyleButton shp, cBone, 2       ' most finished
-                Case "DANGER":    StyleButton shp, cOxide, 0      ' left raw
+                Case "DANGER":    StyleButton shp, cOxide, 2      ' emphasised, like Start
                 Case "BUTTON":    StyleButton shp, cStone, 1
                 Case "BADGE":     StyleBadge shp
                 Case Else:        StyleBanner shp
@@ -929,27 +935,27 @@ End Function
 '    on their own; a crisp flat fill inside a thin line is sharper than
 '    anything the bevel adds.
 '
-' 2. THE CAPTION IS AN INSCRIPTION, NOT A LABEL.
-'    Left-aligned on a deep margin with slight tracking, the way text is
-'    cut into a lintel. It is also the more useful arrangement: eight
-'    centred captions of different widths give eight different starting
-'    points, and the eye re-finds the line on every row, where aligning
-'    them left forms one vertical edge and the stack scans in a single
-'    pass.
+' 2. CENTRED CAPTIONS, WITH SLIGHT TRACKING.
+'    An earlier pass left-aligned these on a deep margin, arguing that
+'    eight captions sharing one vertical edge scan faster than eight
+'    centred ones of different widths. On screen it did not hold: these
+'    buttons are wide relative to their captions, so short ones like
+'    "Start" ended up marooned at the far left of a block with a
+'    hand-span of empty stone after them. Centred, matching Dark Blue.
+'    The tracking stays - that is what gives the caption its cut-in-stone
+'    feel without having to move it.
 '
-'    This is DESERT ONLY. Dark Blue keeps its captions centred - that
-'    theme's buttons are chamfered on opposite corners, which is a
-'    symmetrical figure, and a left-aligned caption inside a symmetrical
-'    block reads as a mistake rather than a decision. The alignment
-'    follows the shape, so the two themes differ on purpose.
+' 3. TWO CONSEQUENTIAL CONTROLS, BOTH LIT.
+'    Start and Reset are the only two buttons that do something you
+'    cannot casually undo, so both get the same emphasis - deeper cut,
+'    double-weight edge, bold caption in their own colour - and differ
+'    only in hue: bone for Start, orange for Reset. The other six recede
+'    to a thin sandstone line with a sand caption.
 '
-' 3. HIERARCHY BY DEGREE OF FINISH.
-'    Not just colour. Start is the most finished block - deepest cut,
-'    fullest bevel, bone edge. The ordinary buttons are cut and lightly
-'    bevelled. Reset is left RAW: same stone, no bevel at all, the one
-'    unworked block in the wall. So the destructive control is set apart
-'    by form as well as by its oxide edge, and it stays distinguishable
-'    even to someone who cannot separate the two warm colours.
+'    An earlier pass gave Reset the OPPOSITE treatment, leaving it
+'    deliberately unfinished as "the one unworked block". That read as an
+'    afterthought rather than a warning: the single most destructive
+'    control on the sheet was also the quietest thing on it.
 '=====================================================================
 Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal finish As Long)
     On Error Resume Next
@@ -998,9 +1004,9 @@ Private Sub StyleButton(ByVal shp As Shape, ByVal edge As Long, ByVal finish As 
             .Color = IIf(finish >= 2, edge, cSand)
         End With
         With shp.TextFrame2
-            .TextRange.ParagraphFormat.Alignment = msoAlignLeft
+            .TextRange.ParagraphFormat.Alignment = msoAlignCenter
             .VerticalAnchor = msoAnchorMiddle
-            .MarginLeft = 11
+            .MarginLeft = 4
             .MarginRight = 4
             .WordWrap = msoFalse
             .TextRange.Font.Spacing = 1.2
