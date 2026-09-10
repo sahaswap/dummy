@@ -96,6 +96,7 @@ Private cStone As Long         ' ordinary button edge
 Private cSand As Long          ' secondary text, strata highs
 Private cBone As Long          ' primary text, Start
 Private cOxide As Long         ' Reset only
+Private cRail As Long          ' the sidebar panel
 
 
 Private Sub InitPalette()
@@ -110,6 +111,13 @@ Private Sub InitPalette()
     cSand = RGB(201, 178, 138)     ' #C9B28A  secondary text
     cBone = RGB(237, 225, 200)     ' #EDE1C8  primary text, Start
     cOxide = RGB(163, 74, 42)      ' #A34A2A  Reset - muted, not risk-red
+
+    ' The rail sits ABOVE the ground and BELOW the shapes on it. Painting
+    ' it the same as the canvas made the sidebar vanish as a region - the
+    ' buttons floated on the same surface as the data area and the panel
+    ' effect went with it. One value, distinct, and nowhere near the
+    ' #342D24 crest that made it read as a pale slab.
+    cRail = RGB(31, 26, 21)        ' #1F1A15  sidebar panel
 
 End Sub
 
@@ -169,8 +177,8 @@ Sub ApplyDesert()
     ' were set dressing competing with the only things on this sidebar
     ' anyone actually uses. What is left is the buttons.
     TightenUtilityGap ws             ' close Navy & Gold's inherited dead space
-    AddMoon ws                       ' sizes itself to the space left
     AddBadgeRules ws                 ' after the badges are styled
+    AddMoon ws                       ' before the title, so the type sits on top
     AddBannerMarks ws                ' chapter ticks, after the banners are styled
     AddDesertTitle ws, titleText
 
@@ -365,27 +373,21 @@ Private Sub ApplyCells(ByVal ws As Worksheet)
     End With
 
     ' the dune face, crest to slipface
-    ' THE RAIL RECEDES. One flat colour, and DARKER than the data rows.
+    ' ONE flat rail colour - a distinct panel, but not a gradient.
     '
-    ' Two faults were stacked here. Four stepped fills were meant to read
-    ' as a dune face turning into the light, but their boundaries fell at
-    ' rows 6/7, 14/15 and 22/23 - fixed rows that line up with nothing, so
-    ' on screen they were three hard seams cutting across the button stack
-    ' at arbitrary points. A gradient you cannot align to the content is
-    ' just banding.
+    ' Three versions got here. Four stepped fills were meant to read as a
+    ' dune face turning into the light, but their boundaries fell at rows
+    ' 6/7, 14/15 and 22/23 - fixed rows that align with nothing, so they
+    ' showed as hard seams cutting across the button stack. And the
+    ' lightest step (#342D24) sat at the TOP, where the eye lands first,
+    ' which is what made the rail read as a pale slab.
     '
-    ' Worse, the lightest of those steps (#342D24) sat at the TOP, which
-    ' is where the eye lands first - so the sidebar read as a pale slab
-    ' dominating the sheet. A probe of the live workbook confirmed the
-    ' paint was landing exactly as specified; the value was simply wrong.
+    ' Flattening it to the ground colour then over-corrected: the sidebar
+    ' stopped being a region at all and the buttons floated on the same
+    ' surface as the data area.
     '
-    ' The rail now takes the ground colour. A navigation rail should sit
-    ' BEHIND the content it launches, not in front of it, and here that
-    ' means the darkest tone on the sheet, not a raised panel. The region
-    ' is defined by the buttons and labels standing on it - which is also
-    ' the more monolithic reading, and the data bands are then the only
-    ' thing that lifts off the ground.
-    PaintCells ws.Range("A1:E29"), cNight
+    ' So: one value, clearly a panel, nowhere near the old crest.
+    PaintCells ws.Range("A1:E29"), cRail
 
     ' Data bands follow Sheet1's own merge map: every row is G:I label +
     ' J:T value. Labels sit back in sand, values come forward in bone.
@@ -735,53 +737,31 @@ Private Sub UndoShift(ByVal ws As Worksheet)
 End Sub
 
 '=====================================================================
-' THE MOON - two concentric rings, in whatever space is actually free.
+' THE MOON - two concentric rings behind the title.
 '
-' Twice placed badly. Behind the title it crossed "Beta 3.6.2", because a
-' ring and a line of type in the same space is interference, not
-' layering. Moved to the foot of the sidebar it was given a fixed 54pt
-' diameter centred on row 29 - so half of it spilled past the rail onto
+' Back where it started, and where it belongs. I moved it to the foot of
+' the sidebar on the argument that a ring crossing "Beta 3.6.2" was
+' interference rather than layering. That reasoning was wrong about this
+' case: the rings are thin and heavily transparent, the title is short
+' and widely tracked, and the type reads through the arc rather than
+' fighting it - a disc behind a title is a device, not a collision.
+'
+' At the foot of the rail it was worse in every way: a fixed 54pt
+' diameter centred on row 29 spilled half its width past the panel onto
 ' the canvas and read as a clipped oval.
-'
-' Both failures were the same mistake: a fixed size dropped at a fixed
-' point, with no regard for how much room was there. This measures the
-' gap between the lowest button and the bottom of the rail and fits
-' itself inside it. If the button stack grows and the gap closes, the
-' moon simply is not drawn - which is the correct behaviour, and far
-' better than drawing it half off the edge.
 '
 ' Two rings at a step rather than one circle: the Carlo Scarpa detail
 ' from Vermette's reference list, the same profile repeated at an offset.
 '=====================================================================
 Private Sub AddMoon(ByVal ws As Worksheet)
     On Error Resume Next
-    Dim shp As Shape, sbRight As Single
-    Dim lowest As Single, railBottom As Single, band As Single
-    Dim d As Single, cx As Single, cy As Single
+    Dim d As Single, x As Single, y As Single
+    d = 46
+    x = ws.Range("A1").Left + (ws.Range("A1:E1").Width - d) / 2
+    y = ws.Range("A1").Top + 2
 
-    sbRight = ws.Range("F1").Left
-    railBottom = ws.Range("A29").Top + ws.Range("A29").Height
-
-    ' the bottom of the lowest real shape in the rail
-    For Each shp In ws.Shapes
-        If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
-            If shp.Left < sbRight Then
-                If shp.Top + shp.Height > lowest Then lowest = shp.Top + shp.Height
-            End If
-        End If
-    Next shp
-    If lowest = 0 Then Exit Sub
-
-    band = railBottom - lowest
-    If band < 26 Then Exit Sub            ' no room - draw nothing at all
-
-    d = band - 10
-    If d > 46 Then d = 46
-    cx = ws.Range("A1").Left + ws.Range("A1:E1").Width * 0.62   ' off-axis
-    cy = lowest + band / 2
-
-    MoonRing ws, cx - d / 2, cy - d / 2, d, 1#, 0.55, "MOON1"
-    MoonRing ws, cx - (d - 11) / 2, cy - (d - 11) / 2, d - 11, 0.75, 0.72, "MOON2"
+    MoonRing ws, x, y, d, 1#, 0.55, "MOON1"
+    MoonRing ws, x + 5, y + 5, d - 10, 0.75, 0.72, "MOON2"
     On Error GoTo 0
 End Sub
 
