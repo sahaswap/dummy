@@ -169,6 +169,7 @@ Sub ApplyDesert()
     ' were set dressing competing with the only things on this sidebar
     ' anyone actually uses. What is left is the buttons.
     TightenUtilityGap ws             ' close Navy & Gold's inherited dead space
+    AddMoon ws                       ' sizes itself to the space left
     AddBadgeRules ws                 ' after the badges are styled
     AddBannerMarks ws                ' chapter ticks, after the banners are styled
     AddDesertTitle ws, titleText
@@ -730,6 +731,79 @@ Private Sub UndoShift(ByVal ws As Worksheet)
     Set badge = FindBadge(ws, "UTILITY")
     If Not badge Is Nothing Then ShiftSidebarBelow ws, badge.Top - 1, -delta
     bak.Range("J1").ClearContents
+    On Error GoTo 0
+End Sub
+
+'=====================================================================
+' THE MOON - two concentric rings, in whatever space is actually free.
+'
+' Twice placed badly. Behind the title it crossed "Beta 3.6.2", because a
+' ring and a line of type in the same space is interference, not
+' layering. Moved to the foot of the sidebar it was given a fixed 54pt
+' diameter centred on row 29 - so half of it spilled past the rail onto
+' the canvas and read as a clipped oval.
+'
+' Both failures were the same mistake: a fixed size dropped at a fixed
+' point, with no regard for how much room was there. This measures the
+' gap between the lowest button and the bottom of the rail and fits
+' itself inside it. If the button stack grows and the gap closes, the
+' moon simply is not drawn - which is the correct behaviour, and far
+' better than drawing it half off the edge.
+'
+' Two rings at a step rather than one circle: the Carlo Scarpa detail
+' from Vermette's reference list, the same profile repeated at an offset.
+'=====================================================================
+Private Sub AddMoon(ByVal ws As Worksheet)
+    On Error Resume Next
+    Dim shp As Shape, sbRight As Single
+    Dim lowest As Single, railBottom As Single, band As Single
+    Dim d As Single, cx As Single, cy As Single
+
+    sbRight = ws.Range("F1").Left
+    railBottom = ws.Range("A29").Top + ws.Range("A29").Height
+
+    ' the bottom of the lowest real shape in the rail
+    For Each shp In ws.Shapes
+        If Left$(shp.Name, Len(ADD_PFX)) <> ADD_PFX Then
+            If shp.Left < sbRight Then
+                If shp.Top + shp.Height > lowest Then lowest = shp.Top + shp.Height
+            End If
+        End If
+    Next shp
+    If lowest = 0 Then Exit Sub
+
+    band = railBottom - lowest
+    If band < 26 Then Exit Sub            ' no room - draw nothing at all
+
+    d = band - 10
+    If d > 46 Then d = 46
+    cx = ws.Range("A1").Left + ws.Range("A1:E1").Width * 0.62   ' off-axis
+    cy = lowest + band / 2
+
+    MoonRing ws, cx - d / 2, cy - d / 2, d, 1#, 0.55, "MOON1"
+    MoonRing ws, cx - (d - 11) / 2, cy - (d - 11) / 2, d - 11, 0.75, 0.72, "MOON2"
+    On Error GoTo 0
+End Sub
+
+Private Sub MoonRing(ByVal ws As Worksheet, ByVal x As Single, ByVal y As Single, _
+                     ByVal d As Single, ByVal wt As Single, ByVal trans As Single, _
+                     ByVal nm As String)
+    On Error Resume Next
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeOval, x, y, d, d)
+    If shp Is Nothing Then Exit Sub
+    shp.Name = ADD_PFX & nm
+    shp.Fill.Visible = msoFalse
+    With shp.Line
+        .Visible = msoTrue
+        .ForeColor.RGB = cStone
+        .Weight = wt
+        .Transparency = trans
+    End With
+    shp.Shadow.Visible = msoFalse
+    shp.Glow.Radius = 0
+    shp.Placement = xlFreeFloating
+    shp.ZOrder msoSendToBack
     On Error GoTo 0
 End Sub
 
