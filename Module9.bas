@@ -203,9 +203,10 @@ If exportMode = "PIVOT" Then
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
     CloseIfAlreadyOpen pivotSavePath
-    AssertSavePathFree pivotSavePath
+    MoveExistingExportAside pivotSavePath
     SetSheetZoom85 newWbPiv, Array("Pivot Data", "Pivot")
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
+    DiscardPreviousExport pivotSavePath
 
     newWbPiv.Sheets("Pivot Data").Activate
 
@@ -458,10 +459,11 @@ If exportMode = "EN" Then
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
-    AssertSavePathFree finalSavePath
+    MoveExistingExportAside finalSavePath
     SetSheetZoom85 newWb, Array("Lookback Transactions", "Pivot")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    DiscardPreviousExport finalSavePath
     Application.DisplayAlerts = True
     lbSavedPath = finalSavePath
 
@@ -594,10 +596,11 @@ If exportMode = "EN" Then
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
-    AssertSavePathFree finalSavePath
+    MoveExistingExportAside finalSavePath
     SetSheetZoom85 newWb, Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    DiscardPreviousExport finalSavePath
     Application.DisplayAlerts = True
 
     wsRealCD.Cells.Clear
@@ -818,13 +821,14 @@ excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.x
 
 finalSavePath = saveFolderPath & slash & excelFileName
 CloseIfAlreadyOpen finalSavePath
-AssertSavePathFree finalSavePath
+MoveExistingExportAside finalSavePath
 ' "Pivot" only exists if lastRowCP > 1 above - SetSheetZoom85's own error
 ' handling silently skips it otherwise, same as any other missing name.
 SetSheetZoom85 newWb, Array("Raw Transactions", "CP Selection", "DeDupe", "Pivot")
 
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+DiscardPreviousExport finalSavePath
 Application.DisplayAlerts = True
 
 wsRealCD.Cells.Clear
@@ -1156,40 +1160,46 @@ Private Sub SetSheetZoom85(ByVal wb As Workbook, ByVal sheetNames As Variant)
 End Sub
 
 ' ==========================================================
-' AssertSavePathFree - refuse to SaveAs over a file that is locked,
-' and say WHICH file, instead of failing with a bare error 1004.
+' MoveExistingExportAside - never overwrite an export in place.
 ' ==========================================================
-' CloseIfAlreadyOpen only walks Application.Workbooks - the Excel instance
-' running this macro. It cannot see a copy of the file open in a SECOND
-' Excel instance (common on the VDI, where opening a file from Explorer or
-' Outlook can start a separate EXCEL.EXE), and it cannot see a lock held by
-' OneDrive while the Desktop syncs. In either case it skips the file, then
-' SaveAs tries to overwrite it and dies with "Method 'SaveAs' of object
-' '_Workbook' failed" - which names neither the file nor the cause.
+' Evidence from a real run: the Lookback file saved and the Combined file
+' did not, from the same code, into the same folder. The difference was
+' that the Lookback had a NEW filename (its date range had just changed),
+' so SaveAs created a fresh file - while the Combined filename is identical
+' on every run, so SaveAs had to OVERWRITE the copy left by the last run.
 '
-' This asks Windows directly: an EXCLUSIVE open of the existing file fails
-' if any process at all holds it. That covers the other Excel instance and
-' the sync lock that CloseIfAlreadyOpen misses.
+' Excel overwrites by writing a temporary file and then swapping it in for
+' the old one. On the OneDrive-synced Desktop that replace is exactly what
+' sync interferes with, and it fails as a bare "Method 'SaveAs' of object
+' '_Workbook' failed". Creating a new file does not hit it - which is why
+' the Lookback succeeded.
 '
-' The error it raises is caught by the workflow's CancelHandler, which
-' shows Err.Description - so the analyst is told exactly what to close.
-Private Sub AssertSavePathFree(ByVal targetPath As String)
-    Dim f As Integer, exists As Boolean, locked As Boolean
+' So the old export is renamed out of the way first, and every save is a
+' plain create. The old copy is kept as "<name> (previous).xlsx" until the
+' new save has definitely succeeded, then deleted - so if anything still
+' goes wrong, the previous export is still on disk under a readable name
+' rather than lost.
+'
+' (This replaces an earlier check that opened the existing file for
+' exclusive write access to test for a lock. That was the wrong test: the
+' open could pass while the replace still failed, and on a synced folder
+' opening the file for write can itself prompt OneDrive to pick it up.)
+Private Sub MoveExistingExportAside(ByVal targetPath As String)
+    Dim asidePath As String, moved As Boolean
+    asidePath = PreviousExportPath(targetPath)
 
     On Error Resume Next
-    exists = (Len(Dir(targetPath)) > 0)
-    If Not exists Then Exit Sub            ' nothing there - nothing can lock it
-
-    f = FreeFile
-    Open targetPath For Binary Access Read Write Lock Read Write As #f
-    locked = (Err.Number <> 0)
-    Close #f
+    If Len(Dir(targetPath)) = 0 Then Exit Sub          ' nothing to move
+    If Len(Dir(asidePath)) > 0 Then Kill asidePath       ' stale copy from a failed run
+    Err.Clear
+    Name targetPath As asidePath
+    moved = (Err.Number = 0)
     Err.Clear
     On Error GoTo 0
 
-    If locked Then
+    If Not moved Then
         Err.Raise vbObjectError + 1004, "Consolidated_AML_Workflow", _
-            "The export could not be saved because this file is already open " & _
+            "The export could not replace the existing file, because it is open " & _
             "or locked:" & vbCrLf & vbCrLf & _
             Mid$(targetPath, InStrRev(targetPath, Application.PathSeparator) + 1) & _
             vbCrLf & vbCrLf & _
@@ -1198,6 +1208,27 @@ Private Sub AssertSavePathFree(ByVal targetPath As String)
             "syncing it. Then run the export again."
     End If
 End Sub
+
+' Called only AFTER a SaveAs has succeeded, so the previous copy is never
+' removed until its replacement exists.
+Private Sub DiscardPreviousExport(ByVal targetPath As String)
+    On Error Resume Next
+    Dim asidePath As String
+    asidePath = PreviousExportPath(targetPath)
+    If Len(Dir(asidePath)) > 0 Then Kill asidePath
+    On Error GoTo 0
+End Sub
+
+' "...\X.xlsx" -> "...\X (previous).xlsx"
+Private Function PreviousExportPath(ByVal targetPath As String) As String
+    Dim dot As Long
+    dot = InStrRev(targetPath, ".")
+    If dot = 0 Then
+        PreviousExportPath = targetPath & " (previous)"
+    Else
+        PreviousExportPath = Left$(targetPath, dot - 1) & " (previous)" & Mid$(targetPath, dot)
+    End If
+End Function
 
 ' ==========================================================
 ' CloseIfAlreadyOpen - safely closes an open target file prior to SaveAs
