@@ -203,6 +203,7 @@ If exportMode = "PIVOT" Then
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
     CloseIfAlreadyOpen pivotSavePath
+    AssertSavePathFree pivotSavePath
     SetSheetZoom85 newWbPiv, Array("Pivot Data", "Pivot")
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
 
@@ -457,6 +458,7 @@ If exportMode = "EN" Then
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
+    AssertSavePathFree finalSavePath
     SetSheetZoom85 newWb, Array("Lookback Transactions", "Pivot")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
@@ -592,6 +594,7 @@ If exportMode = "EN" Then
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
+    AssertSavePathFree finalSavePath
     SetSheetZoom85 newWb, Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
@@ -815,6 +818,7 @@ excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.x
 
 finalSavePath = saveFolderPath & slash & excelFileName
 CloseIfAlreadyOpen finalSavePath
+AssertSavePathFree finalSavePath
 ' "Pivot" only exists if lastRowCP > 1 above - SetSheetZoom85's own error
 ' handling silently skips it otherwise, same as any other missing name.
 SetSheetZoom85 newWb, Array("Raw Transactions", "CP Selection", "DeDupe", "Pivot")
@@ -1149,6 +1153,50 @@ Private Sub SetSheetZoom85(ByVal wb As Workbook, ByVal sheetNames As Variant)
         ActiveWindow.Zoom = 85
     Next nm
     On Error GoTo 0
+End Sub
+
+' ==========================================================
+' AssertSavePathFree - refuse to SaveAs over a file that is locked,
+' and say WHICH file, instead of failing with a bare error 1004.
+' ==========================================================
+' CloseIfAlreadyOpen only walks Application.Workbooks - the Excel instance
+' running this macro. It cannot see a copy of the file open in a SECOND
+' Excel instance (common on the VDI, where opening a file from Explorer or
+' Outlook can start a separate EXCEL.EXE), and it cannot see a lock held by
+' OneDrive while the Desktop syncs. In either case it skips the file, then
+' SaveAs tries to overwrite it and dies with "Method 'SaveAs' of object
+' '_Workbook' failed" - which names neither the file nor the cause.
+'
+' This asks Windows directly: an EXCLUSIVE open of the existing file fails
+' if any process at all holds it. That covers the other Excel instance and
+' the sync lock that CloseIfAlreadyOpen misses.
+'
+' The error it raises is caught by the workflow's CancelHandler, which
+' shows Err.Description - so the analyst is told exactly what to close.
+Private Sub AssertSavePathFree(ByVal targetPath As String)
+    Dim f As Integer, exists As Boolean, locked As Boolean
+
+    On Error Resume Next
+    exists = (Len(Dir(targetPath)) > 0)
+    If Not exists Then Exit Sub            ' nothing there - nothing can lock it
+
+    f = FreeFile
+    Open targetPath For Binary Access Read Write Lock Read Write As #f
+    locked = (Err.Number <> 0)
+    Close #f
+    Err.Clear
+    On Error GoTo 0
+
+    If locked Then
+        Err.Raise vbObjectError + 1004, "Consolidated_AML_Workflow", _
+            "The export could not be saved because this file is already open " & _
+            "or locked:" & vbCrLf & vbCrLf & _
+            Mid$(targetPath, InStrRev(targetPath, Application.PathSeparator) + 1) & _
+            vbCrLf & vbCrLf & _
+            "Close every open copy of it - check all Excel windows, and Task " & _
+            "Manager for a second EXCEL.EXE - or wait for OneDrive to finish " & _
+            "syncing it. Then run the export again."
+    End If
 End Sub
 
 ' ==========================================================
