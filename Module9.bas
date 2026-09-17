@@ -358,7 +358,7 @@ End If
 If exportMode = "EN" Then
     Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
     Dim cvLB As Variant
-    Dim lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
+    Dim firstAlertedLB As Date, lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
     Dim wsLB As Worksheet
     Dim lbSavedPath As String
 
@@ -383,10 +383,17 @@ If exportMode = "EN" Then
             If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
                 cvLB = ArrCell(dArrLB, rLB)
                 If IsDate(cvLB) Then
+                    ' Track BOTH ends of the alerted period: the earliest alert
+                    ' sets where the lookback STARTS, the latest sets where it
+                    ' ENDS. Only the latest was tracked before, so the start was
+                    ' measured back from the last alert instead of the first.
                     If Not haveAlertedLB Then
-                        lastAlertedLB = CDate(cvLB): haveAlertedLB = True
-                    ElseIf CDate(cvLB) > lastAlertedLB Then
+                        firstAlertedLB = CDate(cvLB)
                         lastAlertedLB = CDate(cvLB)
+                        haveAlertedLB = True
+                    Else
+                        If CDate(cvLB) < firstAlertedLB Then firstAlertedLB = CDate(cvLB)
+                        If CDate(cvLB) > lastAlertedLB Then lastAlertedLB = CDate(cvLB)
                     End If
                 End If
             End If
@@ -396,7 +403,18 @@ If exportMode = "EN" Then
         MsgBox "No dated 'Yes' alerted transactions were found, so the EN Network export can't be built.", vbCritical, "No Alerted Rows"
         GoTo CancelHandler
     End If
-    lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)
+    ' START: the first day of the FIRST alerted transaction's month, one
+    ' year back. First alert 18 Aug 2025 -> lookback starts 01 Aug 2024.
+    '
+    ' This was measured back from the LATEST alert, which gave a window of
+    ' 12 months before the last alert rather than 12 months before the
+    ' first. With alerts spread across several months that is wrong in two
+    ' ways: the history before the first alert is cut short by however far
+    ' apart the alerts are, and if the alerts span more than a year the
+    ' earliest alerted transaction falls outside its own lookback entirely.
+    ' Anchoring the start on the first alert guarantees a full year of
+    ' history before any alerted activity, and every alert in the window.
+    lbStart = DateSerial(Year(firstAlertedLB) - 1, Month(firstAlertedLB), 1)
 
     ' End of the MONTH the last alerted transaction falls in, not the
     ' alerted date itself. Last alerted 09/10 -> window ends 09/30.
