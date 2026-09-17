@@ -423,7 +423,7 @@ ForceClearStaleOSINTState
 
 ' ---- Declarations ----
 Dim ws As Worksheet, masterWs As Worksheet
-Dim WshShell As Object, FSO As Object, ghostApp As Object
+Dim WshShell As Object, FSO As Object
 Dim masterWb As Workbook, wb As Workbook
 
 Dim i As Long, fileCounter As Long, totalCPs As Long
@@ -1030,33 +1030,53 @@ AutoRestoreRuntime
 Application.StatusBar = "OSINT: Pushing run to SharePoint master tracker..."
 
 For Each wb In Application.Workbooks
-If wb.Name = TrackerFileName() Then
+If StrComp(wb.Name, TrackerFileName(), vbTextCompare) = 0 Then
 Set masterWb = wb
 wasAlreadyOpen = True
 Exit For
 End If
 Next wb
 
-If masterWb Is Nothing Then
-Set ghostApp = CreateObject("Excel.Application")
-ghostApp.Visible = False
-ghostApp.DisplayAlerts = False
-ghostApp.EnableEvents = False
-
+' The tracker opens in THIS Excel (hidden window), the same way the Export
+' and Narrative pushes do it (Module14). It used to open in a separate
+' hidden Excel, so every call here waited on another process: a slow
+' SharePoint save raised "Excel is waiting for another application to
+' complete an OLE action", then Err -2147418110 (call canceled) ended the
+' run on an error after every PDF was already saved. The push is
+' best-effort: a failure only sets spSyncStatus (logged below) and the run
+' still finishes on the summary dialog.
 On Error Resume Next
+Dim trkEvents As Boolean, trkScreen As Boolean, trkAlerts As Boolean
+trkEvents = Application.EnableEvents
+trkScreen = Application.ScreenUpdating
+trkAlerts = Application.DisplayAlerts
+Application.EnableEvents = False      ' also skips the tracker's Workbook_Open
+Application.ScreenUpdating = False
+Application.DisplayAlerts = False
+
+If masterWb Is Nothing Then
 Err.Clear
-Set masterWb = ghostApp.Workbooks.Open(fileName:=TrackerFile(), UpdateLinks:=False)
+Set masterWb = Application.Workbooks.Open(fileName:=TrackerFile(), UpdateLinks:=False)
 If masterWb Is Nothing Then
 spSyncStatus = "FAILED: " & IIf(Err.Number <> 0, _
 "Err " & Err.Number & " - " & Err.Description, _
-"WebDAV open returned Nothing (offline, auth, or file renamed?)")
+"open returned Nothing (offline, auth, or file renamed?)")
+Else
+masterWb.Windows(1).Visible = False
+' One upload at close instead of an AutoSave upload per cell written.
+masterWb.AutoSaveOn = False
 End If
-On Error GoTo ErrorHandler
 End If
 
 If Not masterWb Is Nothing Then
-If Not masterWb.ReadOnly Then
+If masterWb.ReadOnly Then
+spSyncStatus = "FAILED: master tracker is read-only (another user has it open?)"
+Else
+Set masterWs = Nothing
 Set masterWs = masterWb.Sheets("Sheet1")
+If masterWs Is Nothing Then
+spSyncStatus = "FAILED: tracker has no Sheet1"
+Else
 expectedHeaders = Array("Date & Time", "Analyst ID", "ECM Case ID", _
 "Total Entities", "Total Searches", "Time Taken", "Tool Version")
 headersOK = True
@@ -1082,28 +1102,39 @@ masterWs.Cells(mRow, 5).Value = actualSearchCount
 masterWs.Cells(mRow, 6).Value = timeString
 masterWs.Cells(mRow, 7).Value = TOOL_VERSION
 
+Err.Clear
 If wasAlreadyOpen Then
 masterWb.Save
 Else
+' Unhide first - a workbook saved with a hidden window opens hidden
+' for everyone after that.
+masterWb.Windows(1).Visible = True
 masterWb.Close SaveChanges:=True
 End If
+If Err.Number = 0 Then
 spSyncStatus = "OK"
 Else
-spSyncStatus = "FAILED: header mismatch -" & vbCrLf & headerMsg
-If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
+spSyncStatus = "FAILED: save - Err " & Err.Number & " - " & Err.Description
 End If
 Else
-spSyncStatus = "FAILED: master tracker is read-only (another user has it open?)"
-If Not wasAlreadyOpen Then masterWb.Close SaveChanges:=False
+spSyncStatus = "FAILED: header mismatch -" & vbCrLf & headerMsg
+End If
 End If
 End If
 
-If Not ghostApp Is Nothing Then
-On Error Resume Next
-ghostApp.Quit
-Set ghostApp = Nothing
-On Error GoTo ErrorHandler
+' Anything short of a clean save leaves the tracker open here - close it
+' unsaved so it can't linger hidden in the analyst's Excel.
+If Not wasAlreadyOpen And spSyncStatus <> "OK" Then
+masterWb.Close SaveChanges:=False
 End If
+End If
+
+Application.DisplayAlerts = trkAlerts
+Application.ScreenUpdating = trkScreen
+Application.EnableEvents = trkEvents
+LogStep "TRACKER push: " & Replace(spSyncStatus, vbCrLf, " ")
+Err.Clear
+On Error GoTo ErrorHandler
 
 Application.StatusBar = False
 
@@ -1181,10 +1212,6 @@ On Error GoTo 0
 
 CleanExit:
 On Error Resume Next
-If Not ghostApp Is Nothing Then
-ghostApp.Quit
-Set ghostApp = Nothing
-End If
 AutoRestoreRuntime
 Application.StatusBar = False
 On Error GoTo 0
