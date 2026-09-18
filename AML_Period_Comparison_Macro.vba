@@ -668,7 +668,10 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     Next shp
     On Error GoTo 0
     
-    ws.DisplayGridlines = True
+    ' Enable gridlines safely on active window
+    On Error Resume Next
+    ActiveWindow.DisplayGridlines = True
+    On Error GoTo 0
     
     ' Column Widths
     ws.Columns("A").ColumnWidth = 3
@@ -951,7 +954,10 @@ End Sub
 
 Private Sub FormatAuditSheetHeaders(ByVal ws As Worksheet, ByVal bannerTitle As String)
     ws.Cells.Clear
-    ws.DisplayGridlines = True
+    ' Enable gridlines safely on active window
+    On Error Resume Next
+    ActiveWindow.DisplayGridlines = True
+    On Error GoTo 0
     
     ws.Columns("A").ColumnWidth = 3
     ws.Columns("B").ColumnWidth = 22 ' Alert ID
