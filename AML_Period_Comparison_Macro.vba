@@ -2,20 +2,22 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] TRANSACTION MONITORING: LOOKBACK PERIOD BATCH RECONCILIATION COCKPIT
 ' =========================================================================
-' Version: 3.0 (Case-Aligned Edition with ECM ID, Grouped Alert Diffs & Clean Layout)
+' Version: 4.0 (Pivot Diff, Exact Schema Formatting, 1-Click Export & Cleaned Layout)
 '
-' Enhancements:
-'  1. ECM ID & ALERT ID SPLIT: Column B displays ECM ID (e.g. 138896), Column C
-'     displays Alert ID (e.g. ALERT2365101).
-'  2. NO MORE "N/A" IN DATE PERIODS: Two-layer date resolution (robust serial &
-'     dot-separated string parsing + automatic filename regex fallback).
-'  3. STREAMLINED FOCUS: Net Volume Delta ($) and amount columns removed from
-'     the primary dashboard so review is 100% focused on Transaction Counts,
-'     Alerted Counts, and Date Period boundaries.
-'  4. SIMPLIFIED & GROUPED TRANSACTION AUDIT: The Discrepancy_Added_Txns tab
-'     groups and differentiates added transactions by each Alert, with bold
-'     alert header banners and clear sub-tables.
-'  5. 100% NATIVE EXCEL VBA: Zero ActiveX/Object error 438, zero repair prompts.
+' Key Capabilities:
+'  1. PIVOT COUNTERPARTY COMPARISON: Automatically compares Pivot tables between
+'     Old and New files to identify newly added counterparties (e.g. MONICA HERZBERG
+'     CLAUDIO EULAU) and links them to associated added transactions.
+'  2. EXACT NEW FILE FORMATTING PRESERVED: Extra transactions identified retain the
+'     exact column schema (all 44 columns) and original formatting (fonts, colors,
+'     number formats, dates, amounts) directly from the new transaction file.
+'  3. STREAMLINED DASHBOARD TABLE: Removed the % Change (delta change) column so
+'     compliance review is 100% focused on absolute counts and alerted shifts.
+'  4. ONE-CLICK EXPORT TO NEW WORKBOOK: Dedicated button exports a pristine,
+'     formatted .xlsx workbook containing the Dashboard and all Discrepancy details.
+'  5. SIMPLIFIED & GROUPED PER ALERT: Every alert is clearly differentiated with
+'     bold header banners, individual Pivot reconciliation cards, and clean gaps.
+'  6. 100% NATIVE EXCEL VBA: Zero ActiveX/Object error 438, zero repair prompts.
 ' =========================================================================
 Option Explicit
 
@@ -42,7 +44,7 @@ Public Sub Setup_Dashboard()
     Set ws = Setup_Comparison_Dashboard(ActiveWorkbook, True)
     ws.Activate
     MsgBox "Comparison Dashboard has been created successfully!" & vbCrLf & vbCrLf & _
-           "Press Alt + F8 and click 'Run_Batch_Comparison' (or click the buttons on the sheet) to run your comparisons.", vbInformation, "Dashboard Ready"
+           "Click the interactive buttons on the sheet to run batch comparisons or export results.", vbInformation, "Dashboard Ready"
 End Sub
 
 ' =========================================================================
@@ -58,25 +60,32 @@ Public Sub Run_Batch_Comparison()
     Set wsDash = Setup_Comparison_Dashboard(wbDashboard)
     pSep = Application.PathSeparator
     
-    ' Step 1: Select Folder
-    selectedFolder = Pick_Folder("Select folder containing 'Old' and 'New' subfolders (or select the 'Old' folder)")
+    ' Smart Auto-Detection: check if active workbook directory contains Old/ and New/
+    If wbDashboard.Path <> "" Then
+        If (Dir(wbDashboard.Path & pSep & "Old", vbDirectory) <> "" Or Dir(wbDashboard.Path & pSep & "old", vbDirectory) <> "") And _
+           (Dir(wbDashboard.Path & pSep & "New", vbDirectory) <> "" Or Dir(wbDashboard.Path & pSep & "new", vbDirectory) <> "") Then
+            oldFolder = wbDashboard.Path & pSep & "Old"
+            If Dir(oldFolder, vbDirectory) = "" Then oldFolder = wbDashboard.Path & pSep & "old"
+            newFolder = wbDashboard.Path & pSep & "New"
+            If Dir(newFolder, vbDirectory) = "" Then newFolder = wbDashboard.Path & pSep & "new"
+            Execute_Batch_Comparison wbDashboard, oldFolder, newFolder
+            Exit Sub
+        End If
+    End If
+    
+    ' Step 1: Prompt for parent folder or Old folder
+    selectedFolder = Pick_Folder("Select Root Folder (containing 'Old' & 'New' subfolders) OR select the 'Old' folder:")
     If selectedFolder = "" Then Exit Sub
     
-    If Right(selectedFolder, 1) <> pSep Then selectedFolder = selectedFolder & pSep
-    
-    ' Smart Auto-Detection: Check if selected folder contains 'Old' and 'New' subfolders
-    If Dir(selectedFolder & "Old", vbDirectory) <> "" And Dir(selectedFolder & "New", vbDirectory) <> "" Then
-        oldFolder = selectedFolder & "Old"
-        newFolder = selectedFolder & "New"
-    ElseIf InStr(1, selectedFolder, pSep & "Old" & pSep, vbTextCompare) > 0 Or Right(selectedFolder, 4) = "Old" & pSep Then
-        oldFolder = selectedFolder
-        MsgBox "Please select the folder containing the REVISED / NEW transaction files.", vbInformation, "Step 2: Select New Files Folder"
-        newFolder = Pick_Folder("Select Folder with NEW Transaction Files")
-        If newFolder = "" Then Exit Sub
+    If Dir(selectedFolder & pSep & "Old", vbDirectory) <> "" And Dir(selectedFolder & pSep & "New", vbDirectory) <> "" Then
+        oldFolder = selectedFolder & pSep & "Old"
+        newFolder = selectedFolder & pSep & "New"
+    ElseIf Dir(selectedFolder & pSep & "old", vbDirectory) <> "" And Dir(selectedFolder & pSep & "new", vbDirectory) <> "" Then
+        oldFolder = selectedFolder & pSep & "old"
+        newFolder = selectedFolder & pSep & "new"
     Else
         oldFolder = selectedFolder
-        MsgBox "Please select the folder containing the REVISED / NEW transaction files.", vbInformation, "Step 2: Select New Files Folder"
-        newFolder = Pick_Folder("Select Folder with NEW Transaction Files")
+        newFolder = Pick_Folder("Now select the 'New' lookback period folder:")
         If newFolder = "" Then Exit Sub
     End If
     
@@ -84,39 +93,101 @@ Public Sub Run_Batch_Comparison()
 End Sub
 
 ' =========================================================================
-' [OPEN] 2. USER-FACING MACRO: RUN SINGLE ALERT COMPARISON
+' [RUN] 2. USER-FACING MACRO: RUN SINGLE PAIR COMPARISON
 ' =========================================================================
 Public Sub Run_Single_Pair_Comparison()
     Dim oldFile As String, newFile As String
     Dim wbDashboard As Workbook
-    Dim wsDash As Worksheet
     
     Set wbDashboard = ActiveWorkbook
-    Set wsDash = Setup_Comparison_Dashboard(wbDashboard)
+    Setup_Comparison_Dashboard wbDashboard
     
-    MsgBox "Please select the OLD / BASELINE transaction file.", vbInformation, "Step 1 of 2: Select Old File"
-    oldFile = Pick_Excel_File("Select OLD Transaction File")
+    oldFile = Pick_Excel_File("Select the OLD / In-Scope Lookback Transaction File:")
     If oldFile = "" Then Exit Sub
     
-    MsgBox "Please select the REVISED / NEW lookback transaction file.", vbInformation, "Step 2 of 2: Select New File"
-    newFile = Pick_Excel_File("Select NEW Transaction File")
+    newFile = Pick_Excel_File("Select the NEW / Expanded Lookback Transaction File:")
     If newFile = "" Then Exit Sub
     
     Execute_Single_Comparison wbDashboard, oldFile, newFile
 End Sub
 
 ' =========================================================================
-' [RESET] 3. USER-FACING MACRO: RESET / CLEAR DASHBOARD
+' [EXPORT] 3. USER-FACING MACRO: EXPORT TO STANDALONE FORMATTED WORKBOOK
+' =========================================================================
+Public Sub Export_To_New_Workbook()
+    Dim wbSource As Workbook, wbNew As Workbook
+    Dim wsDash As Worksheet, wsAdded As Worksheet, wsDropped As Worksheet
+    Dim defaultFileName As String, savePath As Variant
+    Dim timeStamp As String, shp As Shape
+    
+    Set wbSource = ActiveWorkbook
+    On Error Resume Next
+    Set wsDash = wbSource.Worksheets(SHEET_DASHBOARD)
+    On Error GoTo 0
+    
+    If wsDash Is Nothing Then
+        MsgBox "Comparison Dashboard sheet not found. Please run a comparison first!", vbExclamation, "No Data to Export"
+        Exit Sub
+    End If
+    
+    timeStamp = Format(Now, "yyyymmdd_hhnnss")
+    defaultFileName = "AML_Lookback_Comparison_Report_" & timeStamp & ".xlsx"
+    
+    savePath = Application.GetSaveAsFilename(InitialFileName:=defaultFileName, _
+                                            FileFilter:="Excel Workbook (*.xlsx), *.xlsx", _
+                                            Title:="Export AML Comparison Report to New Workbook")
+                                            
+    If VarType(savePath) = vbBoolean And savePath = False Then Exit Sub ' User cancelled
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    ' Copy Dashboard to new workbook
+    wsDash.Copy
+    Set wbNew = ActiveWorkbook
+    
+    ' Strip action button shapes from exported dashboard for clean executive view
+    On Error Resume Next
+    For Each shp In wbNew.Worksheets(1).Shapes
+        If Left(shp.Name, 4) = "Btn_" Then shp.Delete
+    Next shp
+    On Error GoTo 0
+    
+    ' Copy Discrepancy Added Txns (with exact 44-col formatting and Pivot diff)
+    On Error Resume Next
+    Set wsAdded = wbSource.Worksheets(SHEET_ADDED_TXNS)
+    On Error GoTo 0
+    If Not wsAdded Is Nothing Then
+        wsAdded.Copy After:=wbNew.Worksheets(wbNew.Worksheets.Count)
+    End If
+    
+    ' Copy Discrepancy Dropped Txns (if exists)
+    On Error Resume Next
+    Set wsDropped = wbSource.Worksheets(SHEET_DROPPED_TXNS)
+    On Error GoTo 0
+    If Not wsDropped Is Nothing Then
+        wsDropped.Copy After:=wbNew.Worksheets(wbNew.Worksheets.Count)
+    End If
+    
+    wbNew.Worksheets(1).Activate
+    wbNew.SaveAs Filename:=CStr(savePath), FileFormat:=xlOpenXMLWorkbook
+    
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    
+    MsgBox "AML Lookback Reconciliation Report successfully exported to:" & vbCrLf & vbCrLf & _
+           CStr(savePath), vbInformation, "Export Successful"
+End Sub
+
+' =========================================================================
+' [RESET] 4. USER-FACING MACRO: RESET DASHBOARD
 ' =========================================================================
 Public Sub Clear_Comparison_Dashboard()
     Dim wb As Workbook
-    Dim ans As VbMsgBoxResult
-    
-    ans = MsgBox("Are you sure you want to clear the Comparison Dashboard and all discrepancy records?", vbQuestion + vbYesNo, "Confirm Reset")
-    If ans <> vbYes Then Exit Sub
+    Dim ws As Worksheet
     
     Set wb = ActiveWorkbook
-    Setup_Comparison_Dashboard wb, True
+    Set ws = Setup_Comparison_Dashboard(wb, True)
     
     Application.DisplayAlerts = False
     On Error Resume Next
@@ -129,7 +200,7 @@ Public Sub Clear_Comparison_Dashboard()
 End Sub
 
 ' =========================================================================
-' [VIEW] 4. USER-FACING MACRO: VIEW GRANULAR DISCREPANCIES
+' [VIEW] 5. USER-FACING MACRO: VIEW GRANULAR DISCREPANCIES
 ' =========================================================================
 Public Sub View_Added_Transactions()
     Dim wb As Workbook
@@ -143,7 +214,7 @@ Public Sub View_Added_Transactions()
 End Sub
 
 ' =========================================================================
-' [ENGINE] 5. CORE BATCH COMPARISON ENGINE
+' [ENGINE] 6. CORE BATCH COMPARISON ENGINE
 ' =========================================================================
 Private Sub Execute_Batch_Comparison(ByVal wbDash As Workbook, ByVal oldDir As String, ByVal newDir As String)
     Dim wsDash As Worksheet
@@ -156,6 +227,7 @@ Private Sub Execute_Batch_Comparison(ByVal wbDash As Workbook, ByVal oldDir As S
     Dim oldFilePath As String, newFilePath As String
     Dim totalAlerts As Long, countIncreasedAlerts As Long, countUnchangedAlerts As Long
     Dim totalAddedTxns As Long, totalDroppedTxns As Long, totalAlertedAdded As Long
+    Dim totalNewPivotCPs As Long
     
     On Error GoTo ErrorHandler
     
@@ -168,7 +240,7 @@ Private Sub Execute_Batch_Comparison(ByVal wbDash As Workbook, ByVal oldDir As S
     Set wsAdded = GetOrCreateWorksheet(wbDash, SHEET_ADDED_TXNS)
     Set wsDropped = GetOrCreateWorksheet(wbDash, SHEET_DROPPED_TXNS)
     
-    FormatAuditSheetHeaders wsAdded, "NEWLY ADDED TRANSACTIONS GROUPED BY ALERT (EXPANDED LOOKBACK PERIOD)"
+    FormatAuditSheetHeaders wsAdded, "NEWLY ADDED TRANSACTIONS & PIVOT RECONCILIATION (EXPANDED LOOKBACK PERIOD)"
     FormatAuditSheetHeaders wsDropped, "DROPPED / EXCLUDED TRANSACTIONS GROUPED BY ALERT"
     
     Set oldFiles = ListExcelFiles(oldDir)
@@ -201,69 +273,63 @@ Private Sub Execute_Batch_Comparison(ByVal wbDash As Workbook, ByVal oldDir As S
         alertKey = ExtractMatchKey(CStr(fPath))
         If Not DictExists(newMap, alertKey) Then
             DictAdd newMap, alertKey, CStr(fPath)
-            If Not DictExists(oldMap, alertKey) Then
-                alertKeys.Add alertKey
-            End If
+            If Not DictExists(oldMap, alertKey) Then alertKeys.Add alertKey
         End If
     Next fPath
     
     curRow = 15
-    If wsDash.Cells(curRow, 2).Value <> "" Then
-        wsDash.Range("B15:O" & wsDash.Cells(wsDash.Rows.Count, 2).End(xlUp).Row + 5).ClearContents
-        wsDash.Range("B15:O" & wsDash.Cells(wsDash.Rows.Count, 2).End(xlUp).Row + 5).ClearFormats
-    End If
-    
-    totalAlerts = 0
-    countIncreasedAlerts = 0
-    countUnchangedAlerts = 0
-    totalAddedTxns = 0
-    totalDroppedTxns = 0
-    totalAlertedAdded = 0
+    wsDash.Range("B15:O500").ClearContents
+    wsDash.Range("B15:O500").ClearFormats
     
     Dim keyVar As Variant
     For Each keyVar In alertKeys
         alertKey = CStr(keyVar)
         oldFilePath = ""
         newFilePath = ""
-        If DictExists(oldMap, alertKey) Then oldFilePath = DictGet(oldMap, alertKey)
-        If DictExists(newMap, alertKey) Then newFilePath = DictGet(newMap, alertKey)
+        If DictExists(oldMap, alertKey) Then oldFilePath = CStr(DictGet(oldMap, alertKey))
+        If DictExists(newMap, alertKey) Then newFilePath = CStr(DictGet(newMap, alertKey))
         
         If oldFilePath <> "" And newFilePath <> "" Then
-            ecmID = ExtractECMID(newFilePath)
-            alertID = ExtractAlertID(newFilePath)
             totalAlerts = totalAlerts + 1
+            ecmID = ExtractECMID(newFilePath)
+            If ecmID = "-" Then ecmID = ExtractECMID(oldFilePath)
+            alertID = ExtractAlertID(newFilePath)
+            If alertID = "" Then alertID = ExtractAlertID(oldFilePath)
             
             ProcessPair wsDash, wsAdded, wsDropped, curRow, ecmID, alertID, oldFilePath, newFilePath, _
-                        countIncreasedAlerts, countUnchangedAlerts, totalAddedTxns, totalDroppedTxns, totalAlertedAdded
+                        countIncreasedAlerts, countUnchangedAlerts, totalAddedTxns, totalDroppedTxns, _
+                        totalAlertedAdded, totalNewPivotCPs
             curRow = curRow + 1
-        ElseIf oldFilePath <> "" Then
+            
+        ElseIf oldFilePath <> "" And newFilePath = "" Then
+            totalAlerts = totalAlerts + 1
             ecmID = ExtractECMID(oldFilePath)
             alertID = ExtractAlertID(oldFilePath)
-            totalAlerts = totalAlerts + 1
-            WriteUnmatchedRow wsDash, curRow, ecmID, alertID, GetFileName(oldFilePath), "MISSING IN NEW FOLDER", "UNMATCHED (Missing New File) [WARN]"
+            WriteUnmatchedRow wsDash, curRow, ecmID, alertID, GetFileName(oldFilePath), "(Missing in New Folder)", "MISSING IN NEW [WARN]"
             curRow = curRow + 1
-        ElseIf newFilePath <> "" Then
+            
+        ElseIf oldFilePath = "" And newFilePath <> "" Then
+            totalAlerts = totalAlerts + 1
             ecmID = ExtractECMID(newFilePath)
             alertID = ExtractAlertID(newFilePath)
-            totalAlerts = totalAlerts + 1
-            WriteUnmatchedRow wsDash, curRow, ecmID, alertID, "MISSING IN OLD FOLDER", GetFileName(newFilePath), "UNMATCHED (Missing Old File) [WARN]"
+            WriteUnmatchedRow wsDash, curRow, ecmID, alertID, "(Missing in Old Folder)", GetFileName(newFilePath), "NEW UNPAIRED ALERT [WARN]"
             curRow = curRow + 1
         End If
     Next keyVar
     
     FormatBatchTable wsDash, 15, curRow - 1
-    UpdateKPICards wsDash, totalAlerts, countIncreasedAlerts, totalAddedTxns, totalAlertedAdded, countUnchangedAlerts
+    UpdateKPICards wsDash, totalAlerts, countIncreasedAlerts, totalAddedTxns, totalAlertedAdded, totalNewPivotCPs
     
     wsAdded.Columns.AutoFit
     wsDropped.Columns.AutoFit
     wsDash.Activate
     
     MsgBox "Batch Comparison Complete!" & vbCrLf & vbCrLf & _
-           "- Total Alerts Processed: " & totalAlerts & vbCrLf & _
+           "- Total Alerts Evaluated: " & totalAlerts & vbCrLf & _
            "- Alerts With Increased Count: " & countIncreasedAlerts & vbCrLf & _
-           "- Alerts With No Count Change: " & countUnchangedAlerts & vbCrLf & _
-           "- Total Transactions Added: " & totalAddedTxns & vbCrLf & _
-           "- New Alerted Transactions: " & totalAlertedAdded, vbInformation, "Reconciliation Finished"
+           "- Total Extra Transactions Added: " & totalAddedTxns & vbCrLf & _
+           "- New Alerted Transactions: " & totalAlertedAdded & vbCrLf & _
+           "- New Counterparties Identified in Pivot: " & totalNewPivotCPs, vbInformation, "Reconciliation Finished"
 
 CleanExit:
     Application.ScreenUpdating = True
@@ -278,7 +344,7 @@ ErrorHandler:
 End Sub
 
 ' =========================================================================
-' [ENGINE] 6. SINGLE PAIR COMPARISON EXECUTION
+' [ENGINE] 7. SINGLE PAIR COMPARISON EXECUTION
 ' =========================================================================
 Private Sub Execute_Single_Comparison(ByVal wbDash As Workbook, ByVal oldFilePath As String, ByVal newFilePath As String)
     Dim wsDash As Worksheet
@@ -286,6 +352,7 @@ Private Sub Execute_Single_Comparison(ByVal wbDash As Workbook, ByVal oldFilePat
     Dim ecmID As String, alertID As String
     Dim countIncreasedAlerts As Long, countUnchangedAlerts As Long
     Dim totalAddedTxns As Long, totalDroppedTxns As Long, totalAlertedAdded As Long
+    Dim totalNewPivotCPs As Long
     Dim curRow As Long
     
     On Error GoTo ErrorHandler
@@ -299,7 +366,7 @@ Private Sub Execute_Single_Comparison(ByVal wbDash As Workbook, ByVal oldFilePat
     Set wsAdded = GetOrCreateWorksheet(wbDash, SHEET_ADDED_TXNS)
     Set wsDropped = GetOrCreateWorksheet(wbDash, SHEET_DROPPED_TXNS)
     
-    FormatAuditSheetHeaders wsAdded, "NEWLY ADDED TRANSACTIONS GROUPED BY ALERT (EXPANDED LOOKBACK PERIOD)"
+    FormatAuditSheetHeaders wsAdded, "NEWLY ADDED TRANSACTIONS & PIVOT RECONCILIATION (EXPANDED LOOKBACK PERIOD)"
     FormatAuditSheetHeaders wsDropped, "DROPPED / EXCLUDED TRANSACTIONS GROUPED BY ALERT"
     
     ecmID = ExtractECMID(newFilePath)
@@ -310,10 +377,11 @@ Private Sub Execute_Single_Comparison(ByVal wbDash As Workbook, ByVal oldFilePat
     wsDash.Range("B15:O30").ClearFormats
     
     ProcessPair wsDash, wsAdded, wsDropped, curRow, ecmID, alertID, oldFilePath, newFilePath, _
-                countIncreasedAlerts, countUnchangedAlerts, totalAddedTxns, totalDroppedTxns, totalAlertedAdded
+                countIncreasedAlerts, countUnchangedAlerts, totalAddedTxns, totalDroppedTxns, _
+                totalAlertedAdded, totalNewPivotCPs
                 
     FormatBatchTable wsDash, 15, 15
-    UpdateKPICards wsDash, 1, countIncreasedAlerts, totalAddedTxns, totalAlertedAdded, countUnchangedAlerts
+    UpdateKPICards wsDash, 1, countIncreasedAlerts, totalAddedTxns, totalAlertedAdded, totalNewPivotCPs
     
     wsAdded.Columns.AutoFit
     wsDropped.Columns.AutoFit
@@ -326,8 +394,11 @@ Private Sub Execute_Single_Comparison(ByVal wbDash As Workbook, ByVal oldFilePat
     
     MsgBox "Single Alert Comparison Complete!" & vbCrLf & vbCrLf & _
            "ECM ID: " & ecmID & " | Alert ID: " & alertID & vbCrLf & _
-           "- Net Count Delta: " & IIf(totalAddedTxns - totalDroppedTxns >= 0, "+", "") & (totalAddedTxns - totalDroppedTxns) & vbCrLf & _
-           "- Newly Added Alerted Transactions: " & totalAlertedAdded, vbInformation, "Reconciliation Finished"
+           "- Extra Transactions Identified: " & totalAddedTxns & vbCrLf & _
+           "- New Alerted Transactions: " & totalAlertedAdded & vbCrLf & _
+           "- New Counterparties Identified in Pivot: " & totalNewPivotCPs, vbInformation, "Reconciliation Finished"
+
+CleanExit:
     Exit Sub
 
 ErrorHandler:
@@ -335,42 +406,55 @@ ErrorHandler:
     Application.DisplayAlerts = True
     Application.EnableEvents = True
     Application.Calculation = xlCalculationAutomatic
-    MsgBox "Error comparing files: " & Err.Description, vbCritical, "Error"
+    MsgBox "Error during Single Comparison: " & Err.Description, vbCritical, "Error " & Err.Number
 End Sub
 
 ' =========================================================================
-' [SEARCH] 7. RECONCILE WORKBOOK PAIR WORKER
+' [PROCESS] 8. PROCESS INDIVIDUAL ALERT PAIR (WITH PIVOT DIFF & EXACT FORMATTING)
 ' =========================================================================
 Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet, _
                         ByVal rowIdx As Long, ByVal ecmID As String, ByVal alertID As String, _
                         ByVal oldFilePath As String, ByVal newFilePath As String, _
                         ByRef countIncreasedAlerts As Long, ByRef countUnchangedAlerts As Long, _
                         ByRef totalAddedTxns As Long, ByRef totalDroppedTxns As Long, _
-                        ByRef totalAlertedAdded As Long)
+                        ByRef totalAlertedAdded As Long, ByRef totalNewPivotCPs As Long)
                         
     Dim wbOld As Workbook, wbNew As Workbook
     Dim wsOld As Worksheet, wsNew As Worksheet
     Dim oldMap As Object, newMap As Object
+    Dim oldPivotCPs As Object, newPivotCPs As Object
+    Dim newCPList As New Collection
     Dim oldTxCount As Long, newTxCount As Long, countDelta As Long
     Dim oldAlertCount As Long, newAlertCount As Long, alertDelta As Long
     Dim oldMinDate As Variant, oldMaxDate As Variant
     Dim newMinDate As Variant, newMaxDate As Variant
     Dim oldPeriodStr As String, newPeriodStr As String
     Dim statusStr As String
-    Dim pctChange As Double
     
+    ' 1. Open and extract Old File
     Set wbOld = Workbooks.Open(oldFilePath, ReadOnly:=True, UpdateLinks:=False)
     Set wsOld = FindTransactionSheet(wbOld)
     Set oldMap = ExtractTransactions(wsOld, oldTxCount, oldAlertCount, oldMinDate, oldMaxDate)
+    Set oldPivotCPs = ExtractPivotCounterparties(wbOld)
     
+    ' 2. Open and extract New File
     Set wbNew = Workbooks.Open(newFilePath, ReadOnly:=True, UpdateLinks:=False)
     Set wsNew = FindTransactionSheet(wbNew)
     Set newMap = ExtractTransactions(wsNew, newTxCount, newAlertCount, newMinDate, newMaxDate)
+    Set newPivotCPs = ExtractPivotCounterparties(wbNew)
     
-    wbOld.Close SaveChanges:=False
-    wbNew.Close SaveChanges:=False
+    ' 3. Compare Pivot Tables for New Counterparties Added
+    Dim cpKeyVar As Variant, cpUpper As String
+    For Each cpKeyVar In DictKeys(newPivotCPs)
+        cpUpper = CStr(cpKeyVar)
+        If Not DictExists(oldPivotCPs, cpUpper) Then
+            newCPList.Add DictGet(newPivotCPs, cpUpper)
+        End If
+    Next cpKeyVar
     
-    ' Two-level Date Resolution: If sheet dates are missing or N/A, extract from filename
+    totalNewPivotCPs = totalNewPivotCPs + newCPList.Count
+    
+    ' 4. Date Resolution (Sheet cells with filename regex fallback)
     oldPeriodStr = FormatDateRange(oldMinDate, oldMaxDate)
     If oldPeriodStr = "N/A" Then oldPeriodStr = ExtractDateFromFilename(GetFileName(oldFilePath))
     If oldPeriodStr = "" Then oldPeriodStr = "N/A"
@@ -381,13 +465,13 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
     
     countDelta = newTxCount - oldTxCount
     alertDelta = newAlertCount - oldAlertCount
-    pctChange = 0#
-    If oldTxCount > 0 Then pctChange = (countDelta / oldTxCount) * 100#
     
     If countDelta > 0 Then
         countIncreasedAlerts = countIncreasedAlerts + 1
         If alertDelta > 0 Then
-            statusStr = "COUNT INCREASED (+" & countDelta & ") | NEW ALERTED TXNS (+" & alertDelta & ") [ALERT]"
+            statusStr = "COUNT INCREASED (+" & countDelta & ") | NEW ALERTED (+" & alertDelta & ") [ALERT]"
+        ElseIf newCPList.Count > 0 Then
+            statusStr = "COUNT INCREASED (+" & countDelta & ") | NEW CP ADDED (" & newCPList.Count & ") [ALERT]"
         Else
             statusStr = "COUNT INCREASED (+" & countDelta & ") [WARN]"
         End If
@@ -395,10 +479,14 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
         statusStr = "COUNT DECREASED (" & countDelta & ") [-]"
     Else
         countUnchangedAlerts = countUnchangedAlerts + 1
-        statusStr = "NO COUNT CHANGE (0) [OK]"
+        If newCPList.Count > 0 Then
+            statusStr = "NO COUNT CHANGE (0) | NEW CP ADDED (" & newCPList.Count & ") [ALERT]"
+        Else
+            statusStr = "NO COUNT CHANGE (0) [OK]"
+        End If
     End If
     
-    ' Write Dashboard Table Row (Columns B to O)
+    ' 5. Write Dashboard Table Row (Columns B to O - 14 Columns, No % Change)
     With wsDash
         .Cells(rowIdx, 2).Value = ecmID
         .Cells(rowIdx, 3).Value = alertID
@@ -409,19 +497,25 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
         .Cells(rowIdx, 8).Value = oldTxCount
         .Cells(rowIdx, 9).Value = newTxCount
         .Cells(rowIdx, 10).Value = countDelta
-        .Cells(rowIdx, 11).Value = pctChange / 100#
-        .Cells(rowIdx, 12).Value = oldAlertCount
-        .Cells(rowIdx, 13).Value = newAlertCount
-        .Cells(rowIdx, 14).Value = alertDelta
+        .Cells(rowIdx, 11).Value = oldAlertCount
+        .Cells(rowIdx, 12).Value = newAlertCount
+        .Cells(rowIdx, 13).Value = alertDelta
+        .Cells(rowIdx, 14).Value = IIf(newCPList.Count > 0, newCPList.Count & " New CP", "0")
         .Cells(rowIdx, 15).Value = statusStr
     End With
     
-    ' Record newly added transactions grouped by alert
+    ' 6. Record Added Transactions & Pivot Counterparty Diff into Discrepancy Sheet
+    ' (wsNew remains open during copy to preserve 100% exact formatting and all 44 columns)
     Dim pairAddedCount As Long, pairAlertedAdded As Long
-    RecordAddedTransactions wsAdded, ecmID, alertID, newMap, oldMap, pairAddedCount, pairAlertedAdded
+    RecordAddedTransactions wsAdded, ecmID, alertID, wsNew, newMap, oldMap, newCPList, pairAddedCount, pairAlertedAdded
     
     Dim pairDroppedCount As Long
-    RecordDroppedTransactions wsDropped, ecmID, alertID, oldMap, newMap, pairDroppedCount
+    RecordDroppedTransactions wsDropped, ecmID, alertID, wsOld, oldMap, newMap, pairDroppedCount
+    
+    ' 7. Close workbooks safely
+    Application.CutCopyMode = False
+    wbOld.Close SaveChanges:=False
+    wbNew.Close SaveChanges:=False
     
     totalAddedTxns = totalAddedTxns + pairAddedCount
     totalDroppedTxns = totalDroppedTxns + pairDroppedCount
@@ -429,7 +523,89 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
 End Sub
 
 ' =========================================================================
-' [METRICS] 8. EXTRACT TRANSACTIONS FROM SHEET
+' [PIVOT] 9. EXTRACT COUNTERPARTIES FROM PIVOT TABLE & SHEET
+' =========================================================================
+Private Function ExtractPivotCounterparties(ByVal wb As Workbook) As Object
+    Dim dict As Object
+    Dim ws As Worksheet
+    Dim pt As PivotTable, pf As PivotField, pi As PivotItem
+    Dim foundViaPivot As Boolean
+    
+    Set dict = CreateLookupDict()
+    
+    On Error Resume Next
+    Set ws = wb.Worksheets("Pivot")
+    If ws Is Nothing Then
+        Dim s As Worksheet
+        For Each s In wb.Worksheets
+            If InStr(1, s.Name, "pivot", vbTextCompare) > 0 Then
+                Set ws = s
+                Exit For
+            End If
+        Next s
+    End If
+    On Error GoTo 0
+    
+    If ws Is Nothing Then
+        Set ExtractPivotCounterparties = dict
+        Exit Function
+    End If
+    
+    ' Strategy 1: Excel Native PivotTable Object Model
+    foundViaPivot = False
+    On Error Resume Next
+    If ws.PivotTables.Count > 0 Then
+        For Each pt In ws.PivotTables
+            For Each pf In pt.PivotFields
+                If InStr(1, pf.Name, "counterparty", vbTextCompare) > 0 Then
+                    For Each pi In pf.PivotItems
+                        Dim piName As String
+                        piName = Trim(pi.Name)
+                        If piName <> "" And piName <> "(blank)" And piName <> "(empty)" Then
+                            If Not DictExists(dict, UCase(piName)) Then
+                                DictAdd dict, UCase(piName), piName
+                                foundViaPivot = True
+                            End If
+                        End If
+                    Next pi
+                End If
+            Next pf
+        Next pt
+    End If
+    On Error GoTo 0
+    
+    ' Strategy 2: Resilient Column A Cell Scanning (Starting row 4)
+    If Not foundViaPivot Or DictCount(dict) = 0 Then
+        Dim lastRow As Long, r As Long
+        Dim cellVal As String, upperVal As String
+        lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+        For r = 4 To lastRow
+            cellVal = Trim(CStr(ws.Cells(r, 1).Value))
+            upperVal = UCase(cellVal)
+            If upperVal <> "" And _
+               upperVal <> "ROW LABELS" And _
+               upperVal <> "GRAND TOTAL" And _
+               upperVal <> "TOTAL" And _
+               upperVal <> "CR" And _
+               upperVal <> "DR" And _
+               upperVal <> "CR TOTAL" And _
+               upperVal <> "DR TOTAL" And _
+               upperVal <> "(BLANK)" And _
+               InStr(1, upperVal, "MANY TO ONE", vbTextCompare) = 0 And _
+               InStr(1, upperVal, "SCENARIO", vbTextCompare) = 0 Then
+               
+                If Not DictExists(dict, upperVal) Then
+                    DictAdd dict, upperVal, cellVal
+                End If
+            End If
+        Next r
+    End If
+    
+    Set ExtractPivotCounterparties = dict
+End Function
+
+' =========================================================================
+' [METRICS] 10. EXTRACT TRANSACTIONS FROM RAW/LOOKBACK SHEET
 ' =========================================================================
 Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Long, ByRef alertCount As Long, _
                                      ByRef minDate As Variant, ByRef maxDate As Variant) As Object
@@ -456,7 +632,7 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     If lastCol < 2 Then lastCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
     
-    ' Scan rows 1 to 3 to locate header row
+    ' Scan rows 1 to 3 to locate header columns
     hRow = 1
     txIdCol = 1: isAlertCol = 0: dateCol = 0: amtCol = 0: accCol = 0: descCol = 0: cpCol = 0
     Dim testRow As Long
@@ -482,7 +658,6 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
         If dateCol > 0 Then Exit For
     Next testRow
     
-    ' Smart Fallback defaults based on AML schema
     If dateCol = 0 Then
         For c = 1 To lastCol
             If InStr(LCase(Trim(CStr(ws.Cells(hRow, c).Value))), "date") > 0 Then
@@ -519,9 +694,7 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
             
             amtVal = 0#
             If amtCol > 0 Then
-                If IsNumeric(ws.Cells(r, amtCol).Value) Then
-                    amtVal = CDbl(ws.Cells(r, amtCol).Value)
-                End If
+                If IsNumeric(ws.Cells(r, amtCol).Value) Then amtVal = CDbl(ws.Cells(r, amtCol).Value)
             End If
             
             accNo = "": descText = "": cpName = ""
@@ -529,7 +702,7 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
             If descCol > 0 Then descText = CStr(ws.Cells(r, descCol).Value)
             If cpCol > 0 Then cpName = CStr(ws.Cells(r, cpCol).Value)
             
-            ReDim recArray(0 To 6)
+            ReDim recArray(0 To 7)
             recArray(0) = txID
             recArray(1) = isAlert
             recArray(2) = IIf(IsEmpty(parsedDate), dtVal, parsedDate)
@@ -537,6 +710,7 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
             recArray(4) = accNo
             recArray(5) = descText
             recArray(6) = cpName
+            recArray(7) = r ' Source row index in sheet!
             
             If Not DictExists(dict, txID) Then
                 DictAdd dict, txID, recArray
@@ -548,16 +722,17 @@ Private Function ExtractTransactions(ByVal ws As Worksheet, ByRef txCount As Lon
 End Function
 
 ' =========================================================================
-' [AUDIT] 9. GROUPED & DIFFERENTIATED DISCREPANCY AUDIT WRITER
+' [AUDIT] 11. RECORD ADDED TRANSACTIONS (EXACT 44-COL FORMATTING & PIVOT DIFF)
 ' =========================================================================
 Private Sub RecordAddedTransactions(ByVal wsAdded As Worksheet, ByVal ecmID As String, ByVal alertID As String, _
-                                    ByVal newMap As Object, ByVal oldMap As Object, _
-                                    ByRef addedCount As Long, ByRef alertedAdded As Long)
+                                    ByVal wsNew As Worksheet, ByVal newMap As Object, ByVal oldMap As Object, _
+                                    ByVal newCPList As Collection, ByRef addedCount As Long, ByRef alertedAdded As Long)
     Dim txKeys As Variant
-    Dim i As Long, curRow As Long
-    Dim txID As String
+    Dim i As Long, curRow As Long, srcRow As Long
+    Dim txID As String, endColLetter As String
     Dim rec As Variant
     Dim addedList As New Collection
+    Dim lastCol As Long
     
     addedCount = 0
     alertedAdded = 0
@@ -573,95 +748,187 @@ Private Sub RecordAddedTransactions(ByVal wsAdded As Worksheet, ByVal ecmID As S
         End If
     Next i
     
-    ' If no transactions added for this alert, do not pollute the audit sheet
-    If addedCount = 0 Then Exit Sub
+    ' If no transactions added and no new counterparties in Pivot, do not clutter sheet
+    If addedCount = 0 And newCPList.Count = 0 Then Exit Sub
     
     curRow = wsAdded.Cells(wsAdded.Rows.Count, 2).End(xlUp).Row + 1
-    If curRow < 4 Then curRow = 4 Else curRow = curRow + 1 ' spacing gap before new alert block
+    If curRow < 4 Then curRow = 4 Else curRow = curRow + 2 ' clean 2-row separation between alerts
     
-    ' 1. Distinct Alert Header Banner (Spanning columns B to H)
-    wsAdded.Range("B" & curRow & ":H" & curRow).Merge
+    lastCol = wsNew.Cells(1, wsNew.Columns.Count).End(xlToLeft).Column
+    If lastCol < 7 Then lastCol = 44
+    endColLetter = Split(wsAdded.Cells(1, lastCol + 3).Address, "$")(1)
+    
+    ' 1. Distinct Alert Master Header Banner (Spanning Columns B to endColLetter)
+    wsAdded.Range("B" & curRow & ":" & endColLetter & curRow).Merge
     With wsAdded.Cells(curRow, 2)
-        .Value = "ECM ID: " & ecmID & "  |  ALERT ID: " & alertID & "  |  NEW TRANSACTIONS ADDED: " & addedCount & "  (" & alertedAdded & " Alerted [ALERT], " & (addedCount - alertedAdded) & " Non-Alerted)"
+        .Value = "ECM ID: " & ecmID & "   |   ALERT ID: " & alertID & "   |   EXTRA TRANSACTIONS IDENTIFIED: " & addedCount & _
+                 " (" & alertedAdded & " Alerted [ALERT], " & (addedCount - alertedAdded) & " Non-Alerted)   |   NEW PIVOT COUNTERPARTIES: " & newCPList.Count
         .Font.Name = "Segoe UI"
-        .Font.Size = 10
+        .Font.Size = 10.5
         .Font.Bold = True
         .Font.Color = COLOR_HEADER_TXT
         .Interior.Color = COLOR_HEADER_BG
         .HorizontalAlignment = xlLeft
         .VerticalAlignment = xlCenter
     End With
-    wsAdded.Rows(curRow).RowHeight = 26
+    wsAdded.Rows(curRow).RowHeight = 28
     curRow = curRow + 1
     
-    ' 2. Column Sub-headers
-    Dim subHeaders As Variant
-    subHeaders = Array("Transaction ID", "Is Alerted?", "Transaction Date", "Amount ($)", "Account No", "Transaction Description", "Counterparty Name")
-    Dim cIdx As Long
-    For cIdx = 0 To UBound(subHeaders)
-        With wsAdded.Cells(curRow, cIdx + 2)
-            .Value = subHeaders(cIdx)
+    ' 2. Pivot Counterparty Reconciliation Sub-Block
+    If newCPList.Count > 0 Then
+        wsAdded.Range("B" & curRow & ":F" & curRow).Merge
+        With wsAdded.Cells(curRow, 2)
+            .Value = "[!] PIVOT RECONCILIATION: " & newCPList.Count & " NEW COUNTERPARTY(IES) IDENTIFIED IN EXPANDED LOOKBACK PIVOT"
+            .Font.Name = "Segoe UI"
+            .Font.Size = 9.5
+            .Font.Bold = True
+            .Font.Color = COLOR_HEADER_TXT
+            .Interior.Color = COLOR_AMBER
+            .HorizontalAlignment = xlLeft
+            .VerticalAlignment = xlCenter
+        End With
+        wsAdded.Rows(curRow).RowHeight = 22
+        curRow = curRow + 1
+        
+        wsAdded.Cells(curRow, 2).Value = "Item #"
+        wsAdded.Cells(curRow, 3).Value = "New Counterparty Name (From Pivot)"
+        wsAdded.Cells(curRow, 4).Value = "Status in Old Scope"
+        wsAdded.Cells(curRow, 5).Value = "Associated In-Scope Added Txn ID"
+        wsAdded.Cells(curRow, 6).Value = "Counterparty Flag"
+        With wsAdded.Range("B" & curRow & ":F" & curRow)
             .Font.Name = "Segoe UI"
             .Font.Size = 9
             .Font.Bold = True
             .Font.Color = COLOR_HEADER_TXT
-            .Interior.Color = RGB(51, 65, 85) ' Slate 700
+            .Interior.Color = RGB(71, 85, 105)
             .HorizontalAlignment = xlCenter
             .VerticalAlignment = xlCenter
         End With
-    Next cIdx
+        wsAdded.Rows(curRow).RowHeight = 20
+        curRow = curRow + 1
+        
+        Dim cpIdx As Long, cpVal As Variant, assocTxn As String
+        cpIdx = 1
+        For Each cpVal In newCPList
+            assocTxn = FindTxnForCounterparty(newMap, CStr(cpVal))
+            wsAdded.Cells(curRow, 2).Value = cpIdx
+            wsAdded.Cells(curRow, 3).Value = CStr(cpVal)
+            wsAdded.Cells(curRow, 4).Value = "NOT IN OLD SCOPE"
+            wsAdded.Cells(curRow, 5).Value = IIf(assocTxn <> "", assocTxn, "Lookback Scope")
+            wsAdded.Cells(curRow, 6).Value = "NEW COUNTERPARTY [ALERT]"
+            
+            wsAdded.Cells(curRow, 2).HorizontalAlignment = xlCenter
+            wsAdded.Cells(curRow, 3).HorizontalAlignment = xlLeft
+            wsAdded.Cells(curRow, 4).HorizontalAlignment = xlCenter
+            wsAdded.Cells(curRow, 5).HorizontalAlignment = xlCenter
+            wsAdded.Cells(curRow, 6).HorizontalAlignment = xlCenter
+            wsAdded.Cells(curRow, 6).Font.Bold = True
+            wsAdded.Cells(curRow, 6).Font.Color = COLOR_ALERT_RED
+            wsAdded.Cells(curRow, 6).Interior.Color = RGB(254, 242, 242)
+            
+            With wsAdded.Range("B" & curRow & ":F" & curRow).Borders
+                .LineStyle = xlContinuous
+                .Color = COLOR_BORDER
+                .Weight = xlThin
+            End With
+            wsAdded.Rows(curRow).RowHeight = 20
+            curRow = curRow + 1
+            cpIdx = cpIdx + 1
+        Next cpVal
+    Else
+        wsAdded.Range("B" & curRow & ":F" & curRow).Merge
+        With wsAdded.Cells(curRow, 2)
+            .Value = "[OK] PIVOT RECONCILIATION: No new counterparties identified in Pivot (All counterparties in expanded lookback existed in previous scope)"
+            .Font.Name = "Segoe UI"
+            .Font.Size = 9
+            .Font.Bold = True
+            .Font.Color = COLOR_SUCCESS_GREEN
+            .Interior.Color = RGB(240, 253, 244)
+            .HorizontalAlignment = xlLeft
+            .VerticalAlignment = xlCenter
+        End With
+        With wsAdded.Range("B" & curRow & ":F" & curRow).Borders
+            .LineStyle = xlContinuous
+            .Color = RGB(187, 247, 208)
+            .Weight = xlThin
+        End With
+        wsAdded.Rows(curRow).RowHeight = 22
+        curRow = curRow + 1
+    End If
+    
+    curRow = curRow + 1 ' 1-row gap before transactions table
+    
+    ' 3. Extra Transactions Table Header (Preserving Exact Columns & Formatting from wsNew)
+    wsAdded.Range("B" & curRow & ":" & endColLetter & curRow).Merge
+    With wsAdded.Cells(curRow, 2)
+        .Value = "EXTRA TRANSACTIONS IDENTIFIED IN LOOKBACK PERIOD (PRESERVING EXACT NEW FILE SCHEMA & FORMATTING)"
+        .Font.Name = "Segoe UI"
+        .Font.Size = 9.5
+        .Font.Bold = True
+        .Font.Color = COLOR_HEADER_TXT
+        .Interior.Color = RGB(51, 65, 85)
+        .HorizontalAlignment = xlLeft
+        .VerticalAlignment = xlCenter
+    End With
     wsAdded.Rows(curRow).RowHeight = 22
     curRow = curRow + 1
     
-    ' 3. List of Transactions for this Alert
+    ' Set up ECM ID & Alert ID in Columns B and C, then copy all source headers from wsNew
+    wsAdded.Cells(curRow, 2).Value = "ECM ID"
+    wsAdded.Cells(curRow, 3).Value = "Alert ID"
+    With wsAdded.Range("B" & curRow & ":C" & curRow)
+        .Font.Name = "Segoe UI"
+        .Font.Size = 9.5
+        .Font.Bold = True
+        .Font.Color = COLOR_HEADER_TXT
+        .Interior.Color = RGB(51, 65, 85)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' Copy entire original header row from wsNew to wsAdded starting at Column D
+    wsNew.Range(wsNew.Cells(1, 1), wsNew.Cells(1, lastCol)).Copy wsAdded.Cells(curRow, 4)
+    wsAdded.Rows(curRow).RowHeight = wsNew.Rows(1).RowHeight
+    If wsAdded.Rows(curRow).RowHeight < 22 Then wsAdded.Rows(curRow).RowHeight = 22
+    curRow = curRow + 1
+    
+    ' 4. Copy each added transaction row directly from wsNew with full formatting
     Dim itemVar As Variant
     For Each itemVar In addedList
         rec = itemVar
-        wsAdded.Cells(curRow, 2).Value = rec(0) ' Txn ID
-        wsAdded.Cells(curRow, 3).Value = IIf(CStr(rec(1)) = "Yes", "Yes [ALERT]", "No")
-        wsAdded.Cells(curRow, 4).Value = rec(2) ' Date
-        wsAdded.Cells(curRow, 5).Value = rec(3) ' Amount
-        wsAdded.Cells(curRow, 6).Value = rec(4) ' Account No
-        wsAdded.Cells(curRow, 7).Value = rec(5) ' Description
-        wsAdded.Cells(curRow, 8).Value = rec(6) ' Counterparty
+        srcRow = CLng(rec(7))
         
+        wsAdded.Cells(curRow, 2).Value = ecmID
+        wsAdded.Cells(curRow, 3).Value = alertID
         wsAdded.Cells(curRow, 2).HorizontalAlignment = xlCenter
         wsAdded.Cells(curRow, 3).HorizontalAlignment = xlCenter
-        wsAdded.Cells(curRow, 4).HorizontalAlignment = xlCenter
-        If IsDate(rec(2)) Then wsAdded.Cells(curRow, 4).NumberFormat = "yyyy-mm-dd"
-        wsAdded.Cells(curRow, 5).HorizontalAlignment = xlRight
-        wsAdded.Cells(curRow, 5).NumberFormat = "$#,##0.00"
-        wsAdded.Cells(curRow, 6).HorizontalAlignment = xlLeft
-        wsAdded.Cells(curRow, 7).HorizontalAlignment = xlLeft
-        wsAdded.Cells(curRow, 8).HorizontalAlignment = xlLeft
         
+        ' Copy entire row range with 100% fidelity (values, formatting, formulas, borders)
+        wsNew.Range(wsNew.Cells(srcRow, 1), wsNew.Cells(srcRow, lastCol)).Copy wsAdded.Cells(curRow, 4)
         wsAdded.Rows(curRow).RowHeight = 20
         
-        With wsAdded.Range("B" & curRow & ":H" & curRow).Borders
-            .LineStyle = xlContinuous
-            .Color = COLOR_BORDER
-            .Weight = xlThin
-        End With
-        
         If CStr(rec(1)) = "Yes" Then
-            wsAdded.Cells(curRow, 3).Font.Bold = True
-            wsAdded.Cells(curRow, 3).Font.Color = COLOR_ALERT_RED
+            wsAdded.Cells(curRow, 2).Interior.Color = RGB(254, 242, 242)
             wsAdded.Cells(curRow, 3).Interior.Color = RGB(254, 242, 242)
-        Else
-            wsAdded.Cells(curRow, 3).Font.Color = RGB(71, 85, 105)
+            wsAdded.Cells(curRow, 2).Font.Bold = True
+            wsAdded.Cells(curRow, 3).Font.Bold = True
         End If
         curRow = curRow + 1
     Next itemVar
 End Sub
 
+' =========================================================================
+' [AUDIT] 12. RECORD DROPPED TRANSACTIONS
+' =========================================================================
 Private Sub RecordDroppedTransactions(ByVal wsDropped As Worksheet, ByVal ecmID As String, ByVal alertID As String, _
-                                      ByVal oldMap As Object, ByVal newMap As Object, _
+                                      ByVal wsOld As Worksheet, ByVal oldMap As Object, ByVal newMap As Object, _
                                       ByRef droppedCount As Long)
     Dim txKeys As Variant
-    Dim i As Long, curRow As Long
-    Dim txID As String
+    Dim i As Long, curRow As Long, srcRow As Long
+    Dim txID As String, endColLetter As String
     Dim rec As Variant
     Dim droppedList As New Collection
+    Dim lastCol As Long
     
     droppedCount = 0
     txKeys = DictKeys(oldMap)
@@ -677,73 +944,75 @@ Private Sub RecordDroppedTransactions(ByVal wsDropped As Worksheet, ByVal ecmID 
     If droppedCount = 0 Then Exit Sub
     
     curRow = wsDropped.Cells(wsDropped.Rows.Count, 2).End(xlUp).Row + 1
-    If curRow < 4 Then curRow = 4 Else curRow = curRow + 1
+    If curRow < 4 Then curRow = 4 Else curRow = curRow + 2
     
-    wsDropped.Range("B" & curRow & ":H" & curRow).Merge
+    lastCol = wsOld.Cells(1, wsOld.Columns.Count).End(xlToLeft).Column
+    If lastCol < 7 Then lastCol = 34
+    endColLetter = Split(wsDropped.Cells(1, lastCol + 3).Address, "$")(1)
+    
+    wsDropped.Range("B" & curRow & ":" & endColLetter & curRow).Merge
     With wsDropped.Cells(curRow, 2)
-        .Value = "ECM ID: " & ecmID & "  |  ALERT ID: " & alertID & "  |  DROPPED TRANSACTIONS: " & droppedCount
+        .Value = "ECM ID: " & ecmID & "  |  ALERT ID: " & alertID & "  |  DROPPED / EXCLUDED TRANSACTIONS: " & droppedCount
         .Font.Name = "Segoe UI"
-        .Font.Size = 10
+        .Font.Size = 10.5
         .Font.Bold = True
         .Font.Color = COLOR_HEADER_TXT
         .Interior.Color = COLOR_HEADER_BG
         .HorizontalAlignment = xlLeft
         .VerticalAlignment = xlCenter
     End With
-    wsDropped.Rows(curRow).RowHeight = 26
+    wsDropped.Rows(curRow).RowHeight = 28
     curRow = curRow + 1
     
-    Dim subHeaders As Variant
-    subHeaders = Array("Transaction ID", "Is Alerted?", "Transaction Date", "Amount ($)", "Account No", "Transaction Description", "Counterparty Name")
-    Dim cIdx As Long
-    For cIdx = 0 To UBound(subHeaders)
-        With wsDropped.Cells(curRow, cIdx + 2)
-            .Value = subHeaders(cIdx)
-            .Font.Name = "Segoe UI"
-            .Font.Size = 9
-            .Font.Bold = True
-            .Font.Color = COLOR_HEADER_TXT
-            .Interior.Color = RGB(51, 65, 85)
-            .HorizontalAlignment = xlCenter
-            .VerticalAlignment = xlCenter
-        End With
-    Next cIdx
+    wsDropped.Cells(curRow, 2).Value = "ECM ID"
+    wsDropped.Cells(curRow, 3).Value = "Alert ID"
+    With wsDropped.Range("B" & curRow & ":C" & curRow)
+        .Font.Name = "Segoe UI"
+        .Font.Size = 9.5
+        .Font.Bold = True
+        .Font.Color = COLOR_HEADER_TXT
+        .Interior.Color = RGB(51, 65, 85)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    wsOld.Range(wsOld.Cells(1, 1), wsOld.Cells(1, lastCol)).Copy wsDropped.Cells(curRow, 4)
     wsDropped.Rows(curRow).RowHeight = 22
     curRow = curRow + 1
     
     Dim itemVar As Variant
     For Each itemVar In droppedList
         rec = itemVar
-        wsDropped.Cells(curRow, 2).Value = rec(0)
-        wsDropped.Cells(curRow, 3).Value = rec(1)
-        wsDropped.Cells(curRow, 4).Value = rec(2)
-        wsDropped.Cells(curRow, 5).Value = rec(3)
-        wsDropped.Cells(curRow, 6).Value = rec(4)
-        wsDropped.Cells(curRow, 7).Value = rec(5)
-        wsDropped.Cells(curRow, 8).Value = rec(6)
-        
+        srcRow = CLng(rec(7))
+        wsDropped.Cells(curRow, 2).Value = ecmID
+        wsDropped.Cells(curRow, 3).Value = alertID
         wsDropped.Cells(curRow, 2).HorizontalAlignment = xlCenter
         wsDropped.Cells(curRow, 3).HorizontalAlignment = xlCenter
-        wsDropped.Cells(curRow, 4).HorizontalAlignment = xlCenter
-        If IsDate(rec(2)) Then wsDropped.Cells(curRow, 4).NumberFormat = "yyyy-mm-dd"
-        wsDropped.Cells(curRow, 5).HorizontalAlignment = xlRight
-        wsDropped.Cells(curRow, 5).NumberFormat = "$#,##0.00"
-        wsDropped.Cells(curRow, 6).HorizontalAlignment = xlLeft
-        wsDropped.Cells(curRow, 7).HorizontalAlignment = xlLeft
-        wsDropped.Cells(curRow, 8).HorizontalAlignment = xlLeft
         
+        wsOld.Range(wsOld.Cells(srcRow, 1), wsOld.Cells(srcRow, lastCol)).Copy wsDropped.Cells(curRow, 4)
         wsDropped.Rows(curRow).RowHeight = 20
-        With wsDropped.Range("B" & curRow & ":H" & curRow).Borders
-            .LineStyle = xlContinuous
-            .Color = COLOR_BORDER
-            .Weight = xlThin
-        End With
         curRow = curRow + 1
     Next itemVar
 End Sub
 
+' Helper to match counterparty name to added transaction ID
+Private Function FindTxnForCounterparty(ByVal newMap As Object, ByVal cpName As String) As String
+    Dim k As Variant, rec As Variant
+    Dim target As String
+    target = UCase(Trim(cpName))
+    
+    For Each k In DictKeys(newMap)
+        rec = DictGet(newMap, CStr(k))
+        If UCase(Trim(CStr(rec(6)))) = target Then
+            FindTxnForCounterparty = CStr(rec(0))
+            Exit Function
+        End If
+    Next k
+    FindTxnForCounterparty = ""
+End Function
+
 ' =========================================================================
-' [UI] 10. DASHBOARD FORMATTING & BUTTON SETUP
+' [UI] 13. DASHBOARD FORMATTING & BUTTON SETUP
 ' =========================================================================
 Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal forceReset As Boolean = False) As Worksheet
     Dim ws As Worksheet
@@ -768,21 +1037,21 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     ActiveWindow.DisplayGridlines = True
     On Error GoTo 0
     
-    ' Column Widths (Columns B to O)
+    ' Column Widths (Columns B to O - 14 Columns total, No % Change)
     ws.Columns("A").ColumnWidth = 3
-    ws.Columns("B").ColumnWidth = 16 ' ECM ID
+    ws.Columns("B").ColumnWidth = 14 ' ECM ID
     ws.Columns("C").ColumnWidth = 18 ' Alert ID
-    ws.Columns("D").ColumnWidth = 34 ' Old File Name
-    ws.Columns("E").ColumnWidth = 34 ' New File Name
+    ws.Columns("D").ColumnWidth = 32 ' Old File Name
+    ws.Columns("E").ColumnWidth = 32 ' New File Name
     ws.Columns("F").ColumnWidth = 24 ' Old Period
     ws.Columns("G").ColumnWidth = 24 ' New Period
-    ws.Columns("H").ColumnWidth = 12 ' Old Count
-    ws.Columns("I").ColumnWidth = 12 ' New Count
+    ws.Columns("H").ColumnWidth = 11 ' Old Count
+    ws.Columns("I").ColumnWidth = 11 ' New Count
     ws.Columns("J").ColumnWidth = 12 ' Count Delta
-    ws.Columns("K").ColumnWidth = 11 ' % Change
-    ws.Columns("L").ColumnWidth = 12 ' Old Alerted
-    ws.Columns("M").ColumnWidth = 12 ' New Alerted
-    ws.Columns("N").ColumnWidth = 12 ' Alerted Delta
+    ws.Columns("K").ColumnWidth = 12 ' Old Alerted
+    ws.Columns("L").ColumnWidth = 12 ' New Alerted
+    ws.Columns("M").ColumnWidth = 12 ' Alerted Delta
+    ws.Columns("N").ColumnWidth = 16 ' New CPs (Pivot)
     ws.Columns("O").ColumnWidth = 38 ' Status Badge
     
     ws.Rows("1:3").RowHeight = 12
@@ -795,7 +1064,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     ws.Rows(13).RowHeight = 12
     ws.Rows(14).RowHeight = 26     ' Table Header
     
-    ' Master Banner Header
+    ' Master Banner Header (Columns B to O)
     ws.Range("B4:O4").Merge
     With ws.Range("B4")
         .Value = "AML TRANSACTION MONITORING - LOOKBACK PERIOD BATCH RECONCILIATION COCKPIT"
@@ -810,7 +1079,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     
     ws.Range("B5:O5").Merge
     With ws.Range("B5")
-        .Value = "Automated discrepancy verification when review period dates expand | Quantifies transaction count increases and newly alerted transactions"
+        .Value = "Automated reconciliation when lookback dates expand | Validates transaction counts, newly alerted transactions, and newly added counterparties in Pivot"
         .Font.Name = "Segoe UI"
         .Font.Size = 9.5
         .Font.Color = RGB(100, 116, 139)
@@ -819,23 +1088,24 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
         .VerticalAlignment = xlCenter
     End With
     
-    ' Build 5 Clean KPI Tiles (Focused on Counts & Status)
-    CreateKPITile ws, "B7:D9", "ALERTS EVALUATED", "0", "Total compared alert files"
-    CreateKPITile ws, "E7:G9", "ALERTS WITH INCREASED COUNT", "0", "Lookback count increased [WARN]"
-    CreateKPITile ws, "H7:J9", "TOTAL TXNS ADDED", "0", "Net transaction volume growth"
-    CreateKPITile ws, "K7:M9", "NEW ALERTED TXNS", "0", "Newly captured in-scope alerts [ALERT]"
-    CreateKPITile ws, "N7:O9", "ALERTS UNCHANGED", "0", "Exact count match [OK]"
+    ' Build 5 Balanced KPI Tiles (Columns B to O)
+    CreateKPITile ws, "B7:C9", "ALERTS EVALUATED", "0", "Total compared alert pairs"
+    CreateKPITile ws, "D7:F9", "ALERTS WITH COUNT INCREASE", "0", "Lookback count increased [WARN]"
+    CreateKPITile ws, "G7:I9", "TOTAL EXTRA TXNS ADDED", "0", "Net transaction volume growth"
+    CreateKPITile ws, "J7:L9", "NEW ALERTED TXNS", "0", "Newly captured in-scope [ALERT]"
+    CreateKPITile ws, "M7:O9", "NEW COUNTERPARTIES (PIVOT)", "0", "New entities detected in Pivot"
     
-    ' Action Buttons
-    CreateActionButton ws, 12, "B", "E", "[RUN] Run Batch Comparison (Folders)", "Run_Batch_Comparison", COLOR_ACCENT_BLUE
-    CreateActionButton ws, 12, "F", "H", "[OPEN] Compare Single Pair", "Run_Single_Pair_Comparison", RGB(79, 70, 229)
-    CreateActionButton ws, 12, "I", "L", "[VIEW] View Added Txns Sheet", "View_Added_Transactions", RGB(13, 148, 136)
-    CreateActionButton ws, 12, "M", "O", "[RESET] Reset Dashboard", "Clear_Comparison_Dashboard", RGB(100, 116, 139)
+    ' Action Buttons (Row 12 across Columns B to O)
+    CreateActionButton ws, 12, "B", "D", "[RUN] Run Batch Comparison", "Run_Batch_Comparison", COLOR_ACCENT_BLUE
+    CreateActionButton ws, 12, "E", "G", "[OPEN] Compare Single Pair", "Run_Single_Pair_Comparison", RGB(79, 70, 229)
+    CreateActionButton ws, 12, "H", "J", "[EXPORT] Export to New Workbook", "Export_To_New_Workbook", RGB(16, 149, 193)
+    CreateActionButton ws, 12, "K", "M", "[VIEW] View Discrepancies", "View_Added_Transactions", RGB(13, 148, 136)
+    CreateActionButton ws, 12, "N", "O", "[RESET] Reset", "Clear_Comparison_Dashboard", RGB(100, 116, 139)
     
-    ' Table Header Row (Columns B to O)
+    ' Table Header Row (Columns B to O - 14 Columns total)
     Dim headers As Variant
     headers = Array("ECM ID", "Alert ID", "Old File Name", "New File Name", "Old Date Period", "New Date Period", _
-                    "Old Count", "New Count", "Count Delta", "% Change", "Old Alerted", "New Alerted", "Alerted Delta", "Reconciliation Status")
+                    "Old Count", "New Count", "Count Delta", "Old Alerted", "New Alerted", "Alerted Delta", "New CPs (Pivot)", "Reconciliation Status")
                     
     Dim c As Long
     For c = 0 To UBound(headers)
@@ -900,19 +1170,19 @@ Private Sub CreateKPITile(ByVal ws As Worksheet, ByVal cellRange As String, ByVa
 End Sub
 
 Private Sub UpdateKPICards(ByVal ws As Worksheet, ByVal totalAlerts As Long, ByVal increasedCount As Long, _
-                           ByVal addedTxns As Long, ByVal newAlerted As Long, ByVal unchangedCount As Long)
+                           ByVal addedTxns As Long, ByVal newAlerted As Long, ByVal newPivotCPs As Long)
     ws.Range("B8").Value = totalAlerts
-    ws.Range("E8").Value = increasedCount
-    If increasedCount > 0 Then ws.Range("E8").Font.Color = COLOR_AMBER
+    ws.Range("D8").Value = increasedCount
+    If increasedCount > 0 Then ws.Range("D8").Font.Color = COLOR_AMBER
     
-    ws.Range("H8").Value = addedTxns
-    If addedTxns > 0 Then ws.Range("H8").Font.Color = COLOR_ACCENT_BLUE
+    ws.Range("G8").Value = addedTxns
+    If addedTxns > 0 Then ws.Range("G8").Font.Color = COLOR_ACCENT_BLUE
     
-    ws.Range("K8").Value = newAlerted
-    If newAlerted > 0 Then ws.Range("K8").Font.Color = COLOR_ALERT_RED
+    ws.Range("J8").Value = newAlerted
+    If newAlerted > 0 Then ws.Range("J8").Font.Color = COLOR_ALERT_RED
     
-    ws.Range("N8").Value = unchangedCount
-    If unchangedCount > 0 Then ws.Range("N8").Font.Color = COLOR_SUCCESS_GREEN
+    ws.Range("M8").Value = newPivotCPs
+    If newPivotCPs > 0 Then ws.Range("M8").Font.Color = COLOR_AMBER
 End Sub
 
 Private Sub CreateActionButton(ByVal ws As Worksheet, ByVal rowIdx As Long, ByVal startCol As String, ByVal endCol As String, _
@@ -934,7 +1204,7 @@ Private Sub CreateActionButton(ByVal ws As Worksheet, ByVal rowIdx As Long, ByVa
             .VerticalAnchor = msoAnchorMiddle
             .TextRange.Text = btnText
             .TextRange.Font.Name = "Segoe UI"
-            .TextRange.Font.Size = 10
+            .TextRange.Font.Size = 9.5
             .TextRange.Font.Bold = msoTrue
             .TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
             .TextRange.ParagraphFormat.Alignment = msoAlignCenter
@@ -973,11 +1243,10 @@ Private Sub FormatBatchTable(ByVal ws As Worksheet, ByVal startRow As Long, ByVa
         ws.Range(ws.Cells(r, 8), ws.Cells(r, 10)).HorizontalAlignment = xlRight
         ws.Range(ws.Cells(r, 8), ws.Cells(r, 10)).NumberFormat = "#,##0"
         
-        ws.Cells(r, 11).HorizontalAlignment = xlRight
-        ws.Cells(r, 11).NumberFormat = "0.00%"
+        ws.Range(ws.Cells(r, 11), ws.Cells(r, 13)).HorizontalAlignment = xlRight
+        ws.Range(ws.Cells(r, 11), ws.Cells(r, 13)).NumberFormat = "#,##0"
         
-        ws.Range(ws.Cells(r, 12), ws.Cells(r, 14)).HorizontalAlignment = xlRight
-        ws.Range(ws.Cells(r, 12), ws.Cells(r, 14)).NumberFormat = "#,##0"
+        ws.Cells(r, 14).HorizontalAlignment = xlCenter ' New CPs (Pivot)
         
         If ws.Cells(r, 10).Value > 0 Then
             ws.Cells(r, 10).Font.Bold = True
@@ -985,17 +1254,26 @@ Private Sub FormatBatchTable(ByVal ws As Worksheet, ByVal startRow As Long, ByVa
             ws.Cells(r, 10).Interior.Color = RGB(254, 242, 242)
         End If
         
-        If ws.Cells(r, 14).Value > 0 Then
+        If ws.Cells(r, 13).Value > 0 Then
+            ws.Cells(r, 13).Font.Bold = True
+            ws.Cells(r, 13).Font.Color = COLOR_ALERT_RED
+        End If
+        
+        If InStr(CStr(ws.Cells(r, 14).Value), "New CP") > 0 Then
             ws.Cells(r, 14).Font.Bold = True
-            ws.Cells(r, 14).Font.Color = COLOR_ALERT_RED
+            ws.Cells(r, 14).Font.Color = COLOR_AMBER
+            ws.Cells(r, 14).Interior.Color = RGB(254, 243, 199)
         End If
         
         With ws.Cells(r, 15)
             .HorizontalAlignment = xlLeft
             .Font.Bold = True
-            If InStr(.Value, "NEW ALERTED TXNS") > 0 Then
+            If InStr(.Value, "NEW ALERTED") > 0 Then
                 .Font.Color = COLOR_ALERT_RED
                 .Interior.Color = RGB(254, 242, 242)
+            ElseIf InStr(.Value, "NEW CP ADDED") > 0 Then
+                .Font.Color = COLOR_AMBER
+                .Interior.Color = RGB(254, 243, 199)
             ElseIf InStr(.Value, "COUNT INCREASED") > 0 Then
                 .Font.Color = COLOR_AMBER
                 .Interior.Color = RGB(254, 243, 199)
@@ -1036,18 +1314,10 @@ Private Sub FormatAuditSheetHeaders(ByVal ws As Worksheet, ByVal bannerTitle As 
     On Error GoTo 0
     
     ws.Columns("A").ColumnWidth = 3
-    ws.Columns("B").ColumnWidth = 18 ' Txn ID
-    ws.Columns("C").ColumnWidth = 14 ' Alerted?
-    ws.Columns("D").ColumnWidth = 14 ' Date
-    ws.Columns("E").ColumnWidth = 16 ' Amount
-    ws.Columns("F").ColumnWidth = 24 ' Account No
-    ws.Columns("G").ColumnWidth = 28 ' Description
-    ws.Columns("H").ColumnWidth = 32 ' Counterparty
-    
     ws.Rows(1).RowHeight = 28
     ws.Rows(2).RowHeight = 10
     
-    ws.Range("B1:H1").Merge
+    ws.Range("B1:Z1").Merge
     With ws.Range("B1")
         .Value = bannerTitle
         .Font.Name = "Segoe UI"
@@ -1061,12 +1331,11 @@ Private Sub FormatAuditSheetHeaders(ByVal ws As Worksheet, ByVal bannerTitle As 
 End Sub
 
 ' =========================================================================
-' [HELPER] 11. CROSS-PLATFORM HELPERS (Mac & Windows)
+' [HELPER] 14. CROSS-PLATFORM FILE & STRING HELPERS
 ' =========================================================================
 Private Function Pick_Folder(ByVal promptTitle As String) As String
 #If Mac Then
-    Dim script As String
-    Dim result As String
+    Dim script As String, result As String
     script = "return POSIX path of (choose folder with prompt """ & promptTitle & """)"
     On Error Resume Next
     result = MacScript(script)
@@ -1096,25 +1365,20 @@ End Function
 
 Private Function ListExcelFiles(ByVal folderPath As String) As Collection
     Dim col As New Collection
-    Dim sFile As String
-    Dim pSep As String
+    Dim sFile As String, pSep As String
     
     pSep = Application.PathSeparator
     If Right(folderPath, 1) <> pSep Then folderPath = folderPath & pSep
     
     sFile = Dir(folderPath & "*.xlsx")
     Do While sFile <> ""
-        If Left(sFile, 2) <> "~$" Then
-            col.Add folderPath & sFile
-        End If
+        If Left(sFile, 2) <> "~$" Then col.Add folderPath & sFile
         sFile = Dir()
     Loop
     
     sFile = Dir(folderPath & "*.xlsm")
     Do While sFile <> ""
-        If Left(sFile, 2) <> "~$" Then
-            col.Add folderPath & sFile
-        End If
+        If Left(sFile, 2) <> "~$" Then col.Add folderPath & sFile
         sFile = Dir()
     Loop
     
@@ -1174,7 +1438,6 @@ Private Function ExtractAlertID(ByVal fPath As String) As String
     If pos > 0 Then ExtractAlertID = Left(fName, pos - 1) Else ExtractAlertID = fName
 End Function
 
-' Match Key across Old and New files (uses Alert ID, fallback to ECM ID)
 Private Function ExtractMatchKey(ByVal fPath As String) As String
     Dim aID As String, eID As String
     aID = ExtractAlertID(fPath)
@@ -1188,17 +1451,14 @@ Private Function ExtractMatchKey(ByVal fPath As String) As String
     End If
 End Function
 
-' Extracts review dates directly from filename e.g. "06.02.2025 to 06.03.2026"
 Private Function ExtractDateFromFilename(ByVal fName As String) As String
     Dim posTo As Long, leftPart As String, rightPart As String
-    Dim d1 As String, d2 As String, i As Long, ch As String
+    Dim d1 As String, d2 As String
     
     posTo = InStr(1, LCase(fName), " to ")
     If posTo > 10 Then
-        ' Search backwards from " to " for 10-character date e.g. 06.02.2025
         leftPart = Trim(Left(fName, posTo - 1))
         d1 = Right(leftPart, 10)
-        ' Check if it has date separators
         If (Mid(d1, 3, 1) = "." Or Mid(d1, 3, 1) = "/" Or Mid(d1, 3, 1) = "-") And _
            (Mid(d1, 6, 1) = "." Or Mid(d1, 6, 1) = "/" Or Mid(d1, 6, 1) = "-") Then
             d1 = Replace(Replace(d1, ".", "-"), "/", "-")
@@ -1217,7 +1477,6 @@ Private Function ExtractDateFromFilename(ByVal fName As String) As String
     ExtractDateFromFilename = ""
 End Function
 
-' Robust Date parser for serials (45887), dot-strings (06.02.2025), and standard dates
 Private Function ParseDateValue(ByVal val As Variant) As Variant
     If IsEmpty(val) Then Exit Function
     Dim s As String, d As Double
@@ -1234,9 +1493,7 @@ Private Function ParseDateValue(ByVal val As Variant) As Variant
         End If
     End If
     
-    If InStr(s, ".") > 0 Then
-        s = Replace(s, ".", "/")
-    End If
+    If InStr(s, ".") > 0 Then s = Replace(s, ".", "/")
     
     If IsDate(s) Then
         On Error Resume Next
@@ -1254,8 +1511,7 @@ Private Function GetFileName(ByVal fPath As String) As String
 End Function
 
 Private Function FindTransactionSheet(ByVal wb As Workbook) As Worksheet
-    Dim ws As Worksheet
-    Dim sName As String
+    Dim ws As Worksheet, sName As String
     
     For Each ws In wb.Worksheets
         sName = LCase(ws.Name)
@@ -1313,7 +1569,7 @@ Private Function GetOrCreateWorksheet(ByVal wb As Workbook, ByVal sheetName As S
 End Function
 
 ' =========================================================================
-' [DICT] 12. UNIVERSAL KEY-VALUE LOOKUP (Zero-crash Mac/Win implementation)
+' [DICT] 15. UNIVERSAL KEY-VALUE LOOKUP
 ' =========================================================================
 Private Function CreateLookupDict() As Object
     On Error Resume Next
@@ -1350,6 +1606,16 @@ Private Function DictGet(ByVal d As Object, ByVal k As String) As Variant
         DictGet = d(k)
     Else
         DictGet = d(k)
+    End If
+End Function
+
+Private Function DictCount(ByVal d As Object) As Long
+    If d Is Nothing Then
+        DictCount = 0
+    ElseIf TypeName(d) = "Dictionary" Then
+        DictCount = d.Count
+    Else
+        DictCount = d.Count
     End If
 End Function
 
