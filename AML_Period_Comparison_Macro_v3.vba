@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 3.1
+' Version: 3.2
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -14,7 +14,11 @@ Attribute VB_Name = "AML_Period_Comparison"
 '  2. Dashboard with KPI cards, one-click buttons and a status per alert.
 '  3. Sheet "New_CP_Pivots": a summary per alert plus one pivot table per
 '     alert listing its newly identified counterparties.
-'  4. Single-pair and batch-folder comparison. Windows and Mac (Excel 2016+).
+'  4. Optional: updates each alert's escalation narrative (ECMID_ALERTID_*.docx)
+'     with the New file figures. Edited copies go to a new subfolder; every
+'     change is highlighted yellow (and tracked); items needing judgement are
+'     added as Word comments. Originals are never changed. Needs Microsoft Word.
+'  5. Single-pair and batch-folder comparison. Windows and Mac (Excel 2016+).
 '
 ' Counterparty rules:
 '  - Counterparty comes from a "Counterparty" column. If a sheet has none, it
@@ -35,6 +39,9 @@ Option Explicit
 Private Const TEXT_DATE_ORDER As String = "MDY"
 ' How many rows from the top of a sheet are searched for the header row.
 Private Const HEADER_SCAN_ROWS As Long = 10
+' Narrative update: also record each change as a Word tracked change
+' (old value struck through). Changes are always highlighted yellow.
+Private Const NARRATIVE_TRACK_CHANGES As Boolean = True
 
 ' --- Design System Palette (Tailored Slate Theme) ---
 Private Const COLOR_HEADER_BG As Long = 2762511     ' Slate 900 RGB(15, 23, 42)
@@ -65,10 +72,10 @@ Private Const SHEET_NEWCP_PIVOTS As String = "New_CP_Pivots"
 Private Const SHEET_LEGACY_MODIFIED As String = "Discrepancy_Modified_Txns"   ' created by v3.0; removed on run
 
 ' --- Dashboard Layout ---
-Private Const DASH_VERSION As String = "AML-PERIOD-COMPARISON-3.1"
+Private Const DASH_VERSION As String = "AML-PERIOD-COMPARISON-3.2"
 Private Const DASH_TITLE As String = "AML TRANSACTION MONITORING - LOOKBACK PERIOD BATCH RECONCILIATION COCKPIT"
 Private Const FIRST_DATA_ROW As Long = 15
-Private Const DASH_COLS As Long = 17               ' columns B:R
+Private Const DASH_COLS As Long = 18               ' columns B:S
 
 ' --- Audit Sheet Kinds ---
 Private Const AUDIT_ADDED As Long = 1
@@ -90,6 +97,7 @@ Private Const FLD_DRCR As Long = 8
 Private Const FLD_CCY As Long = 9
 Private Const FLD_ORIG As Long = 10
 Private Const FLD_BEN As Long = 11
+Private Const FLD_RULE As Long = 12
 
 ' --- Transaction Record Layout (0-based array) ---
 Private Const F_TXID As Long = 0
@@ -115,6 +123,7 @@ Private Type ColMap
     Ccy As Long
     OrigName As Long
     BenName As Long
+    Rule As Long
 End Type
 
 Private Type TxnSet
@@ -138,6 +147,10 @@ Private Type TxnSet
     HasDrCr As Boolean
     HasCcy As Boolean
     HasCP As Boolean
+    AlertAmt As Double         ' alerted transactions: gross amount
+    AlertMin As Variant        ' alerted transactions: first date
+    AlertMax As Variant        ' alerted transactions: last date
+    RuleText As String         ' rule(s) named on the alerted rows, e.g. "Many to one fund transfer - Wires"
 End Type
 
 Private Type PairResult
@@ -151,6 +164,8 @@ Private Type PairResult
     NewCPNames As String       ' "NAME A; NAME B"
     NewCPAgg As Object         ' normalised name -> Array(name, txn count, amount)
     CPUnknown As Long          ' new transactions whose counterparty could not be checked
+    AddedDetail As String      ' one line per new transaction (first 25)
+    NewCPDetail As String      ' "NAME (n txn(s), $x); ..."
 End Type
 
 Private Type BatchTotals
@@ -167,6 +182,48 @@ Private Type BatchTotals
     NewCP As Long
     Currencies As String
     AlertRows As Collection    ' Array(ecm, alert, new txns, amount, new CPs, names, aggregate)
+    NarrUpdated As Long
+    NarrFlagged As Long
+    NarrNoChange As Long
+    NarrNotFound As Long
+    NarrErrors As Long
+    NarrOutDir As String
+End Type
+
+Private Type NarrCtx
+    EcmID As String
+    AlertID As String
+    OldFile As String
+    NewFile As String
+    OldCount As Long
+    NewCount As Long
+    OldTotal As Double
+    NewTotal As Double
+    OldMin As Variant
+    OldMax As Variant
+    NewMin As Variant
+    NewMax As Variant
+    OldAlertCount As Long
+    NewAlertCount As Long
+    OldAlertAmt As Double
+    NewAlertAmt As Double
+    OldAlertMin As Variant
+    OldAlertMax As Variant
+    NewAlertMin As Variant
+    NewAlertMax As Variant
+    OldPeriodFrom As Variant
+    OldPeriodTo As Variant
+    NewPeriodFrom As Variant
+    NewPeriodTo As Variant
+    RuleText As String
+    AddedCount As Long
+    AddedAmount As Double
+    AddedAlerted As Long
+    AddedDetail As String
+    DroppedCount As Long
+    NewCPDistinct As Long
+    NewCPDetail As String
+    MonthChanges As Collection
 End Type
 
 Private Type AppState
@@ -176,6 +233,11 @@ Private Type AppState
     Calculation As Long
     HasCalculation As Boolean
 End Type
+
+' Word instance used for narrative updates (late bound)
+Private mWord As Object
+Private mWordCreated As Boolean
+Private mWordAlerts As Long
 
 ' =========================================================================
 ' [UI] 0. USER-FACING MACRO: CREATE / REBUILD THE DASHBOARD
@@ -244,7 +306,7 @@ Public Sub Run_Batch_Comparison()
     Set jobs = BuildBatchJobs(oldFolder, newFolder, wbDashboard.FullName)
     If jobs Is Nothing Then Exit Sub
 
-    RunJobs wbDashboard, jobs, "Batch"
+    RunJobs wbDashboard, jobs, "Batch", AskNarrativeFolder()
 End Sub
 
 ' =========================================================================
@@ -288,7 +350,7 @@ Public Sub Run_Single_Pair_Comparison()
     GrantMacAccess Array(oldFile, newFile)
     Set jobs = New Collection
     jobs.Add Array(newEcm, newAlert, oldFile, newFile, "PAIR")
-    RunJobs wbDashboard, jobs, "Single Alert"
+    RunJobs wbDashboard, jobs, "Single Alert", AskNarrativeFolder()
 End Sub
 
 ' =========================================================================
@@ -517,7 +579,8 @@ End Function
 ' =========================================================================
 ' [ENGINE] 6. CORE COMPARISON RUNNER (BATCH AND SINGLE)
 ' =========================================================================
-Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal modeLabel As String)
+Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal modeLabel As String, _
+                    ByVal narrativeDir As String)
     Dim wsDash As Worksheet, wsAdded As Worksheet, wsDropped As Worksheet, ws As Worksheet
     Dim st As AppState
     Dim tot As BatchTotals
@@ -552,7 +615,7 @@ Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal mo
         Select Case CStr(job(4))
             Case "PAIR"
                 ProcessPair wsDash, wsAdded, wsDropped, curRow, CStr(job(0)), CStr(job(1)), _
-                            CStr(job(2)), CStr(job(3)), tot
+                            CStr(job(2)), CStr(job(3)), narrativeDir, tot
             Case "MISSING_NEW"
                 tot.Unmatched = tot.Unmatched + 1
                 WriteStatusRow wsDash, curRow, CStr(job(0)), CStr(job(1)), GetFileName(CStr(job(2))), _
@@ -572,6 +635,8 @@ Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal mo
         End Select
         curRow = curRow + 1
     Next job
+
+    ReleaseWord
 
     stepName = "Formatting Dashboard Table"
     FormatBatchTable wsDash, FIRST_DATA_ROW, curRow - 1
@@ -595,12 +660,19 @@ Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal mo
               "- New transaction amount: " & Format(tot.AddedAmount, "#,##0.00") & " " & tot.Currencies & vbCrLf & _
               "- New counterparties identified: " & tot.NewCP & " (in " & tot.PairsWithNewCP & " alerts)" & vbCrLf & _
               "- Dropped transactions: " & tot.Dropped
+    If narrativeDir <> "" Then
+        summary = summary & vbCrLf & vbCrLf & "Narratives: updated " & tot.NarrUpdated & ", need review " & tot.NarrFlagged & _
+                  ", no change " & tot.NarrNoChange & ", not found " & tot.NarrNotFound & ", errors " & tot.NarrErrors
+        If tot.NarrOutDir <> "" Then summary = summary & vbCrLf & "Saved in: " & tot.NarrOutDir & vbCrLf & _
+                  "Changed text is highlighted in yellow. See the 'Narrative Update' column for each alert."
+    End If
     If InStr(tot.Currencies, ",") > 0 Then summary = summary & vbCrLf & vbCrLf & "WARNING: mixed currencies - amounts are not comparable."
     If tot.Errors > 0 Then summary = summary & vbCrLf & vbCrLf & "Some files could not be compared - see rows marked [ERROR]."
     MsgBox summary, IIf(tot.Errors > 0, vbExclamation, vbInformation), "Reconciliation Finished"
     Exit Sub
 
 ErrorHandler:
+    ReleaseWord
     RestoreApp st
     MsgBox "Error during comparison (" & stepName & "):" & vbCrLf & Err.Description, vbCritical, "Error " & Err.Number
 End Sub
@@ -610,12 +682,13 @@ End Sub
 Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet, _
                         ByVal rowIdx As Long, ByVal ecmID As String, ByVal alertID As String, _
                         ByVal oldFilePath As String, ByVal newFilePath As String, _
-                        ByRef tot As BatchTotals)
+                        ByVal narrativeDir As String, ByRef tot As BatchTotals)
     Dim oldSet As TxnSet, newSet As TxnSet
     Dim pr As PairResult
+    Dim ctx As NarrCtx
     Dim oldCP As Object
-    Dim statusStr As String, stage As String
-    Dim rowVals(1 To 1, 1 To 17) As Variant
+    Dim statusStr As String, stage As String, narrStatus As String
+    Dim rowVals(1 To 1, 1 To 18) As Variant
 
     On Error GoTo PairFail
 
@@ -631,8 +704,17 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
     stage = "comparing transactions"
     CompareSets wsAdded, wsDropped, ecmID, alertID, oldSet, newSet, oldCP, pr
 
-    stage = "writing dashboard row"
     statusStr = BuildStatus(oldSet, newSet, pr)
+
+    narrStatus = "-"
+    If narrativeDir <> "" Then
+        stage = "updating the narrative"
+        Application.StatusBar = "Updating narrative for " & ecmID & "_" & alertID & "..."
+        BuildNarrCtx ctx, ecmID, alertID, oldFilePath, newFilePath, oldSet, newSet, pr
+        narrStatus = UpdateNarrative(ctx, narrativeDir, tot)
+    End If
+
+    stage = "writing dashboard row"
 
     rowVals(1, 1) = ecmID
     rowVals(1, 2) = alertID
@@ -655,10 +737,11 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
     rowVals(1, 15) = IIf(oldSet.HasAmount, oldSet.TotalAmt, "n/a")
     rowVals(1, 16) = IIf(newSet.HasAmount, newSet.TotalAmt, "n/a")
     rowVals(1, 17) = statusStr
+    rowVals(1, 18) = narrStatus
 
     wsDash.Cells(rowIdx, 2).Resize(1, 6).NumberFormat = "@"
     wsDash.Cells(rowIdx, 15).NumberFormat = "@"
-    wsDash.Cells(rowIdx, 18).NumberFormat = "@"
+    wsDash.Cells(rowIdx, 18).Resize(1, 2).NumberFormat = "@"
     wsDash.Cells(rowIdx, 2).Resize(1, DASH_COLS).Value = rowVals
 
     ' Totals
@@ -792,6 +875,7 @@ Private Sub ReadTxnSheet(ByVal ws As Worksheet, ByRef ts As TxnSet)
     Dim hdr As Variant
     Dim colTx As Variant, colAl As Variant, colDt As Variant, colAm As Variant, colAc As Variant
     Dim colDe As Variant, colCp As Variant, colDc As Variant, colCy As Variant, colOr As Variant, colBe As Variant
+    Dim colRu As Variant, ruleTxt As String, ruleDict As Object
     Dim txDisp As String, txK As String, alertStr As String
     Dim dt As Variant, amt As Variant, acc As String, descTxt As String
     Dim cp As String, drcr As String, ccy As String, origName As String, benName As String
@@ -800,9 +884,12 @@ Private Sub ReadTxnSheet(ByVal ws As Worksheet, ByRef ts As TxnSet)
 
     Set ts.Map = CreateLookupDict()
     Set ccyDict = CreateLookupDict()
+    Set ruleDict = CreateLookupDict()
     ts.SheetName = ws.Name
     ts.MinDate = Empty
     ts.MaxDate = Empty
+    ts.AlertMin = Empty
+    ts.AlertMax = Empty
 
     hdrRow = FindHeaderRow(ws, FLD_TXID)
     If hdrRow = 0 Then Err.Raise vbObjectError + 521, , "no 'Transaction ID' header found on sheet '" & ws.Name & "'"
@@ -845,6 +932,7 @@ Private Sub ReadTxnSheet(ByVal ws As Worksheet, ByRef ts As TxnSet)
     If cm.Ccy > 0 Then colCy = ReadBlock(ws, hdrRow + 1, cm.Ccy, lastRow, cm.Ccy)
     If cm.OrigName > 0 Then colOr = ReadBlock(ws, hdrRow + 1, cm.OrigName, lastRow, cm.OrigName)
     If cm.BenName > 0 Then colBe = ReadBlock(ws, hdrRow + 1, cm.BenName, lastRow, cm.BenName)
+    If cm.Rule > 0 Then colRu = ReadBlock(ws, hdrRow + 1, cm.Rule, lastRow, cm.Rule)
 
     For i = 1 To nRows
         txDisp = CellText(colTx(i, 1))
@@ -915,6 +1003,26 @@ Private Sub ReadTxnSheet(ByVal ws As Worksheet, ByRef ts As TxnSet)
                     If Not DictExists(ccyDict, ccy) Then DictAdd ccyDict, ccy, ccy
                 End If
 
+                ' Alerted transactions: amount, date range and rule name
+                If alertStr = "Yes" Then
+                    If Not IsEmpty(amt) Then ts.AlertAmt = ts.AlertAmt + Abs(CDbl(amt))
+                    If VarType(dt) = vbDate Then
+                        If IsEmpty(ts.AlertMin) Then
+                            ts.AlertMin = dt
+                            ts.AlertMax = dt
+                        Else
+                            If dt < ts.AlertMin Then ts.AlertMin = dt
+                            If dt > ts.AlertMax Then ts.AlertMax = dt
+                        End If
+                    End If
+                    If cm.Rule > 0 Then
+                        ruleTxt = CellText(colRu(i, 1))
+                        If ruleTxt <> "" Then
+                            If Not DictExists(ruleDict, ruleTxt) Then DictAdd ruleDict, ruleTxt, ruleTxt
+                        End If
+                    End If
+                End If
+
                 DictAdd ts.Map, txK, Array(txDisp, alertStr, dt, amt, acc, descTxt, cp, drcr, ccy)
             End If
         End If
@@ -922,6 +1030,7 @@ Private Sub ReadTxnSheet(ByVal ws As Worksheet, ByRef ts As TxnSet)
 
     ts.UniqueCount = DictCount(ts.Map)
     ts.Currencies = JoinSortedKeys(ccyDict)
+    If DictCount(ruleDict) > 0 Then ts.RuleText = Join(DictKeys(ruleDict), "; ")
 End Sub
 
 Private Function DeriveCounterparty(ByVal drcr As String, ByVal origName As String, ByVal benName As String) As String
@@ -952,6 +1061,7 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
     Dim cpFlag As String, cpKey As String, cpName As String
     Dim amt As Double
     Dim isNew As Boolean, oldHasCPData As Boolean
+    Dim cpKeys As Variant, j As Long
 
     Set addedKeys = New Collection
     Set droppedKeys = New Collection
@@ -1016,7 +1126,22 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
             outArr(r, 8) = rec(F_DESC)
             outArr(r, 9) = rec(F_CP)
             outArr(r, 10) = cpFlag
+
+            If r <= 25 Then
+                If pr.AddedDetail <> "" Then pr.AddedDetail = pr.AddedDetail & vbCr
+                pr.AddedDetail = pr.AddedDetail & "  " & DateText(rec(F_DATE)) & "  $" & UsAmount(amt) & "  " & cpName
+                If rec(F_ALERT) = "Yes" Then pr.AddedDetail = pr.AddedDetail & "  [alerted]"
+            ElseIf r = 26 Then
+                pr.AddedDetail = pr.AddedDetail & vbCr & "  ... and " & (n - 25) & " more - see sheet " & SHEET_ADDED_TXNS
+            End If
         Next kv
+
+        cpKeys = DictKeys(pr.NewCPAgg)
+        For j = LBound(cpKeys) To UBound(cpKeys)
+            agg = DictGet(pr.NewCPAgg, CStr(cpKeys(j)))
+            If pr.NewCPDetail <> "" Then pr.NewCPDetail = pr.NewCPDetail & "; "
+            pr.NewCPDetail = pr.NewCPDetail & agg(0) & " (" & agg(1) & " txn(s), $" & UsAmount(CDbl(agg(2))) & ")"
+        Next j
 
         startRow = WriteAuditBlock(wsAdded, outArr, n, AUDIT_ADDED)
         For r = 1 To n
@@ -1214,6 +1339,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     ws.Columns("P").ColumnWidth = 16 ' Old Volume
     ws.Columns("Q").ColumnWidth = 16 ' New Volume
     ws.Columns("R").ColumnWidth = 60 ' Status Badge
+    ws.Columns("S").ColumnWidth = 70 ' Narrative Update
 
     ' Row Heights
     ws.Rows("1:3").RowHeight = 12
@@ -1228,7 +1354,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     ws.Rows(14).RowHeight = 30     ' Table Header
 
     ' Master Banner Header
-    ws.Range("B4:R4").Merge
+    ws.Range("B4:S4").Merge
     With ws.Range("B4")
         .Value = DASH_TITLE
         .Font.Name = FONT_UI
@@ -1240,7 +1366,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
         .VerticalAlignment = xlCenter
     End With
 
-    ws.Range("B5:R5").Merge
+    ws.Range("B5:S5").Merge
     With ws.Range("B5")
         .Value = "Lookback period change check | New transactions (count and amount) and newly identified counterparties per alert"
         .Font.Name = FONT_UI
@@ -1256,7 +1382,7 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     CreateKPITile ws, "E7:G9", "ALERTS WITH NEW TXNS", "New file has extra transactions"
     CreateKPITile ws, "H7:J9", "NEW TXNS", "Present in New file only"
     CreateKPITile ws, "K7:M9", "NEW TXN AMOUNT", "Sum of new transaction amounts"
-    CreateKPITile ws, "N7:R9", "NEW COUNTERPARTIES", "Not seen anywhere in the Old file"
+    CreateKPITile ws, "N7:S9", "NEW COUNTERPARTIES", "Not seen anywhere in the Old file"
     ws.Range("K8").NumberFormat = "#,##0.00"
 
     ' Action Buttons (Row 12)
@@ -1272,7 +1398,8 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     headers = Array("ECM ID", "Alert ID", "Old File Name [sheet]", "New File Name [sheet]", _
                     "Old Txn Date Range (data | file name)", "New Txn Date Range (data | file name)", _
                     "Old Count", "New Count", "New Txns", "New Txn Amount", "New Txns Alerted", "Dropped Txns", _
-                    "New CPs", "New Counterparty Names", "Old Volume", "New Volume", "Reconciliation Status")
+                    "New CPs", "New Counterparty Names", "Old Volume", "New Volume", "Reconciliation Status", _
+                    "Narrative Update")
 
     For c = 0 To UBound(headers)
         With ws.Cells(14, c + 2)
@@ -1465,6 +1592,7 @@ Private Sub FormatBatchTable(ByVal ws As Worksheet, ByVal startRow As Long, ByVa
         .HorizontalAlignment = xlLeft
         .Font.Bold = True
     End With
+    ws.Range(ws.Cells(startRow, 19), ws.Cells(endRow, 19)).HorizontalAlignment = xlLeft   ' Narrative update
 
     For r = startRow To endRow
         If CellNumber(ws.Cells(r, 10)) > 0 Then HighlightCell ws.Cells(r, 10), COLOR_ALERT_RED, COLOR_FILL_RED
@@ -1502,6 +1630,18 @@ Private Sub FormatBatchTable(ByVal ws As Worksheet, ByVal startRow As Long, ByVa
                 .Font.Color = COLOR_TEXT_MUTED
             End If
         End With
+
+        ' Narrative update result
+        statusTxt = CStr(ws.Cells(r, 19).Value)
+        If Left$(statusTxt, 7) = "Updated" Then
+            ws.Cells(r, 19).Font.Color = COLOR_SUCCESS_GREEN
+        ElseIf Left$(statusTxt, 5) = "Error" Then
+            ws.Cells(r, 19).Font.Color = COLOR_ALERT_RED
+        ElseIf Left$(statusTxt, 6) = "Review" Or Left$(statusTxt, 9) = "Narrative" Then
+            ws.Cells(r, 19).Font.Color = COLOR_AMBER
+        Else
+            ws.Cells(r, 19).Font.Color = COLOR_TEXT_MUTED
+        End If
     Next r
 End Sub
 
@@ -1523,7 +1663,7 @@ End Sub
 
 Private Sub WriteStatusRow(ByVal wsDash As Worksheet, ByVal rowIdx As Long, ByVal ecmID As String, ByVal alertID As String, _
                            ByVal oldF As String, ByVal newF As String, ByVal statusStr As String)
-    Dim rowVals(1 To 1, 1 To 17) As Variant
+    Dim rowVals(1 To 1, 1 To 18) As Variant
     Dim c As Long
 
     rowVals(1, 1) = ecmID
@@ -1536,9 +1676,10 @@ Private Sub WriteStatusRow(ByVal wsDash As Worksheet, ByVal rowIdx As Long, ByVa
         rowVals(1, c) = "-"
     Next c
     rowVals(1, 17) = statusStr
+    rowVals(1, 18) = "-"
 
     wsDash.Cells(rowIdx, 2).Resize(1, 6).NumberFormat = "@"
-    wsDash.Cells(rowIdx, 18).NumberFormat = "@"
+    wsDash.Cells(rowIdx, 18).Resize(1, 2).NumberFormat = "@"
     wsDash.Cells(rowIdx, 2).Resize(1, DASH_COLS).Value = rowVals
 End Sub
 
@@ -1896,6 +2037,828 @@ Private Sub ClearPivotSheet(ByVal ws As Worksheet)
     ws.Cells.UnMerge
     ws.Cells.Clear
 End Sub
+
+' =========================================================================
+' [NARRATIVE] UPDATE ESCALATION NARRATIVES WITH NEW FILE FIGURES (Word)
+' =========================================================================
+' For each compared alert, the narrative ECMID_ALERTID_*.docx is copied into
+' a new "Updated_Narratives_<timestamp>" subfolder of the narrative folder and
+' the copy is edited in Word. The original is never changed.
+'
+' Only figures that provably come from the Old file are replaced:
+'  - the Old gross total ($) and the Old transaction count (when followed by
+'    "transactions"), anywhere in the document;
+'  - the Old first/last transaction dates, only inside the paragraphs holding
+'    those totals and only where they are part of a date range;
+'  - the alerted totals in "Total Suspicious Dollar Amount", "Date Range of
+'    Suspicious Activity" and the opening sentence, only when they equal the
+'    Old file's alerted figures;
+'  - "twelve-month review period" style phrases and the Old file's period
+'    dates, when the New file covers a different period.
+' Every inserted value is highlighted yellow (and tracked when
+' NARRATIVE_TRACK_CHANGES = True). Items needing judgement (new
+' counterparties, rule wording, changed months mentioned in the text,
+' header figures that match neither file) are added as Word comments.
+Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As String, ByRef tot As BatchTotals) As String
+    Dim srcPath As String, outPath As String, note As String, stage As String, errDesc As String
+    Dim doc As Object
+    Dim edits As Collection, flags As Collection
+    Dim copied As Boolean
+    Dim status As String
+
+    On Error GoTo Fail
+    stage = "finding the narrative"
+    srcPath = FindNarrativeFile(narrativeDir, ctx.EcmID, ctx.AlertID, note)
+    If srcPath = "" Then
+        tot.NarrNotFound = tot.NarrNotFound + 1
+        UpdateNarrative = "Narrative not found (" & NarrativePrefix(ctx.EcmID, ctx.AlertID) & "_*.docx)"
+        Exit Function
+    End If
+    If Not NarrativeNeedsUpdate(ctx) Then
+        tot.NarrNoChange = tot.NarrNoChange + 1
+        UpdateNarrative = "No update needed - New file figures are the same"
+        Exit Function
+    End If
+
+    stage = "copying the narrative"
+    If tot.NarrOutDir = "" Then
+        tot.NarrOutDir = narrativeDir & "Updated_Narratives_" & Format(Now, "yyyymmdd_hhnnss") & Application.PathSeparator
+        MkDir Left$(tot.NarrOutDir, Len(tot.NarrOutDir) - 1)
+    End If
+    outPath = tot.NarrOutDir & GetFileName(srcPath)
+    FileCopy srcPath, outPath
+    copied = True
+
+    stage = "opening the narrative in Word"
+    Set doc = GetWord().Documents.Open(FileName:=outPath, ReadOnly:=False, AddToRecentFiles:=False)
+
+    stage = "editing the narrative"
+    Set edits = New Collection
+    Set flags = New Collection
+    PlanNarrativeEdits doc, ctx, edits, flags
+    ApplyNarrativeEdits doc, edits
+    AddNarrativeComments doc, ctx, flags, edits.Count, note
+
+    stage = "saving the narrative"
+    doc.Save
+    doc.Close SaveChanges:=0
+    Set doc = Nothing
+
+    If edits.Count > 0 Then
+        tot.NarrUpdated = tot.NarrUpdated + 1
+        status = "Updated: " & edits.Count & " change(s) highlighted yellow"
+    Else
+        tot.NarrFlagged = tot.NarrFlagged + 1
+        status = "Review: Old figures not found in text - see comments"
+    End If
+    If flags.Count > 0 Then status = status & ", " & flags.Count & " comment(s) to review"
+    UpdateNarrative = status & " -> " & GetFileName(Left$(tot.NarrOutDir, Len(tot.NarrOutDir) - 1)) & _
+                      Application.PathSeparator & GetFileName(outPath)
+    Exit Function
+
+Fail:
+    errDesc = Err.Description
+    Resume FailCleanup
+
+FailCleanup:
+    On Error Resume Next
+    If Not doc Is Nothing Then doc.Close SaveChanges:=0
+    If copied Then Kill outPath
+    On Error GoTo 0
+    tot.NarrErrors = tot.NarrErrors + 1
+    UpdateNarrative = "Error while " & stage & ": " & errDesc
+End Function
+
+Private Function NarrativeNeedsUpdate(ByRef ctx As NarrCtx) As Boolean
+    NarrativeNeedsUpdate = (ctx.OldCount <> ctx.NewCount) Or (Abs(ctx.OldTotal - ctx.NewTotal) > 0.005) _
+        Or (UsDate(ctx.OldMin) <> UsDate(ctx.NewMin)) Or (UsDate(ctx.OldMax) <> UsDate(ctx.NewMax)) _
+        Or (ctx.OldAlertCount <> ctx.NewAlertCount) Or (Abs(ctx.OldAlertAmt - ctx.NewAlertAmt) > 0.005) _
+        Or (ctx.AddedCount > 0) Or (ctx.DroppedCount > 0) Or (ctx.NewCPDistinct > 0)
+End Function
+
+Private Function NarrativePrefix(ByVal ecmID As String, ByVal alertID As String) As String
+    If ecmID <> "-" And ecmID <> "" Then
+        NarrativePrefix = ecmID & "_" & alertID
+    Else
+        NarrativePrefix = alertID
+    End If
+End Function
+
+' Finds ECMID_ALERTID*.docx (top level of the folder only). With several
+' matches the most recently modified one is used and noted.
+Private Function FindNarrativeFile(ByVal folderPath As String, ByVal ecmID As String, ByVal alertID As String, _
+                                   ByRef note As String) As String
+    Dim prefix As String, sFile As String, ext As String, nextCh As String
+    Dim matches As New Collection
+    Dim v As Variant, bestPath As String, bestTime As Date, t As Date
+
+    note = ""
+    prefix = NarrativePrefix(ecmID, alertID)
+    sFile = Dir(folderPath, vbReadOnly)
+    Do While sFile <> ""
+        ext = LCase$(Mid$(sFile, InStrRev(sFile, ".") + 1))
+        If (ext = "docx" Or ext = "docm" Or ext = "doc") And Left$(sFile, 2) <> "~$" And Left$(sFile, 2) <> "._" Then
+            If StrComp(Left$(sFile, Len(prefix)), prefix, vbTextCompare) = 0 Then
+                nextCh = Mid$(sFile, Len(prefix) + 1, 1)
+                If Not (nextCh Like "#") Then matches.Add folderPath & sFile
+            End If
+        End If
+        sFile = Dir()
+    Loop
+
+    If matches.Count = 0 Then Exit Function
+    For Each v In matches
+        t = FileDateTime(CStr(v))
+        If bestPath = "" Or t > bestTime Then
+            bestPath = CStr(v)
+            bestTime = t
+        End If
+    Next v
+    If matches.Count > 1 Then note = matches.Count & " narratives match " & prefix & "; the most recently modified one was used."
+    FindNarrativeFile = bestPath
+End Function
+
+Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection, ByVal flags As Collection)
+    Dim hits As Collection, actPars As Collection
+    Dim h As Variant, par As Variant
+    Dim docStart As Long, docEnd As Long
+
+    docStart = doc.Content.Start
+    docEnd = doc.Content.End
+    Set actPars = New Collection
+
+    ' 1. Gross total of the activity
+    If Abs(ctx.OldTotal - ctx.NewTotal) > 0.005 Then
+        Set hits = WdFindIn(doc, docStart, docEnd, "$" & UsAmount(ctx.OldTotal), False)
+        For Each h In hits
+            AddEdit edits, h(0), h(1), "$" & UsAmount(ctx.NewTotal)
+            AddParagraphOf doc, h(0), actPars
+        Next h
+    End If
+
+    ' 2. Transaction count ("376 transactions", "376 credit transactions")
+    If ctx.OldCount <> ctx.NewCount Then
+        Set hits = WdFindIn(doc, docStart, docEnd, UsNumber(ctx.OldCount), True)
+        For Each h In hits
+            If FollowedByTxnWord(doc, h(1), docEnd) Then
+                AddEdit edits, h(0), h(1), UsNumber(ctx.NewCount)
+                AddParagraphOf doc, h(0), actPars
+            End If
+        Next h
+    End If
+
+    ' 3. First/last transaction date, only inside the paragraphs changed above
+    For Each par In actPars
+        If IsDate(ctx.OldMax) And IsDate(ctx.NewMax) And UsDate(ctx.OldMax) <> UsDate(ctx.NewMax) Then
+            Set hits = WdFindIn(doc, par(0), par(1), UsDate(ctx.OldMax), False)
+            For Each h In hits
+                If IsRangeEndDate(doc, par(0), h(0)) Then AddEdit edits, h(0), h(1), UsDate(ctx.NewMax)
+            Next h
+        End If
+        If IsDate(ctx.OldMin) And IsDate(ctx.NewMin) And UsDate(ctx.OldMin) <> UsDate(ctx.NewMin) Then
+            Set hits = WdFindIn(doc, par(0), par(1), UsDate(ctx.OldMin), False)
+            For Each h In hits
+                If IsRangeStartDate(doc, h(1), par(1)) Then AddEdit edits, h(0), h(1), UsDate(ctx.NewMin)
+            Next h
+        End If
+    Next par
+
+    ' 4. Alerted activity (SAR fields and opening sentence)
+    PlanAlertedEdits doc, ctx, edits, flags
+
+    ' 5. Review period
+    PlanPeriodEdits doc, ctx, edits
+
+    If edits.Count = 0 And (ctx.OldCount <> ctx.NewCount Or Abs(ctx.OldTotal - ctx.NewTotal) > 0.005) Then
+        flags.Add Array("", "The Old file totals (" & UsNumber(ctx.OldCount) & " transactions, $" & UsAmount(ctx.OldTotal) & _
+                  ") were not found in the text, so nothing was changed automatically. New file: " & UsNumber(ctx.NewCount) & _
+                  " transactions totaling $" & UsAmount(ctx.NewTotal) & " between " & UsDate(ctx.NewMin) & " and " & UsDate(ctx.NewMax) & ".")
+    End If
+End Sub
+
+Private Sub PlanAlertedEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection, ByVal flags As Collection)
+    Dim hits As Collection, h As Variant
+    Dim parStart As Long, parEnd As Long
+    Dim oldAmt As String, newAmt As String, found As String, d1 As String, d2 As String
+    Dim docStart As Long, docEnd As Long
+
+    docStart = doc.Content.Start
+    docEnd = doc.Content.End
+    oldAmt = "$" & UsAmount(ctx.OldAlertAmt)
+    newAmt = "$" & UsAmount(ctx.NewAlertAmt)
+
+    ' Total Suspicious Dollar Amount
+    If ParagraphWith(doc, "Total Suspicious Dollar Amount", parStart, parEnd) Then
+        found = FirstAmountIn(doc.Range(parStart, parEnd).Text)
+        If found <> "" And found <> newAmt Then
+            If found = oldAmt Then
+                Set hits = WdFindIn(doc, parStart, parEnd, oldAmt, False)
+                If hits.Count > 0 Then
+                    h = hits(1)
+                    AddEdit edits, h(0), h(1), newAmt
+                End If
+            Else
+                flags.Add Array("Total Suspicious Dollar Amount", "Total Suspicious Dollar Amount (" & found & _
+                          ") is not the alerted total of either file (Old " & oldAmt & ", New " & newAmt & "). Not changed - please confirm.")
+            End If
+        End If
+    End If
+
+    ' Date Range of Suspicious Activity
+    If ParagraphWith(doc, "Date Range of Suspicious Activity", parStart, parEnd) Then
+        FirstTwoDatesIn doc.Range(parStart, parEnd).Text, d1, d2
+        If d1 <> "" And d2 <> "" And (d1 <> UsDate(ctx.NewAlertMin) Or d2 <> UsDate(ctx.NewAlertMax)) Then
+            If d1 = UsDate(ctx.OldAlertMin) And d2 = UsDate(ctx.OldAlertMax) Then
+                If d1 <> UsDate(ctx.NewAlertMin) Then
+                    Set hits = WdFindIn(doc, parStart, parEnd, d1, False)
+                    For Each h In hits
+                        If IsRangeStartDate(doc, h(1), parEnd) Then AddEdit edits, h(0), h(1), UsDate(ctx.NewAlertMin)
+                    Next h
+                End If
+                If d2 <> UsDate(ctx.NewAlertMax) Then
+                    Set hits = WdFindIn(doc, parStart, parEnd, d2, False)
+                    For Each h In hits
+                        If IsRangeEndDate(doc, parStart, h(0)) Then AddEdit edits, h(0), h(1), UsDate(ctx.NewAlertMax)
+                    Next h
+                End If
+            Else
+                flags.Add Array("Date Range of Suspicious Activity", "Date Range of Suspicious Activity (" & d1 & " through " & d2 & _
+                          ") does not match the alerted transactions of either file (New file: " & UsDate(ctx.NewAlertMin) & _
+                          " through " & UsDate(ctx.NewAlertMax) & "). Not changed - please confirm.")
+            End If
+        End If
+    End If
+
+    ' Opening sentence: "... to report approximately N credit transactions totaling $X ..."
+    If Abs(ctx.OldAlertAmt - ctx.NewAlertAmt) > 0.005 Then
+        If ParagraphWith(doc, "escalated", parStart, parEnd) Then
+            Set hits = WdFindIn(doc, parStart, parEnd, oldAmt, False)
+            If hits.Count > 0 Then
+                For Each h In hits
+                    AddEdit edits, h(0), h(1), newAmt
+                Next h
+                If ctx.OldAlertCount <> ctx.NewAlertCount Then
+                    Set hits = WdFindIn(doc, parStart, parEnd, UsNumber(ctx.OldAlertCount), True)
+                    For Each h In hits
+                        If FollowedByTxnWord(doc, h(1), docEnd) Then AddEdit edits, h(0), h(1), UsNumber(ctx.NewAlertCount)
+                    Next h
+                End If
+            End If
+        End If
+    End If
+End Sub
+
+Private Sub PlanPeriodEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection)
+    Dim hits As Collection, h As Variant, key As Variant
+    Dim wordStart As Long, parStart As Long, parEnd As Long, docStart As Long, docEnd As Long
+    Dim newPhrase As String
+
+    If Not (IsDate(ctx.NewPeriodFrom) And IsDate(ctx.NewPeriodTo)) Then Exit Sub
+    If IsDate(ctx.OldPeriodFrom) And IsDate(ctx.OldPeriodTo) Then
+        If UsDate(ctx.OldPeriodFrom) = UsDate(ctx.NewPeriodFrom) And UsDate(ctx.OldPeriodTo) = UsDate(ctx.NewPeriodTo) Then Exit Sub
+    End If
+    docStart = doc.Content.Start
+    docEnd = doc.Content.End
+
+    ' "twelve-month review period" -> "review period from 06/01/2025 through 06/30/2026"
+    For Each key In Array("month review period", "month lookback period", "month look-back period", "month look back period")
+        Set hits = WdFindIn(doc, docStart, docEnd, CStr(key), False)
+        For Each h In hits
+            wordStart = WordStartBefore(doc, h(0))
+            If wordStart >= 0 Then
+                newPhrase = Mid$(CStr(key), 7) & " from " & UsDate(ctx.NewPeriodFrom) & " through " & UsDate(ctx.NewPeriodTo)
+                AddEdit edits, wordStart, h(1), newPhrase
+            End If
+        Next h
+    Next key
+
+    ' Old file period dates written out in a review/lookback period sentence
+    If IsDate(ctx.OldPeriodFrom) And IsDate(ctx.OldPeriodTo) Then
+        For Each key In Array("review period", "lookback", "look-back", "look back")
+            Set hits = WdFindIn(doc, docStart, docEnd, CStr(key), False)
+            For Each h In hits
+                GetParagraphBounds doc, h(0), parStart, parEnd
+                PlanDateSwap doc, parStart, parEnd, UsDate(ctx.OldPeriodFrom), UsDate(ctx.NewPeriodFrom), True, edits
+                PlanDateSwap doc, parStart, parEnd, UsDate(ctx.OldPeriodTo), UsDate(ctx.NewPeriodTo), False, edits
+            Next h
+        Next key
+    End If
+End Sub
+
+Private Sub PlanDateSwap(ByVal doc As Object, ByVal parStart As Long, ByVal parEnd As Long, ByVal oldTxt As String, _
+                         ByVal newTxt As String, ByVal isStart As Boolean, ByVal edits As Collection)
+    Dim hits As Collection, h As Variant
+    If oldTxt = newTxt Or oldTxt = "" Then Exit Sub
+    Set hits = WdFindIn(doc, parStart, parEnd, oldTxt, False)
+    For Each h In hits
+        If isStart Then
+            If IsRangeStartDate(doc, h(1), parEnd) Then AddEdit edits, h(0), h(1), newTxt
+        Else
+            If IsRangeEndDate(doc, parStart, h(0)) Then AddEdit edits, h(0), h(1), newTxt
+        End If
+    Next h
+End Sub
+
+' Applies edits from the end of the document backwards so earlier positions stay valid.
+' The new text is inserted after the old text, highlighted yellow, then the old text is deleted
+' (shown as a tracked deletion when NARRATIVE_TRACK_CHANGES = True).
+Private Sub ApplyNarrativeEdits(ByVal doc As Object, ByVal edits As Collection)
+    Dim arr() As Variant, i As Long, j As Long, n As Long, tmp As Variant
+    Dim ins As Object
+
+    n = edits.Count
+    If n = 0 Then Exit Sub
+    ReDim arr(1 To n)
+    For i = 1 To n
+        arr(i) = edits(i)
+    Next i
+    For i = 2 To n
+        tmp = arr(i)
+        j = i - 1
+        Do While j >= 1
+            If arr(j)(0) >= tmp(0) Then Exit Do
+            arr(j + 1) = arr(j)
+            j = j - 1
+        Loop
+        arr(j + 1) = tmp
+    Next i
+
+    For i = 1 To n
+        doc.TrackRevisions = NARRATIVE_TRACK_CHANGES
+        Set ins = doc.Range(arr(i)(1), arr(i)(1))
+        ins.InsertAfter CStr(arr(i)(2))
+        doc.TrackRevisions = False
+        ins.HighlightColorIndex = 7          ' wdYellow
+        doc.TrackRevisions = NARRATIVE_TRACK_CHANGES
+        doc.Range(arr(i)(0), arr(i)(1)).Delete
+    Next i
+    doc.TrackRevisions = False
+End Sub
+
+Private Sub AddNarrativeComments(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal flags As Collection, _
+                                 ByVal nEdits As Long, ByVal note As String)
+    Dim txt As String, docText As String, rulePart As Variant, f As Variant, m As Variant
+    Dim ruleMissing As String
+
+    docText = doc.Content.Text
+
+    ' Summary of what changed between the Old and New files
+    txt = "LOOKBACK UPDATE (macro, " & Format(Now, "yyyy-mm-dd") & ")" & vbCr & _
+          "Old file: " & ctx.OldFile & " - " & UsNumber(ctx.OldCount) & " transactions, $" & UsAmount(ctx.OldTotal) & _
+          ", " & UsDate(ctx.OldMin) & " to " & UsDate(ctx.OldMax) & vbCr & _
+          "New file: " & ctx.NewFile & " - " & UsNumber(ctx.NewCount) & " transactions, $" & UsAmount(ctx.NewTotal) & _
+          ", " & UsDate(ctx.NewMin) & " to " & UsDate(ctx.NewMax) & vbCr & _
+          "Alerted in New file: " & ctx.NewAlertCount & " transactions, $" & UsAmount(ctx.NewAlertAmt) & ", " & _
+          UsDate(ctx.NewAlertMin) & " to " & UsDate(ctx.NewAlertMax) & vbCr & _
+          "New transactions: " & ctx.AddedCount & " totaling $" & UsAmount(ctx.AddedAmount) & " (" & ctx.AddedAlerted & " alerted)"
+    If ctx.AddedDetail <> "" Then txt = txt & vbCr & ctx.AddedDetail
+    txt = txt & vbCr & "Dropped transactions: " & ctx.DroppedCount & vbCr & "Newly identified counterparties: "
+    If ctx.NewCPDistinct > 0 Then
+        txt = txt & ctx.NewCPDetail
+    Else
+        txt = txt & "none - every counterparty appears in the Old file"
+    End If
+    txt = txt & vbCr & nEdits & " change(s) made; changed text is highlighted in yellow"
+    If NARRATIVE_TRACK_CHANGES Then txt = txt & " and tracked (Review > Accept / Reject)"
+    txt = txt & ". Remove the highlight before filing."
+    If note <> "" Then txt = txt & vbCr & note
+    WdComment doc, "", txt
+
+    ' New counterparties need research and a counterparty-count check
+    If ctx.NewCPDistinct > 0 Then
+        WdComment doc, FirstPresent(docText, Array("OSDD", "Open-source", "open source", "counterpart")), _
+                  "Newly identified counterparties in the New file (not in the Old file): " & ctx.NewCPDetail & _
+                  ". Research them and update the counterparty count/description."
+    End If
+
+    ' Rule from the New file not referenced in the narrative
+    If ctx.RuleText <> "" Then
+        For Each rulePart In Split(ctx.RuleText, "; ")
+            If InStr(1, docText, CStr(rulePart), vbTextCompare) = 0 Then
+                If ruleMissing <> "" Then ruleMissing = ruleMissing & "; "
+                ruleMissing = ruleMissing & CStr(rulePart)
+            End If
+        Next rulePart
+        If ruleMissing <> "" Then
+            WdComment doc, FirstPresent(docText, Array("Type of Suspicious Activity")), _
+                      "Rule triggered per the New file: " & ruleMissing & ". It is not referenced in the narrative."
+        End If
+    End If
+
+    ' Months whose totals changed and that the narrative mentions
+    If Not ctx.MonthChanges Is Nothing Then
+        For Each m In ctx.MonthChanges
+            If InStr(1, docText, CStr(m(0)), vbTextCompare) > 0 Or InStr(1, docText, CStr(m(1)), vbTextCompare) > 0 Then
+                WdComment doc, FirstPresent(docText, Array(CStr(m(1)), CStr(m(0)))), _
+                          CStr(m(0)) & " totals changed: Old file " & m(2) & " transactions $" & UsAmount(CDbl(m(3))) & _
+                          ", New file " & m(4) & " transactions $" & UsAmount(CDbl(m(5))) & "."
+            End If
+        Next m
+    End If
+
+    For Each f In flags
+        WdComment doc, CStr(f(0)), CStr(f(1))
+    Next f
+End Sub
+
+Private Function FirstPresent(ByVal docText As String, ByVal candidates As Variant) As String
+    Dim c As Variant
+    For Each c In candidates
+        If CStr(c) <> "" Then
+            If InStr(1, docText, CStr(c), vbTextCompare) > 0 Then
+                FirstPresent = CStr(c)
+                Exit Function
+            End If
+        End If
+    Next c
+End Function
+
+' --- Word helpers (late bound, no reference to the Word library needed) ---
+Private Function GetWord() As Object
+    If mWord Is Nothing Then
+        On Error Resume Next
+        Set mWord = GetObject(, "Word.Application")
+        On Error GoTo 0
+        If mWord Is Nothing Then
+            Set mWord = CreateObject("Word.Application")
+            mWordCreated = True
+            On Error Resume Next
+            mWord.Visible = False
+            On Error GoTo 0
+        Else
+            mWordCreated = False
+        End If
+        On Error Resume Next
+        mWordAlerts = mWord.DisplayAlerts
+        mWord.DisplayAlerts = 0              ' wdAlertsNone
+        On Error GoTo 0
+    End If
+    Set GetWord = mWord
+End Function
+
+' Restores Word; quits it only if this macro started it and no documents are open
+Private Sub ReleaseWord()
+    If mWord Is Nothing Then Exit Sub
+    On Error Resume Next
+    mWord.DisplayAlerts = mWordAlerts
+    If mWordCreated Then
+        If mWord.Documents.Count = 0 Then mWord.Quit SaveChanges:=0
+    End If
+    On Error GoTo 0
+    Set mWord = Nothing
+    mWordCreated = False
+End Sub
+
+Private Function WdFindIn(ByVal doc As Object, ByVal s As Long, ByVal e As Long, ByVal findText As String, _
+                          ByVal wholeWord As Boolean) As Collection
+    Dim col As New Collection
+    Dim rng As Object
+    Dim guard As Long
+
+    Set WdFindIn = col
+    If findText = "" Or e <= s Then Exit Function
+    Set rng = doc.Range(s, e)
+    With rng.Find
+        .ClearFormatting
+        .Text = findText
+        .Forward = True
+        .Wrap = 0                            ' wdFindStop
+        .Format = False
+        .MatchCase = False
+        .MatchWholeWord = wholeWord
+        .MatchWildcards = False
+    End With
+    Do While rng.Find.Execute
+        If rng.Start >= e Or rng.End > e Then Exit Do
+        col.Add Array(rng.Start, rng.End)
+        rng.Collapse 0                       ' wdCollapseEnd
+        guard = guard + 1
+        If guard > 1000 Then Exit Do
+    Loop
+End Function
+
+Private Sub WdComment(ByVal doc As Object, ByVal anchorText As String, ByVal txt As String)
+    Dim hits As Collection, h As Variant, rng As Object
+    If anchorText <> "" Then
+        Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, anchorText, False)
+        If hits.Count > 0 Then
+            h = hits(1)
+            Set rng = doc.Range(h(0), h(1))
+        End If
+    End If
+    If rng Is Nothing Then Set rng = doc.Paragraphs(1).Range
+    doc.Comments.Add rng, txt
+End Sub
+
+Private Function ParagraphWith(ByVal doc As Object, ByVal findText As String, ByRef parStart As Long, ByRef parEnd As Long) As Boolean
+    Dim hits As Collection, h As Variant
+    Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, findText, False)
+    If hits.Count = 0 Then Exit Function
+    h = hits(1)
+    GetParagraphBounds doc, h(0), parStart, parEnd
+    ParagraphWith = True
+End Function
+
+Private Sub GetParagraphBounds(ByVal doc As Object, ByVal pos As Long, ByRef parStart As Long, ByRef parEnd As Long)
+    Dim p As Object
+    Set p = doc.Range(pos, pos).Paragraphs(1).Range
+    parStart = p.Start
+    parEnd = p.End
+End Sub
+
+Private Sub AddParagraphOf(ByVal doc As Object, ByVal pos As Long, ByVal pars As Collection)
+    Dim s As Long, e As Long, v As Variant
+    GetParagraphBounds doc, pos, s, e
+    For Each v In pars
+        If v(0) = s Then Exit Sub
+    Next v
+    pars.Add Array(s, e)
+End Sub
+
+' Adds an edit unless it overlaps one already planned
+Private Sub AddEdit(ByVal edits As Collection, ByVal s As Long, ByVal e As Long, ByVal newText As String)
+    Dim v As Variant
+    For Each v In edits
+        If s < v(1) And e > v(0) Then Exit Sub
+    Next v
+    edits.Add Array(s, e, newText)
+End Sub
+
+' True when one of the next three words is "transaction(s)" / "transfer(s)" / "txns"
+Private Function FollowedByTxnWord(ByVal doc As Object, ByVal pos As Long, ByVal docEnd As Long) As Boolean
+    Dim t As String, words() As String, i As Long, n As Long, w As String
+    Dim e As Long
+    e = pos + 40
+    If e > docEnd Then e = docEnd
+    If e <= pos Then Exit Function
+    t = LCase$(doc.Range(pos, e).Text)
+    t = Replace(Replace(Replace(t, vbCr, " "), ",", " "), ".", " ")
+    words = Split(Application.WorksheetFunction.Trim(t), " ")
+    For i = 0 To UBound(words)
+        w = words(i)
+        If w <> "" Then
+            n = n + 1
+            If Left$(w, 11) = "transaction" Or Left$(w, 8) = "transfer" Or Left$(w, 4) = "txns" Then
+                FollowedByTxnWord = True
+                Exit Function
+            End If
+            If n >= 3 Then Exit Function
+        End If
+    Next i
+End Function
+
+' Date at pos ends a range: preceded by "and", "through", "to", "until", "thru" or "-"
+Private Function IsRangeEndDate(ByVal doc As Object, ByVal parStart As Long, ByVal pos As Long) As Boolean
+    Dim s As Long, t As String
+    s = pos - 12
+    If s < parStart Then s = parStart
+    If pos <= s Then Exit Function
+    t = LCase$(doc.Range(s, pos).Text)
+    IsRangeEndDate = (t Like "*and " Or t Like "*through " Or t Like "*to " Or t Like "*until " Or _
+                      t Like "*thru " Or t Like "*- " Or t Like "*-")
+End Function
+
+' Date ending at pos starts a range: followed by "and", "through", "to", "until", "thru" or "-"
+Private Function IsRangeStartDate(ByVal doc As Object, ByVal pos As Long, ByVal parEnd As Long) As Boolean
+    Dim e As Long, t As String
+    e = pos + 10
+    If e > parEnd Then e = parEnd
+    If e <= pos Then Exit Function
+    t = LCase$(doc.Range(pos, e).Text)
+    IsRangeStartDate = (t Like " and*" Or t Like " through*" Or t Like " to *" Or t Like " until*" Or _
+                        t Like " thru*" Or t Like " -*" Or t Like "-*")
+End Function
+
+' Start position of the word before "-month"/" month" (e.g. "twelve" in "twelve-month"), or -1
+Private Function WordStartBefore(ByVal doc As Object, ByVal pos As Long) As Long
+    Dim s As Long, t As String, i As Long, j As Long
+    WordStartBefore = -1
+    s = pos - 20
+    If s < doc.Content.Start Then s = doc.Content.Start
+    If pos <= s Then Exit Function
+    t = doc.Range(s, pos).Text
+    i = Len(t)
+    If Not (Right$(t, 1) = "-" Or Right$(t, 1) = " ") Then Exit Function
+    i = i - 1
+    j = i
+    Do While j > 0
+        If Not (Mid$(t, j, 1) Like "[A-Za-z0-9]") Then Exit Do
+        j = j - 1
+    Loop
+    If j = i Then Exit Function
+    WordStartBefore = s + j
+End Function
+
+' First "$1,234.56" style amount in a text, normalised to "$" & digits
+Private Function FirstAmountIn(ByVal t As String) As String
+    Dim p As Long, i As Long, ch As String, out As String
+    p = InStr(t, "$")
+    If p = 0 Then Exit Function
+    i = p + 1
+    Do While i <= Len(t)
+        If Mid$(t, i, 1) <> " " Then Exit Do
+        i = i + 1
+    Loop
+    Do While i <= Len(t)
+        ch = Mid$(t, i, 1)
+        If Not (ch Like "[0-9.,]") Then Exit Do
+        out = out & ch
+        i = i + 1
+    Loop
+    Do While Len(out) > 0
+        If Not (Right$(out, 1) Like "[.,]") Then Exit Do
+        out = Left$(out, Len(out) - 1)
+    Loop
+    If out <> "" Then FirstAmountIn = "$" & out
+End Function
+
+' First two mm/dd/yyyy dates in a text
+Private Sub FirstTwoDatesIn(ByVal t As String, ByRef d1 As String, ByRef d2 As String)
+    Dim i As Long, tok As String
+    d1 = ""
+    d2 = ""
+    For i = 1 To Len(t) - 9
+        tok = Mid$(t, i, 10)
+        If tok Like "##/##/####" Then
+            If d1 = "" Then
+                d1 = tok
+            ElseIf d2 = "" Then
+                d2 = tok
+                Exit For
+            End If
+            i = i + 9
+        End If
+    Next i
+End Sub
+
+' --- Formatting helpers (independent of the PC's regional settings) ---
+Private Function UsDate(ByVal v As Variant) As String
+    If IsDate(v) Then UsDate = Format$(v, "mm\/dd\/yyyy")
+End Function
+
+Private Function UsAmount(ByVal x As Double) As String
+    Dim s As String, sign As String
+    If x < 0 Then sign = "-"
+    s = Format$(Round(Abs(x), 2) * 100, "0")
+    Do While Len(s) < 3
+        s = "0" & s
+    Loop
+    UsAmount = sign & GroupThousands(Left$(s, Len(s) - 2)) & "." & Right$(s, 2)
+End Function
+
+Private Function UsNumber(ByVal n As Long) As String
+    If n < 0 Then
+        UsNumber = "-" & GroupThousands(CStr(-n))
+    Else
+        UsNumber = GroupThousands(CStr(n))
+    End If
+End Function
+
+Private Function GroupThousands(ByVal digits As String) As String
+    Dim out As String
+    Do While Len(digits) > 3
+        out = "," & Right$(digits, 3) & out
+        digits = Left$(digits, Len(digits) - 3)
+    Loop
+    GroupThousands = digits & out
+End Function
+
+' --- Context for one alert, built from the Old/New comparison ---
+Private Sub BuildNarrCtx(ByRef ctx As NarrCtx, ByVal ecmID As String, ByVal alertID As String, _
+                         ByVal oldPath As String, ByVal newPath As String, _
+                         ByRef oldSet As TxnSet, ByRef newSet As TxnSet, ByRef pr As PairResult)
+    ctx.EcmID = ecmID
+    ctx.AlertID = alertID
+    ctx.OldFile = GetFileName(oldPath)
+    ctx.NewFile = GetFileName(newPath)
+    ctx.OldCount = oldSet.UniqueCount
+    ctx.NewCount = newSet.UniqueCount
+    ctx.OldTotal = oldSet.TotalAmt
+    ctx.NewTotal = newSet.TotalAmt
+    ctx.OldMin = oldSet.MinDate
+    ctx.OldMax = oldSet.MaxDate
+    ctx.NewMin = newSet.MinDate
+    ctx.NewMax = newSet.MaxDate
+    ctx.OldAlertCount = oldSet.AlertCount
+    ctx.NewAlertCount = newSet.AlertCount
+    ctx.OldAlertAmt = oldSet.AlertAmt
+    ctx.NewAlertAmt = newSet.AlertAmt
+    ctx.OldAlertMin = oldSet.AlertMin
+    ctx.OldAlertMax = oldSet.AlertMax
+    ctx.NewAlertMin = newSet.AlertMin
+    ctx.NewAlertMax = newSet.AlertMax
+    FilePeriodDates oldPath, ctx.OldPeriodFrom, ctx.OldPeriodTo
+    FilePeriodDates newPath, ctx.NewPeriodFrom, ctx.NewPeriodTo
+    ctx.RuleText = newSet.RuleText
+    ctx.AddedCount = pr.AddedCount
+    ctx.AddedAmount = pr.AddedAmount
+    ctx.AddedAlerted = pr.AddedAlerted
+    ctx.AddedDetail = pr.AddedDetail
+    ctx.DroppedCount = pr.DroppedCount
+    ctx.NewCPDistinct = pr.NewCPDistinct
+    ctx.NewCPDetail = pr.NewCPDetail
+    Set ctx.MonthChanges = MonthChanges(oldSet.Map, newSet.Map)
+End Sub
+
+' Period written in a file name ("06.01.2025 to 06.30.2026") as dates, or Empty
+Private Sub FilePeriodDates(ByVal fPath As String, ByRef dFrom As Variant, ByRef dTo As Variant)
+    Dim parts() As String, d As Date, ok As Boolean, txt As String
+    dFrom = Empty
+    dTo = Empty
+    txt = FilePeriodText(fPath)
+    If InStr(txt, " to ") = 0 Then Exit Sub
+    parts = Split(txt, " to ")
+    d = ParseDateValue(parts(0), ok)
+    If Not ok Then Exit Sub
+    dFrom = d
+    d = ParseDateValue(parts(1), ok)
+    If ok Then
+        dTo = d
+    Else
+        dFrom = Empty
+    End If
+End Sub
+
+' Months whose count or amount differs: Array(long label, short label, old n, old $, new n, new $)
+Private Function MonthChanges(ByVal oldMap As Object, ByVal newMap As Object) As Collection
+    Dim oldM As Object, newM As Object, col As New Collection
+    Dim keys As Variant, i As Long, k As String, o As Variant, n As Variant
+    Dim longNames As Variant, shortNames As Variant, mon As Long
+
+    longNames = Array("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    shortNames = Array("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    Set oldM = MonthTotals(oldMap)
+    Set newM = MonthTotals(newMap)
+
+    keys = DictKeys(newM)
+    For i = LBound(keys) To UBound(keys)
+        k = CStr(keys(i))
+        n = DictGet(newM, k)
+        If DictExists(oldM, k) Then
+            o = DictGet(oldM, k)
+        Else
+            o = Array(0, 0#)
+        End If
+        If o(0) <> n(0) Or Abs(o(1) - n(1)) > 0.005 Then
+            mon = CLng(Right$(k, 2))
+            col.Add Array(longNames(mon - 1) & " " & Left$(k, 4), shortNames(mon - 1) & " " & Left$(k, 4), o(0), o(1), n(0), n(1))
+        End If
+    Next i
+    keys = DictKeys(oldM)
+    For i = LBound(keys) To UBound(keys)
+        k = CStr(keys(i))
+        If Not DictExists(newM, k) Then
+            o = DictGet(oldM, k)
+            mon = CLng(Right$(k, 2))
+            col.Add Array(longNames(mon - 1) & " " & Left$(k, 4), shortNames(mon - 1) & " " & Left$(k, 4), o(0), o(1), 0, 0#)
+        End If
+    Next i
+    Set MonthChanges = col
+End Function
+
+Private Function MonthTotals(ByVal txMap As Object) As Object
+    Dim d As Object, keys As Variant, i As Long, rec As Variant, k As String, v As Variant, amt As Double
+    Set d = CreateLookupDict()
+    keys = DictKeys(txMap)
+    For i = LBound(keys) To UBound(keys)
+        rec = DictGet(txMap, CStr(keys(i)))
+        If VarType(rec(F_DATE)) = vbDate Then
+            k = Format$(rec(F_DATE), "yyyymm")
+            If IsEmpty(rec(F_AMT)) Then amt = 0 Else amt = Abs(CDbl(rec(F_AMT)))
+            If DictExists(d, k) Then
+                v = DictGet(d, k)
+                v(0) = v(0) + 1
+                v(1) = v(1) + amt
+                DictSet d, k, v
+            Else
+                DictAdd d, k, Array(1, amt)
+            End If
+        End If
+    Next i
+    Set MonthTotals = d
+End Function
+
+Private Function AskNarrativeFolder() As String
+    Dim folderPath As String
+    If MsgBox("Also update the escalation narratives (Word) with the New file figures?" & vbCrLf & vbCrLf & _
+              "Yes = select the narrative folder. Edited copies are saved in a new subfolder with every change " & _
+              "highlighted in yellow; the original documents are not changed." & vbCrLf & _
+              "No = compare transactions only.", vbQuestion + vbYesNo, "Update Narratives") <> vbYes Then Exit Function
+    folderPath = Pick_Folder("Select the folder containing the escalation narratives (ECMID_ALERTID_*.docx)")
+    If folderPath <> "" Then GrantMacAccess Array(folderPath)
+    AskNarrativeFolder = folderPath
+End Function
+
+' Date value as mm/dd/yyyy, or the original text when it was not a readable date
+Private Function DateText(ByVal v As Variant) As String
+    If VarType(v) = vbDate Then
+        DateText = UsDate(v)
+    ElseIf IsEmpty(v) Then
+        DateText = "(no date)"
+    Else
+        DateText = CStr(v)
+    End If
+End Function
 ' =========================================================================
 ' [HELPER] 11. FILES, FOLDERS AND WORKBOOKS (Mac & Windows)
 ' =========================================================================
@@ -2415,6 +3378,7 @@ Private Sub DetectColumns(ByVal hdr As Variant, ByVal lastCol As Long, ByRef cm 
     cm.Ccy = GetFieldCol(hdr, 1, lastCol, FLD_CCY)
     cm.OrigName = GetFieldCol(hdr, 1, lastCol, FLD_ORIG)
     cm.BenName = GetFieldCol(hdr, 1, lastCol, FLD_BEN)
+    cm.Rule = GetFieldCol(hdr, 1, lastCol, FLD_RULE)
 End Sub
 
 ' Best-scoring column for a field in row r of block (exact names beat partial matches;
@@ -2508,6 +3472,10 @@ Private Sub FieldSpec(ByVal fieldId As Long, ByRef exacts As Variant, ByRef part
             exacts = Array("beneficiary name", "ben name", "bene name", "receiver name", "beneficiary customer name")
             partials = Array("beneficiary name")
             excludes = Array("first", "last", "middle")
+        Case FLD_RULE
+            exacts = Array("alert information", "rule triggered", "rules triggered", "rule name", "rule", "scenario name", "scenario", "alert rule", "alert scenario")
+            partials = Array("alert information", "scenario", "rule")
+            excludes = Array("id", "date", "type", "count", "amount", "score")
         Case Else
             exacts = Array()
             partials = Array()
