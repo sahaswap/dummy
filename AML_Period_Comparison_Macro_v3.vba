@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 3.4
+' Version: 3.5
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -44,6 +44,12 @@ Private Const HEADER_SCAN_ROWS As Long = 10
 ' Narrative update: add Word comments (Old vs New summary, new counterparties,
 ' rule not mentioned). Lines that cannot be found are always commented.
 Private Const NARRATIVE_ADD_COMMENTS As Boolean = True
+' Note added as the first line of an updated narrative, highlighted yellow.
+' Set to "" to add no note.
+Private Const NARRATIVE_NOTE As String = "The data highlighted in yellow has been updated to reflect the revised " & _
+    "date range and total transaction amount for this alert. QC reviewers are requested to confirm whether the " & _
+    "in-scope transactions, timeline and amount align with the suspicious activity date range and the escalated " & _
+    "scenarios within this case." 
 
 ' --- Design System Palette (Tailored Slate Theme) ---
 Private Const COLOR_HEADER_BG As Long = 2762511     ' Slate 900 RGB(15, 23, 42)
@@ -2136,6 +2142,7 @@ Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As Str
     End If
 
     ApplyNarrativeEdits doc, edits
+    If edits.Count > 0 Then InsertTopNote doc, NARRATIVE_NOTE
     If NARRATIVE_ADD_COMMENTS Or flags.Count > 0 Then AddNarrativeComments doc, ctx, flags, edits.Count, note
 
     stage = "saving the narrative"
@@ -2570,6 +2577,40 @@ Private Sub ApplyNarrativeEdits(ByVal doc As Object, ByVal edits As Collection)
         ins.HighlightColorIndex = 7          ' wdYellow
         doc.Range(arr(i)(0), arr(i)(1)).Delete
     Next i
+End Sub
+
+' Adds the QC note as a new first paragraph, highlighted yellow, in the body font
+Private Sub InsertTopNote(ByVal doc As Object, ByVal noteText As String)
+    Dim rng As Object, p As Object
+    Dim fontName As String, fontSize As Single
+
+    If Len(noteText) = 0 Then Exit Sub
+    If InStr(1, doc.Paragraphs(1).Range.Text, Left$(noteText, 40), vbTextCompare) > 0 Then Exit Sub   ' already there
+
+    For Each p In doc.Paragraphs
+        If Len(p.Range.Text) > 80 Then
+            fontName = p.Range.Font.Name
+            fontSize = p.Range.Font.Size
+            Exit For
+        End If
+    Next p
+
+    Set rng = doc.Range(doc.Content.Start, doc.Content.Start)
+    rng.InsertBefore noteText & vbCr
+    Set rng = doc.Range(doc.Content.Start, doc.Content.Start + Len(noteText))
+    On Error Resume Next
+    rng.Style = "Normal"
+    On Error GoTo 0
+    With rng.Font
+        .Bold = False
+        .Italic = False
+        .Underline = 0                       ' wdUnderlineNone
+        .Color = 0                           ' black
+        If fontName <> "" Then .Name = fontName
+        If fontSize > 0 Then .Size = fontSize
+    End With
+    rng.ParagraphFormat.Alignment = 0        ' wdAlignParagraphLeft
+    rng.HighlightColorIndex = 7              ' wdYellow
 End Sub
 
 Private Sub AddNarrativeComments(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal flags As Collection, _
