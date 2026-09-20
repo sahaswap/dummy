@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 3.9
+' Version: 4.2
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -42,9 +42,12 @@ Private Const TEXT_DATE_ORDER As String = "MDY"
 ' How many rows from the top of a sheet are searched for the header row.
 Private Const HEADER_SCAN_ROWS As Long = 10
 ' Narrative update: all changes are written into the narrative text itself.
-' Set this to True to also add Word comments (Old vs New summary, new
-' counterparties, rule not mentioned) in the margin.
-Private Const NARRATIVE_ADD_COMMENTS As Boolean = False
+' True also adds Word comments in the margin (Old vs New summary, new
+' counterparties, rule not mentioned in the narrative).
+Private Const NARRATIVE_ADD_COMMENTS As Boolean = True
+' Date range written into narratives: "FILE" = the period in the New file's name
+' (e.g. "05.01.2025 to 05.31.2026"), "DATA" = its first and last transaction date.
+Private Const NARRATIVE_DATE_RANGE As String = "FILE"
 ' Note added as the first line of an updated narrative, highlighted yellow.
 ' Set to "" to add no note.
 Private Const NARRATIVE_NOTE As String = "The data highlighted in yellow has been updated to reflect the revised " & _
@@ -243,6 +246,8 @@ Private Type NarrCtx
     OldPeriodTo As Variant
     NewPeriodFrom As Variant
     NewPeriodTo As Variant
+    NarrFrom As Variant
+    NarrTo As Variant
     RuleText As String
     AddedCount As Long
     AddedAmount As Double
@@ -2108,7 +2113,11 @@ End Sub
 '     the same sentence are only replaced when they equal an Old file figure.
 '     K is increased by the number of newly identified counterparties. Any figure
 '     replaced without matching the Old file is reported in the dashboard.
-' Lines 1-3 always take the New file's alerted figures.
+' Lines 1-3 take the New file's overall figures (count, total, date range).
+' Alerted-only figures are never written anywhere in the narrative.
+' Every date range written is the New file's own range: the period in its file
+' name when there is one (NARRATIVE_DATE_RANGE = "FILE"), otherwise the first
+' and last transaction date.
 ' Everywhere else in the document, any figure that equals an Old file figure
 ' (total, credit/debit total, transaction count, first/last date, file-name
 ' period) is replaced with the matching New figure, and "twelve-month review
@@ -2364,9 +2373,10 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
     Dim t As String, lt As String
     Dim escS As Long, totS As Long, drS As Long, betS As Long, spcS As Long
     Dim escT As String, totT As String, drT As String, betT As String, spcT As String
-    Dim newCount As String, newTotal As String, newAlertCount As String, newAlertTotal As String
-    Dim sentEnd As Long, k As Long, kLen As Long, kTxt As String
+    Dim newCount As String, newTotal As String
+    Dim sentEnd As Long, k As Long, kLen As Long, kTxt As String, k2 As Long, kLen2 As Long, aPos As Long
     Dim pStart As Long
+    Dim hCount As String, hAmount As String, hFrom As String, hTo As String
 
     escS = -1: totS = -1: drS = -1: betS = -1: spcS = -1
     For Each p In doc.Paragraphs
@@ -2392,34 +2402,47 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
 
     newCount = UsNumber(ctx.NewCount)
     newTotal = "$" & UsAmount(ctx.NewTotal)
-    newAlertCount = UsNumber(ctx.NewAlertCount)
-    newAlertTotal = "$" & UsAmount(ctx.NewAlertAmt)
 
-    ' Lines 1-3: alerted activity (needs the New file's "Is Alerted" column)
-    If ctx.NewAlertCount = 0 Then
-        flags.Add Array("", "The New file has no alerted transactions (or no 'Is Alerted' column), so the opening sentence, " & _
-                  "Total Suspicious Dollar Amount and Date Range of Suspicious Activity were not changed.")
+    ' Lines 1-3: the New file's overall activity
+    hCount = newCount
+    hAmount = newTotal
+    hFrom = UsDate(ctx.NarrFrom)
+    hTo = UsDate(ctx.NarrTo)
+
+    If escS >= 0 Then
+        sentEnd = SentenceEnd(escT, 1)
+        k = FindCountToken(escT, 1, sentEnd, Array("transaction", "transfer", "txn"), kLen)
+        If k > 0 Then PlanFigure doc, edits, flags, escS, escT, k, kLen, HeaderPairs(ctx, "C"), hCount, _
+                                 "opening sentence", "transaction count"
+        aPos = InStr(1, escT, "totaling", vbTextCompare)
+        If aPos < 1 Then aPos = 1
+        k = FindAmountToken(escT, aPos, sentEnd, kLen)
+        If k > 0 Then PlanFigure doc, edits, flags, escS, escT, k, kLen, HeaderPairs(ctx, "A"), hAmount, _
+                                 "opening sentence", "amount"
     Else
-        If escS >= 0 Then
-            sentEnd = SentenceEnd(escT, 1)
-            PlanCount doc, edits, escS, escT, 1, sentEnd, Array("transaction", "transfer", "txn"), newAlertCount
-            PlanAmount doc, edits, escS, escT, InStr(1, escT, "totaling", vbTextCompare), sentEnd, newAlertTotal
-        Else
-            flags.Add Array("", "Opening sentence ('... to report N transactions totaling $X') not found. New file alerted: " & _
-                      newAlertCount & " transactions totaling " & newAlertTotal & ".")
+        flags.Add Array("", "Opening sentence ('... to report N transactions totaling $X') not found; New file: " & _
+                  hCount & " transactions totaling " & hAmount)
+    End If
+
+    If totS >= 0 Then
+        k = FindAmountToken(totT, 1, Len(totT), kLen)
+        If k > 0 Then PlanFigure doc, edits, flags, totS, totT, k, kLen, HeaderPairs(ctx, "A"), hAmount, _
+                                 "Total Suspicious Dollar Amount", "amount"
+    Else
+        flags.Add Array("", "'Total Suspicious Dollar Amount' not found; New file: " & hAmount)
+    End If
+
+    If drS >= 0 Then
+        k = FindDateToken(drT, 1, Len(drT), kLen)
+        If k > 0 Then
+            k2 = FindDateToken(drT, k + kLen, Len(drT), kLen2)
+            PlanFigure doc, edits, flags, drS, drT, k, kLen, HeaderPairs(ctx, "F"), hFrom, _
+                       "Date Range of Suspicious Activity", "start date"
+            If k2 > 0 Then PlanFigure doc, edits, flags, drS, drT, k2, kLen2, HeaderPairs(ctx, "T"), hTo, _
+                                      "Date Range of Suspicious Activity", "end date"
         End If
-        If totS >= 0 Then
-            PlanAmount doc, edits, totS, totT, 1, Len(totT), newAlertTotal
-        Else
-            flags.Add Array("", "'Total Suspicious Dollar Amount' not found. New file alerted total: " & newAlertTotal & ".")
-        End If
-        If drS >= 0 Then
-            PlanDates doc, edits, flags, drS, drT, 1, Len(drT), UsDate(ctx.NewAlertMin), UsDate(ctx.NewAlertMax), _
-                      "Date Range of Suspicious Activity"
-        Else
-            flags.Add Array("", "'Date Range of Suspicious Activity' not found. New file alerted dates: " & _
-                      UsDate(ctx.NewAlertMin) & " through " & UsDate(ctx.NewAlertMax) & ".")
-        End If
+    Else
+        flags.Add Array("", "'Date Range of Suspicious Activity' not found; New file: " & hFrom & " through " & hTo)
     End If
 
     ' Lines 4 and 5 (the "Specifically" line is optional)
@@ -2455,8 +2478,8 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
 
     If betS < 0 And spcS < 0 Then
         flags.Add Array("", "No 'Between [date] and [date], ... N transactions totaling $X' line was found. New file: " & _
-                  newCount & " transactions totaling " & newTotal & " between " & UsDate(ctx.NewMin) & " and " & _
-                  UsDate(ctx.NewMax) & ".")
+                  newCount & " transactions totaling " & newTotal & " between " & UsDate(ctx.NarrFrom) & " and " & _
+                  UsDate(ctx.NarrTo) & ".")
     End If
 End Sub
 
@@ -2514,11 +2537,11 @@ Private Sub SweepParagraph(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edit
         p = FindDateToken(t, pos, pEnd, n)
         If p = 0 Then Exit Do
         If IsRangeStartText(t, p + n) Then
-            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NewMin)))
-            If isPeriodText Then SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NewPeriodFrom)))
+            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NarrFrom)), _
+                                                           Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NarrFrom)))
         ElseIf IsRangeEndText(t, p) Then
-            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NewMax)))
-            If isPeriodText Then SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NewPeriodTo)))
+            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NarrTo)), _
+                                                           Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NarrTo)))
         End If
         pos = p + n
     Loop
@@ -2543,15 +2566,13 @@ End Sub
 Private Function AmountSweepPairs(ByRef ctx As NarrCtx) As Variant
     AmountSweepPairs = Array(Array("$" & UsAmount(ctx.OldTotal), "$" & UsAmount(ctx.NewTotal)), _
                              Array("$" & UsAmount(ctx.OldCrAmt), "$" & UsAmount(ctx.NewCrAmt)), _
-                             Array("$" & UsAmount(ctx.OldDrAmt), "$" & UsAmount(ctx.NewDrAmt)), _
-                             Array("$" & UsAmount(ctx.OldAlertAmt), "$" & UsAmount(ctx.NewAlertAmt)))
+                             Array("$" & UsAmount(ctx.OldDrAmt), "$" & UsAmount(ctx.NewDrAmt)))
 End Function
 
 Private Function CountSweepPairs(ByRef ctx As NarrCtx) As Variant
     CountSweepPairs = Array(Array(UsNumber(ctx.OldCount), UsNumber(ctx.NewCount)), _
                             Array(UsNumber(ctx.OldCrCount), UsNumber(ctx.NewCrCount)), _
-                            Array(UsNumber(ctx.OldDrCount), UsNumber(ctx.NewDrCount)), _
-                            Array(UsNumber(ctx.OldAlertCount), UsNumber(ctx.NewAlertCount)))
+                            Array(UsNumber(ctx.OldDrCount), UsNumber(ctx.NewDrCount)))
 End Function
 
 ' "<word>-month review period" -> "review period from 06/01/2025 through 06/30/2026"
@@ -2613,6 +2634,23 @@ Private Function IsRangeStartText(ByVal t As String, ByVal pos As Long) As Boole
                         Or after Like " thru*" Or after Like " -*" Or after Like "-*")
 End Function
 
+' Old/New pair for a header figure, always the overall activity:
+' "C" count, "A" amount, "F" first date, "T" last date
+Private Function HeaderPairs(ByRef ctx As NarrCtx, ByVal what As String) As Variant
+    Select Case what
+        Case "C"
+            HeaderPairs = Array(Array(UsNumber(ctx.OldCount), UsNumber(ctx.NewCount)))
+        Case "A"
+            HeaderPairs = Array(Array("$" & UsAmount(ctx.OldTotal), "$" & UsAmount(ctx.NewTotal)))
+        Case "F"
+            HeaderPairs = Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NarrFrom)), _
+                                Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NarrFrom)))
+        Case Else
+            HeaderPairs = Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NarrTo)), _
+                                Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NarrTo)))
+    End Select
+End Function
+
 ' Dates, then every "N [credit/debit] transactions totaling $X" pair in the first sentence of a line.
 ' All or nothing: if any figure matches neither file the line is left unchanged and commented.
 Private Sub PlanActivityLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection, ByVal flags As Collection, _
@@ -2630,14 +2668,14 @@ Private Sub PlanActivityLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal ed
     If p1 > 0 Then p2 = FindDateToken(t, p1 + l1, sentEnd, l2)
     If p1 > 0 And p2 > 0 Then
         PlanFigure doc, edits, flags, parStart, t, p1, l1, _
-                   Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NewMin)), Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NewPeriodFrom))), _
-                   UsDate(ctx.NewMin), lineName, "start date"
+                   Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NarrFrom)), Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NarrFrom))), _
+                   UsDate(ctx.NarrFrom), lineName, "start date"
         PlanFigure doc, edits, flags, parStart, t, p2, l2, _
-                   Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NewMax)), Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NewPeriodTo))), _
-                   UsDate(ctx.NewMax), lineName, "end date"
+                   Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NarrTo)), Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NarrTo))), _
+                   UsDate(ctx.NarrTo), lineName, "end date"
     Else
-        flags.Add Array("", lineName & ": the date range was not found; New file dates are " & UsDate(ctx.NewMin) & _
-                  " to " & UsDate(ctx.NewMax))
+        flags.Add Array("", lineName & ": the date range was not found; New file range is " & UsDate(ctx.NarrFrom) & _
+                  " to " & UsDate(ctx.NarrTo))
     End If
 
     pos = 1
@@ -3247,6 +3285,16 @@ Private Sub BuildNarrCtx(ByRef ctx As NarrCtx, ByVal ecmID As String, ByVal aler
     ctx.NewDrAmt = newSet.DrAmt
     FilePeriodDates oldPath, ctx.OldPeriodFrom, ctx.OldPeriodTo
     FilePeriodDates newPath, ctx.NewPeriodFrom, ctx.NewPeriodTo
+
+    ' Date range written into the narrative: the New file's own period when its
+    ' name carries one, otherwise its first and last transaction date
+    If UCase$(NARRATIVE_DATE_RANGE) = "FILE" And IsDate(ctx.NewPeriodFrom) And IsDate(ctx.NewPeriodTo) Then
+        ctx.NarrFrom = ctx.NewPeriodFrom
+        ctx.NarrTo = ctx.NewPeriodTo
+    Else
+        ctx.NarrFrom = ctx.NewMin
+        ctx.NarrTo = ctx.NewMax
+    End If
     ctx.RuleText = newSet.RuleText
     ctx.AddedCount = pr.AddedCount
     ctx.AddedAmount = pr.AddedAmount
