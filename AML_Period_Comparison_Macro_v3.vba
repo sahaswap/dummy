@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 3.5
+' Version: 3.6
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -2089,6 +2089,11 @@ End Sub
 '     matches neither file is left alone and commented. K is increased by the
 '     number of newly identified counterparties.
 ' Lines 1-3 always take the New file's alerted figures.
+' Everywhere else in the document, any figure that equals an Old file figure
+' (total, credit/debit total, transaction count, first/last date, file-name
+' period) is replaced with the matching New figure, and "twelve-month review
+' period" style phrases become the New file's period. Figures that match no Old
+' figure are left alone.
 ' The new value is written in the existing font (not tracked) and highlighted
 ' yellow. Anything that cannot be located is reported as a Word comment.
 Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As String, ByRef tot As BatchTotals) As String
@@ -2096,7 +2101,7 @@ Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As Str
     Dim doc As Object
     Dim edits As Collection, flags As Collection
     Dim copied As Boolean, wasTracking As Boolean
-    Dim status As String
+    Dim status As String, customer As String
 
     On Error GoTo Fail
     stage = "finding the narrative"
@@ -2145,11 +2150,16 @@ Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As Str
     If edits.Count > 0 Then InsertTopNote doc, NARRATIVE_NOTE
     If NARRATIVE_ADD_COMMENTS Or flags.Count > 0 Then AddNarrativeComments doc, ctx, flags, edits.Count, note
 
+    customer = CustomerName(srcPath, doc)
+
     stage = "saving the narrative"
     doc.TrackRevisions = wasTracking
     doc.Save
     doc.Close SaveChanges:=0
     Set doc = Nothing
+
+    stage = "renaming the narrative"
+    outPath = RenameNarrative(outPath, ctx.EcmID, ctx.AlertID, customer)
 
     If edits.Count > 0 Then
         tot.NarrUpdated = tot.NarrUpdated + 1
@@ -2174,6 +2184,101 @@ FailCleanup:
     On Error GoTo 0
     tot.NarrErrors = tot.NarrErrors + 1
     UpdateNarrative = "Error while " & stage & ": " & errDesc
+End Function
+
+' Customer name from the source file name (ECM_ALERT_<customer>_...), or from the
+' narrative's "Subject:" line
+Private Function CustomerName(ByVal srcPath As String, ByVal doc As Object) As String
+    Dim baseName As String, tokens() As String, cand As String
+    Dim p As Object, t As String, pos As Long, n As Long
+
+    baseName = StripExtension(GetFileName(srcPath))
+    tokens = Split(baseName, "_")
+    If UBound(tokens) >= 2 Then
+        cand = Trim$(tokens(2))
+        If Not IsNarrativeWord(cand) Then
+            CustomerName = cand
+            Exit Function
+        End If
+    End If
+
+    For Each p In doc.Paragraphs
+        t = p.Range.Text
+        n = n + 1
+        pos = InStr(1, t, "Subject", vbTextCompare)
+        If pos > 0 Then
+            pos = InStr(pos, t, ":")
+            If pos > 0 Then
+                cand = Trim$(Replace(Replace(Mid$(t, pos + 1), vbCr, ""), Chr(7), ""))
+                Do While Len(cand) > 0
+                    If Not (Right$(cand, 1) = "." Or Right$(cand, 1) = ",") Then Exit Do
+                    cand = Trim$(Left$(cand, Len(cand) - 1))
+                Loop
+                If cand <> "" Then
+                    CustomerName = cand
+                    Exit Function
+                End If
+            End If
+        End If
+        If n >= 15 Then Exit For
+    Next p
+End Function
+
+' True for the descriptive parts of a file name ("Escalation Narrative", "Alert Write-Up", ...)
+Private Function IsNarrativeWord(ByVal s As String) As Boolean
+    Dim ls As String
+    ls = LCase$(s)
+    IsNarrativeWord = (ls = "" Or InStr(ls, "narrative") > 0 Or InStr(ls, "escalation") > 0 Or InStr(ls, "ecalation") > 0 _
+                       Or InStr(ls, "write-up") > 0 Or InStr(ls, "write up") > 0 Or InStr(ls, "writeup") > 0 _
+                       Or InStr(ls, "updated") > 0 Or InStr(ls, "alert write") > 0)
+End Function
+
+' Renames the edited copy to ECMID_ALERTID_Customer_Escalation Narrative.<ext>
+Private Function RenameNarrative(ByVal outPath As String, ByVal ecmID As String, ByVal alertID As String, _
+                                 ByVal customer As String) As String
+    Dim folderPath As String, fName As String, ext As String, newName As String, target As String, i As Long
+
+    RenameNarrative = outPath
+    On Error GoTo Done
+
+    fName = GetFileName(outPath)
+    folderPath = Left$(outPath, Len(outPath) - Len(fName))
+    ext = Mid$(fName, InStrRev(fName, "."))
+    newName = NarrativePrefix(ecmID, alertID)
+    customer = SanitizeFileName(customer)
+    If customer <> "" Then newName = newName & "_" & customer
+    newName = newName & "_Escalation Narrative"
+
+    target = folderPath & newName & ext
+    i = 1
+    Do While FileExists(target) And StrComp(target, outPath, vbTextCompare) <> 0
+        i = i + 1
+        target = folderPath & newName & " (" & i & ")" & ext
+    Loop
+    If StrComp(target, outPath, vbTextCompare) <> 0 Then
+        FileCopy outPath, target
+        Kill outPath
+        RenameNarrative = target
+    End If
+Done:
+End Function
+
+Private Function SanitizeFileName(ByVal s As String) As String
+    Dim bad As Variant, b As Variant
+    bad = Array("\", "/", ":", "*", "?", Chr(34), "<", ">", "|", vbCr, vbLf, vbTab, Chr(7))
+    For Each b In bad
+        s = Replace(s, CStr(b), " ")
+    Next b
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    s = Trim$(s)
+    Do While Len(s) > 0
+        If Right$(s, 1) <> "." Then Exit Do
+        s = Trim$(Left$(s, Len(s) - 1))
+    Loop
+    If Len(s) > 80 Then s = Trim$(Left$(s, 80))
+    SanitizeFileName = s
 End Function
 
 Private Function NarrativeNeedsUpdate(ByRef ctx As NarrCtx) As Boolean
@@ -2234,6 +2339,7 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
     Dim escT As String, totT As String, drT As String, betT As String, spcT As String
     Dim newCount As String, newTotal As String, newAlertCount As String, newAlertTotal As String
     Dim sentEnd As Long, k As Long, kLen As Long, kTxt As String
+    Dim pStart As Long
 
     escS = -1: totS = -1: drS = -1: betS = -1: spcS = -1
     For Each p In doc.Paragraphs
@@ -2311,6 +2417,15 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
                       "check whether the counterparty count needs to go down.")
         End If
     End If
+    ' Everywhere else: figures that came from the Old file
+    For Each p In doc.Paragraphs
+        pStart = p.Range.Start
+        If pStart <> escS And pStart <> totS And pStart <> drS And pStart <> betS And pStart <> spcS Then
+            SweepParagraph doc, ctx, edits, pStart, p.Range.Text
+        End If
+    Next p
+    PlanPeriodPhrase doc, ctx, edits
+
     If betS < 0 And spcS < 0 Then
         flags.Add Array("", "No 'Between [date] and [date], ... N transactions totaling $X' line was found. New file: " & _
                   newCount & " transactions totaling " & newTotal & " between " & UsDate(ctx.NewMin) & " and " & _
@@ -2333,6 +2448,143 @@ Private Sub PlanDates(ByVal doc As Object, ByVal edits As Collection, ByVal flag
     AddValueEdit doc, edits, parStart, t, p1, Mid$(t, p1, l1), newFrom
     AddValueEdit doc, edits, parStart, t, p2, Mid$(t, p2, l2), newTo
 End Sub
+
+' Replaces Old file figures wherever else they appear: totals, credit/debit totals,
+' transaction counts, the first/last transaction date inside a date range, and the
+' Old file-name period inside a review-period sentence. Values that match no Old
+' figure are left untouched (this is a sweep, not a checked line).
+Private Sub SweepParagraph(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection, _
+                           ByVal parStart As Long, ByVal t As String)
+    Dim pEnd As Long, pos As Long, p As Long, n As Long, isPeriodText As Boolean
+    Dim followWords As Variant
+
+    pEnd = Len(t)
+    followWords = Array("transaction", "transfer", "txn", "credit", "debit")
+    isPeriodText = (InStr(1, t, "review period", vbTextCompare) > 0 Or InStr(1, t, "lookback", vbTextCompare) > 0 _
+                    Or InStr(1, t, "look-back", vbTextCompare) > 0 Or InStr(1, t, "look back", vbTextCompare) > 0)
+
+    ' amounts
+    pos = 1
+    Do
+        p = FindAmountToken(t, pos, pEnd, n)
+        If p = 0 Then Exit Do
+        SwapIfOld doc, edits, parStart, t, p, n, AmountSweepPairs(ctx)
+        pos = p + n
+    Loop
+
+    ' transaction counts
+    pos = 1
+    Do
+        p = FindCountToken(t, pos, pEnd, followWords, n)
+        If p = 0 Then Exit Do
+        SwapIfOld doc, edits, parStart, t, p, n, CountSweepPairs(ctx)
+        pos = p + n
+    Loop
+
+    ' dates that form a range
+    pos = 1
+    Do
+        p = FindDateToken(t, pos, pEnd, n)
+        If p = 0 Then Exit Do
+        If IsRangeStartText(t, p + n) Then
+            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NewMin)))
+            If isPeriodText Then SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NewPeriodFrom)))
+        ElseIf IsRangeEndText(t, p) Then
+            SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldMax), UsDate(ctx.NewMax)))
+            If isPeriodText Then SwapIfOld doc, edits, parStart, t, p, n, Array(Array(UsDate(ctx.OldPeriodTo), UsDate(ctx.NewPeriodTo)))
+        End If
+        pos = p + n
+    Loop
+End Sub
+
+' Replaces the figure only when it equals one of the Old values
+Private Sub SwapIfOld(ByVal doc As Object, ByVal edits As Collection, ByVal parStart As Long, ByVal t As String, _
+                      ByVal pos As Long, ByVal n As Long, ByVal pairs As Variant)
+    Dim cur As String, curKey As String, pr As Variant
+    cur = Mid$(t, pos, n)
+    curKey = NormValue(cur)
+    For Each pr In pairs
+        If CStr(pr(0)) <> "" And CStr(pr(1)) <> "" Then
+            If NormValue(CStr(pr(0))) = curKey Then
+                AddValueEdit doc, edits, parStart, t, pos, cur, CStr(pr(1))
+                Exit Sub
+            End If
+        End If
+    Next pr
+End Sub
+
+Private Function AmountSweepPairs(ByRef ctx As NarrCtx) As Variant
+    AmountSweepPairs = Array(Array("$" & UsAmount(ctx.OldTotal), "$" & UsAmount(ctx.NewTotal)), _
+                             Array("$" & UsAmount(ctx.OldCrAmt), "$" & UsAmount(ctx.NewCrAmt)), _
+                             Array("$" & UsAmount(ctx.OldDrAmt), "$" & UsAmount(ctx.NewDrAmt)), _
+                             Array("$" & UsAmount(ctx.OldAlertAmt), "$" & UsAmount(ctx.NewAlertAmt)))
+End Function
+
+Private Function CountSweepPairs(ByRef ctx As NarrCtx) As Variant
+    CountSweepPairs = Array(Array(UsNumber(ctx.OldCount), UsNumber(ctx.NewCount)), _
+                            Array(UsNumber(ctx.OldCrCount), UsNumber(ctx.NewCrCount)), _
+                            Array(UsNumber(ctx.OldDrCount), UsNumber(ctx.NewDrCount)), _
+                            Array(UsNumber(ctx.OldAlertCount), UsNumber(ctx.NewAlertCount)))
+End Function
+
+' "<word>-month review period" -> "review period from 06/01/2025 through 06/30/2026"
+Private Sub PlanPeriodPhrase(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection)
+    Dim hits As Collection, h As Variant, key As Variant
+    Dim wordStart As Long
+
+    If Not (IsDate(ctx.NewPeriodFrom) And IsDate(ctx.NewPeriodTo)) Then Exit Sub
+    If IsDate(ctx.OldPeriodFrom) And IsDate(ctx.OldPeriodTo) Then
+        If UsDate(ctx.OldPeriodFrom) = UsDate(ctx.NewPeriodFrom) And UsDate(ctx.OldPeriodTo) = UsDate(ctx.NewPeriodTo) Then Exit Sub
+    End If
+
+    For Each key In Array("month review period", "month lookback period", "month look-back period", "month look back period")
+        Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, CStr(key), False)
+        For Each h In hits
+            wordStart = WordStartBefore(doc, h(0))
+            If wordStart >= 0 Then
+                edits.Add Array(wordStart, h(1), doc.Range(wordStart, h(1)).Text, _
+                                Mid$(CStr(key), 7) & " from " & UsDate(ctx.NewPeriodFrom) & " through " & UsDate(ctx.NewPeriodTo))
+            End If
+        Next h
+    Next key
+End Sub
+
+' Start position of the word before "-month"/" month" (e.g. "twelve" in "twelve-month"), or -1
+Private Function WordStartBefore(ByVal doc As Object, ByVal pos As Long) As Long
+    Dim s As Long, t As String, i As Long, j As Long
+    WordStartBefore = -1
+    s = pos - 20
+    If s < doc.Content.Start Then s = doc.Content.Start
+    If pos <= s Then Exit Function
+    t = doc.Range(s, pos).Text
+    i = Len(t)
+    If Not (Right$(t, 1) = "-" Or Right$(t, 1) = " ") Then Exit Function
+    i = i - 1
+    j = i
+    Do While j > 0
+        If Not (Mid$(t, j, 1) Like "[A-Za-z0-9]") Then Exit Do
+        j = j - 1
+    Loop
+    If j = i Then Exit Function
+    WordStartBefore = s + j
+End Function
+
+' Date at this position ends a range ("... and 06/02/2026")
+Private Function IsRangeEndText(ByVal t As String, ByVal pos As Long) As Boolean
+    Dim before As String
+    If pos <= 1 Then Exit Function
+    before = LCase$(Mid$(t, 1, pos - 1))
+    IsRangeEndText = (before Like "*and " Or before Like "*through " Or before Like "*to " Or before Like "*until " _
+                      Or before Like "*thru " Or before Like "*- " Or before Like "*-")
+End Function
+
+' Date ending at this position starts a range ("06/01/2025 and ...")
+Private Function IsRangeStartText(ByVal t As String, ByVal pos As Long) As Boolean
+    Dim after As String
+    after = LCase$(Mid$(t, pos, 10))
+    IsRangeStartText = (after Like " and*" Or after Like " through*" Or after Like " to *" Or after Like " until*" _
+                        Or after Like " thru*" Or after Like " -*" Or after Like "-*")
+End Function
 
 ' Dates, then every "N [credit/debit] transactions totaling $X" pair in the first sentence of a line.
 ' All or nothing: if any figure matches neither file the line is left unchanged and commented.
