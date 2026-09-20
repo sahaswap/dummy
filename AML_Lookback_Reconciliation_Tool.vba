@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 4.2
+' Version: 4.3
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -44,7 +44,7 @@ Private Const HEADER_SCAN_ROWS As Long = 10
 ' Narrative update: all changes are written into the narrative text itself.
 ' True also adds Word comments in the margin (Old vs New summary, new
 ' counterparties, rule not mentioned in the narrative).
-Private Const NARRATIVE_ADD_COMMENTS As Boolean = True
+Private Const NARRATIVE_ADD_COMMENTS As Boolean = False
 ' Date range written into narratives: "FILE" = the period in the New file's name
 ' (e.g. "05.01.2025 to 05.31.2026"), "DATA" = its first and last transaction date.
 Private Const NARRATIVE_DATE_RANGE As String = "FILE"
@@ -2927,7 +2927,7 @@ End Sub
 
 ' Adds the QC note as a new first paragraph, highlighted yellow, in the body font
 Private Sub InsertTopNote(ByVal doc As Object, ByVal noteText As String)
-    Dim rng As Object, p As Object
+    Dim rng As Object, para As Object, p As Object
     Dim fontName As String, fontSize As Single
 
     If Len(noteText) = 0 Then Exit Sub
@@ -2941,9 +2941,13 @@ Private Sub InsertTopNote(ByVal doc As Object, ByVal noteText As String)
         End If
     Next p
 
-    Set rng = doc.Range(doc.Content.Start, doc.Content.Start)
-    rng.InsertBefore noteText & vbCr
-    Set rng = doc.Range(doc.Content.Start, doc.Content.Start + Len(noteText))
+    doc.Paragraphs(1).Range.InsertParagraphBefore
+    Set para = doc.Paragraphs(1)
+    para.Range.InsertBefore noteText
+
+    ' Highlight the paragraph that actually holds the note, without its paragraph mark
+    Set para = doc.Paragraphs(1)
+    Set rng = doc.Range(para.Range.Start, para.Range.End - 1)
     On Error Resume Next
     rng.Style = "Normal"
     On Error GoTo 0
@@ -2957,6 +2961,7 @@ Private Sub InsertTopNote(ByVal doc As Object, ByVal noteText As String)
     End With
     rng.ParagraphFormat.Alignment = 0        ' wdAlignParagraphLeft
     rng.HighlightColorIndex = 7              ' wdYellow
+    If rng.HighlightColorIndex <> 7 Then para.Range.HighlightColorIndex = 7
 End Sub
 
 Private Sub AddNarrativeComments(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal flags As Collection, _
