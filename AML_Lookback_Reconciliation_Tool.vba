@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 4.3
+' Version: 5.0
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -87,6 +87,9 @@ Private Const SHEET_LEGACY_MODIFIED As String = "Discrepancy_Modified_Txns"   ' 
 Private Const DASH_VERSION As String = "AML-PERIOD-COMPARISON-3.2"
 Private Const DASH_TITLE As String = "AML TRANSACTION MONITORING - LOOKBACK PERIOD BATCH RECONCILIATION COCKPIT"
 Private Const FIRST_DATA_ROW As Long = 15
+' Zoom applied to the sheets after a run
+Private Const DASH_ZOOM As Long = 55
+Private Const SHEET_ZOOM As Long = 85
 Private Const DASH_COLS As Long = 18               ' columns B:S
 
 ' --- Audit Sheet Kinds ---
@@ -182,6 +185,7 @@ Private Type PairResult
     NewCPNames As String       ' "NAME A; NAME B"
     NewCPAgg As Object         ' normalised name -> Array(name, txn count, amount)
     CPUnknown As Long          ' new transactions whose counterparty could not be checked
+    CPBlank As Long            ' new transactions with no counterparty in the New file
     AddedDetail As String      ' one line per new transaction (first 25)
     NewCPDetail As String      ' "NAME (n txn(s), $x); ..."
 End Type
@@ -672,7 +676,7 @@ Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal mo
 
     stepName = "Formatting Dashboard Table"
     FormatBatchTable wsDash, FIRST_DATA_ROW, curRow - 1
-    FinishAuditSheet wsAdded, 10, "No new transactions."
+    FinishAuditSheet wsAdded, 11, "No new transactions."
     FinishAuditSheet wsDropped, 9, "No dropped transactions."
 
     stepName = "Building New Counterparty Pivots"
@@ -680,6 +684,13 @@ Private Sub RunJobs(ByVal wbDash As Workbook, ByVal jobs As Collection, ByVal mo
 
     stepName = "Updating KPI Cards"
     UpdateKPICards wsDash, tot
+
+    stepName = "Setting Sheet Zoom"
+    SetSheetZoom wsAdded, SHEET_ZOOM
+    SetSheetZoom wsDropped, SHEET_ZOOM
+    Set ws = FindSheet(wbDash, SHEET_NEWCP_PIVOTS)
+    If Not ws Is Nothing Then SetSheetZoom ws, SHEET_ZOOM
+    SetSheetZoom wsDash, DASH_ZOOM
 
     wsDash.Activate
     RestoreApp st
@@ -787,7 +798,7 @@ Private Sub ProcessPair(ByVal wsDash As Worksheet, ByVal wsAdded As Worksheet, B
     tot.NewCP = tot.NewCP + pr.NewCPDistinct
     tot.Currencies = MergeList(tot.Currencies, oldSet.Currencies)
     tot.Currencies = MergeList(tot.Currencies, newSet.Currencies)
-    tot.AlertRows.Add Array(ecmID, alertID, pr.AddedCount, pr.AddedAmount, pr.NewCPDistinct, pr.NewCPNames, pr.NewCPAgg)
+    tot.AlertRows.Add Array(ecmID, alertID, pr.AddedCount, pr.AddedAmount, pr.NewCPDistinct, pr.NewCPNames, pr.NewCPAgg, pr.CPBlank)
     Exit Sub
 
 PairFail:
@@ -817,6 +828,10 @@ Private Function BuildStatus(ByRef oldSet As TxnSet, ByRef newSet As TxnSet, ByR
             sev = 2
         ElseIf pr.CPUnknown < pr.AddedCount Then
             AddPart parts, "NO NEW CP"
+        End If
+        If pr.CPBlank > 0 Then
+            AddPart parts, "BLANK CP ON " & pr.CPBlank & " TXNS"
+            If sev < 1 Then sev = 1
         End If
         If pr.CPUnknown > 0 Then
             AddPart parts, "CP CHECK N/A FOR " & pr.CPUnknown & " TXNS"
@@ -1137,7 +1152,7 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
     n = addedKeys.Count
     pr.AddedCount = n
     If n > 0 Then
-        ReDim outArr(1 To n, 1 To 10)
+        ReDim outArr(1 To n, 1 To 11)
         r = 0
         For Each kv In addedKeys
             r = r + 1
@@ -1165,6 +1180,8 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
                         pr.NewCPNames = pr.NewCPNames & "; " & cpName
                     End If
                 End If
+            ElseIf cpFlag = "" Then
+                pr.CPBlank = pr.CPBlank + 1
             ElseIf Left$(cpFlag, 7) = "Unknown" Then
                 pr.CPUnknown = pr.CPUnknown + 1
             End If
@@ -1179,6 +1196,7 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
             outArr(r, 8) = rec(F_DESC)
             outArr(r, 9) = rec(F_CP)
             outArr(r, 10) = cpFlag
+            outArr(r, 11) = ecmID & " | " & alertID
 
             If r <= 25 Then
                 If pr.AddedDetail <> "" Then pr.AddedDetail = pr.AddedDetail & vbCr
@@ -1202,7 +1220,7 @@ Private Sub CompareSets(ByVal wsAdded As Worksheet, ByVal wsDropped As Worksheet
             If outArr(r, 10) = CP_YES Then
                 wsAdded.Cells(startRow + r - 1, 10).Font.Bold = True
                 HighlightCell wsAdded.Cells(startRow + r - 1, 11), COLOR_ALERT_RED, COLOR_FILL_RED
-            ElseIf Left$(CStr(outArr(r, 10)), 7) = "Unknown" Then
+            ElseIf Left$(CStr(outArr(r, 10)), 7) = "Unknown" Or CStr(outArr(r, 10)) = "" Then
                 wsAdded.Cells(startRow + r - 1, 11).Font.Color = COLOR_AMBER
             Else
                 wsAdded.Cells(startRow + r - 1, 11).Font.Color = COLOR_SUCCESS_GREEN
@@ -1253,7 +1271,7 @@ Private Function CPStatus(ByVal cp As String, ByVal oldHasCPData As Boolean, ByV
 
     cpKey = NormCP(cp)
     If cpKey = "" Then
-        CPStatus = "Unknown (blank CP)"
+        CPStatus = ""                        ' no counterparty in the New file - left blank
     ElseIf DictExists(oldCP, cpKey) Then
         CPStatus = CP_NO
     Else
@@ -1468,8 +1486,21 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
         End With
     Next c
 
+    SetSheetZoom ws, DASH_ZOOM
     Set Setup_Comparison_Dashboard = ws
 End Function
+
+' Zoom is a window setting, so the sheet has to be activated briefly
+Private Sub SetSheetZoom(ByVal ws As Worksheet, ByVal pct As Long)
+    Dim prevSheet As Object
+    On Error Resume Next
+    Set prevSheet = ActiveSheet
+    ws.Parent.Activate
+    ws.Activate
+    ActiveWindow.Zoom = pct
+    If Not prevSheet Is Nothing Then prevSheet.Activate
+    On Error GoTo 0
+End Sub
 Private Sub CreateKPITile(ByVal ws As Worksheet, ByVal cellRange As String, ByVal title As String, ByVal subTitle As String)
     Dim rng As Range
     Set rng = ws.Range(cellRange)
@@ -1757,9 +1788,10 @@ Private Sub FormatAuditSheetHeaders(ByVal ws As Worksheet, ByVal bannerTitle As 
     ws.Columns("J").ColumnWidth = 34 ' Counterparty
     If kind = AUDIT_ADDED Then
         ws.Columns("K").ColumnWidth = 18 ' New Counterparty?
-        lastColLetter = "K"
+        ws.Columns("L").ColumnWidth = 30 ' ECM / Alert (single filter for the pivot)
+        lastColLetter = "L"
         headers = Array("ECM ID", "Alert ID", "Transaction ID", "Is Alerted?", "Transaction Date", "Amount", _
-                        "Account No", "Transaction Description", "Counterparty Name", "New Counterparty?")
+                        "Account No", "Transaction Description", "Counterparty Name", "New Counterparty?", "ECM / Alert")
     Else
         lastColLetter = "J"
         headers = Array("ECM ID", "Alert ID", "Transaction ID", "Is Alerted?", "Transaction Date", "Amount", _
@@ -1853,33 +1885,36 @@ End Sub
 ' =========================================================================
 ' [PIVOT] NEW COUNTERPARTY SUMMARY AND PIVOTS (sheet New_CP_Pivots)
 ' =========================================================================
-' Top: one summary row per compared alert.
-' Below: one pivot table per alert with new counterparties, built on the
-' Discrepancy_Added_Txns sheet and filtered to that alert and
-' "New Counterparty?" = Yes. Rows = counterparty, values = count and amount.
-' If Excel cannot create a pivot (e.g. an older Mac build), a plain table
-' with the same content is written instead.
+' Two pivots on one sheet, both built on Discrepancy_Added_Txns and both driven
+' by the same ECM ID / Alert ID slicers, so picking an alert shows only that
+' alert's new transactions and only its newly identified counterparties:
+'   1. NEW TRANSACTIONS      - date, transaction, counterparty and amount
+'   2. NEW COUNTERPARTIES    - counterparty, number of transactions and amount
+'                              (transactions with no counterparty included)
+' If Excel cannot create a pivot, a plain per-alert table is written instead.
 Private Sub BuildNewCPPivotSheet(ByVal wb As Workbook, ByVal wsAdded As Worksheet, ByRef tot As BatchTotals)
     Dim ws As Worksheet
     Dim item As Variant
-    Dim r As Long, nextRow As Long, lastAdded As Long, blockNo As Long, bottomRow As Long
+    Dim nextRow As Long, lastAdded As Long, bottomRow As Long
+    Dim totalAdded As Long, totalNewCP As Long, totalBlankCP As Long
     Dim srcAddr As String
+    Dim pc As Object, ptTxn As Object, ptCP As Object
 
     Set ws = GetOrCreateWorksheet(wb, SHEET_NEWCP_PIVOTS)
     ClearPivotSheet ws
 
     ws.Columns("A").ColumnWidth = 3
     ws.Columns("B").ColumnWidth = 44
-    ws.Columns("C").ColumnWidth = 18
+    ws.Columns("C").ColumnWidth = 20
     ws.Columns("D").ColumnWidth = 26
-    ws.Columns("E").ColumnWidth = 16
-    ws.Columns("F").ColumnWidth = 12
-    ws.Columns("G").ColumnWidth = 70
+    ws.Columns("E").ColumnWidth = 18
+    ws.Columns("F").ColumnWidth = 14
+    ws.Columns("G").ColumnWidth = 14
 
     ws.Rows(1).RowHeight = 28
     ws.Range("B1:G1").Merge
     With ws.Range("B1")
-        .Value = "NEWLY IDENTIFIED COUNTERPARTIES PER ALERT"
+        .Value = "NEW TRANSACTIONS AND NEWLY IDENTIFIED COUNTERPARTIES - PICK AN ALERT WITH THE SLICERS"
         .Font.Name = FONT_UI
         .Font.Size = 11
         .Font.Bold = True
@@ -1889,128 +1924,180 @@ Private Sub BuildNewCPPivotSheet(ByVal wb As Workbook, ByVal wsAdded As Workshee
         .VerticalAlignment = xlCenter
     End With
 
-    ' --- Summary table ---
-    WriteHeaderRow ws, 3, 2, Array("ECM ID", "Alert ID", "New Txns", "New Txn Amount", "New CPs", "New Counterparty Names")
-    r = 4
     For Each item In tot.AlertRows
-        ws.Cells(r, 2).NumberFormat = "@"
-        ws.Cells(r, 3).NumberFormat = "@"
-        ws.Cells(r, 2).Value = item(0)
-        ws.Cells(r, 3).Value = item(1)
-        ws.Cells(r, 4).Value = item(2)
-        ws.Cells(r, 5).Value = item(3)
-        ws.Cells(r, 6).Value = item(4)
-        ws.Cells(r, 7).Value = IIf(CStr(item(5)) = "", "-", item(5))
-        If item(4) > 0 Then
-            ws.Cells(r, 6).Font.Bold = True
-            ws.Cells(r, 6).Font.Color = COLOR_ALERT_RED
-            ws.Cells(r, 7).Font.Color = COLOR_ALERT_RED
-        End If
-        r = r + 1
-    Next item
-    If r = 4 Then
-        ws.Cells(4, 2).Value = "No alert pairs were compared."
-        r = 5
-    Else
-        With ws.Range(ws.Cells(4, 2), ws.Cells(r - 1, 7))
-            .Font.Name = FONT_UI
-            .Font.Size = 9
-            With .Borders
-                .LineStyle = xlContinuous
-                .Color = COLOR_BORDER
-                .Weight = xlThin
-            End With
-        End With
-        ws.Range(ws.Cells(4, 4), ws.Cells(r - 1, 4)).NumberFormat = "#,##0"
-        ws.Range(ws.Cells(4, 5), ws.Cells(r - 1, 5)).NumberFormat = "#,##0.00"
-        ws.Range(ws.Cells(4, 6), ws.Cells(r - 1, 6)).NumberFormat = "#,##0"
-        ws.Range(ws.Cells(4, 2), ws.Cells(r - 1, 2)).HorizontalAlignment = xlCenter
-    End If
-
-    ' --- One pivot per alert with new counterparties ---
-    lastAdded = LastUsedRow(wsAdded)
-    If lastAdded >= 4 Then
-        srcAddr = "'" & wsAdded.Name & "'!" & _
-                  wsAdded.Range(wsAdded.Cells(3, 2), wsAdded.Cells(lastAdded, 11)).Address(ReferenceStyle:=xlR1C1)
-    End If
-
-    nextRow = r + 2
-    For Each item In tot.AlertRows
-        If item(4) > 0 Then
-            blockNo = blockNo + 1
-            With ws.Cells(nextRow, 2)
-                .Value = "ECM " & item(0) & "  |  " & item(1) & "  -  " & item(4) & " new counterpart" & IIf(item(4) = 1, "y", "ies")
-                .Font.Name = FONT_UI
-                .Font.Size = 10
-                .Font.Bold = True
-                .Font.Color = COLOR_ALERT_RED
-            End With
-
-            ' Pivot body starts 6 rows down, leaving room above it for the 3 filter fields
-            bottomRow = 0
-            If srcAddr <> "" Then
-                bottomRow = TryCreateNewCPPivot(wb, ws, srcAddr, nextRow + 6, "NewCP_" & blockNo, CStr(item(0)), CStr(item(1)))
-            End If
-            If bottomRow = 0 Then bottomRow = WriteStaticCPBlock(ws, nextRow + 2, item(6))
-            nextRow = bottomRow + 3
-        End If
+        totalAdded = totalAdded + item(2)
+        totalNewCP = totalNewCP + item(4)
+        totalBlankCP = totalBlankCP + item(7)
     Next item
 
-    If blockNo = 0 Then
-        With ws.Cells(nextRow, 2)
-            .Value = "No new counterparties identified."
+    If totalAdded = 0 Then
+        With ws.Cells(3, 2)
+            .Value = "No new transactions in this run."
             .Font.Name = FONT_UI
             .Font.Italic = True
             .Font.Color = RGB(148, 163, 184)
         End With
+        Exit Sub
     End If
+
+    lastAdded = LastUsedRow(wsAdded)
+    If lastAdded >= 4 Then
+        srcAddr = "'" & wsAdded.Name & "'!" & _
+                  wsAdded.Range(wsAdded.Cells(3, 2), wsAdded.Cells(lastAdded, 12)).Address(ReferenceStyle:=xlR1C1)
+    End If
+    If srcAddr = "" Then
+        WriteStaticCPTable ws, 3, tot
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set pc = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=srcAddr)
+    On Error GoTo 0
+    If pc Is Nothing Then
+        WriteStaticCPTable ws, 3, tot
+        Exit Sub
+    End If
+
+    ' --- 1. the selected alert's new transactions ---
+    nextRow = 3
+    WriteBlockTitle ws, nextRow, "NEW TRANSACTIONS (New file only) - " & UsNumber(totalAdded) & " in this run"
+    bottomRow = TryCreateTxnPivot(pc, ws, nextRow + 6, "NewTxn_Pivot", ptTxn)
+    If bottomRow = 0 Then
+        WriteStaticCPTable ws, nextRow + 2, tot
+        Exit Sub
+    End If
+
+    ' --- 2. the selected alert's newly identified counterparties ---
+    nextRow = bottomRow + 3
+    WriteBlockTitle ws, nextRow, "NEWLY IDENTIFIED COUNTERPARTIES - " & UsNumber(totalNewCP) & " in this run" & _
+                    IIf(totalBlankCP > 0, "; " & UsNumber(totalBlankCP) & " new transaction(s) carry no counterparty", "")
+    bottomRow = TryCreateNewCPPivot(pc, wb, ws, srcAddr, nextRow + 6, "NewCP_Pivot", ptCP)
+    If bottomRow = 0 Then WriteStaticCPTable ws, nextRow + 2, tot
+
+    ' --- slicers that drive both pivots ---
+    AddCPSlicers wb, ws, ptTxn, ptCP, 3
 End Sub
 
-' Creates one filtered pivot. Returns its last row, or 0 if Excel could not build it.
-Private Function TryCreateNewCPPivot(ByVal wb As Workbook, ByVal ws As Worksheet, ByVal srcAddr As String, _
-                                     ByVal destRow As Long, ByVal ptName As String, _
-                                     ByVal ecmID As String, ByVal alertID As String) As Long
-    Dim pc As PivotCache
-    Dim pt As PivotTable
-    Dim df As PivotField
+Private Sub WriteBlockTitle(ByVal ws As Worksheet, ByVal rowIdx As Long, ByVal txt As String)
+    With ws.Cells(rowIdx, 2)
+        .Value = txt
+        .Font.Name = FONT_UI
+        .Font.Size = 10
+        .Font.Bold = True
+        .Font.Color = COLOR_ALERT_RED
+    End With
+End Sub
+
+' Transaction-level pivot: date / transaction / counterparty, amount as the value
+Private Function TryCreateTxnPivot(ByVal pc As Object, ByVal ws As Worksheet, ByVal destRow As Long, _
+                                   ByVal ptName As String, ByRef ptOut As Object) As Long
+    Dim pt As Object, df As Object, fieldName As Variant
 
     On Error GoTo Fail
-    Set pc = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=srcAddr)
     Set pt = pc.CreatePivotTable(TableDestination:=ws.Cells(destRow, 2), TableName:=ptName)
-
     pt.ManualUpdate = True
-    With pt.PivotFields("ECM ID")
+
+    With pt.PivotFields("ECM / Alert")
         .Orientation = xlPageField
         .Position = 1
     End With
-    With pt.PivotFields("Alert ID")
+    With pt.PivotFields("ECM ID")
         .Orientation = xlPageField
         .Position = 2
     End With
-    With pt.PivotFields("New Counterparty?")
+    With pt.PivotFields("Alert ID")
         .Orientation = xlPageField
         .Position = 3
+    End With
+
+    For Each fieldName In Array("Transaction Date", "Transaction ID", "Counterparty Name", "New Counterparty?")
+        With pt.PivotFields(CStr(fieldName))
+            .Orientation = xlRowField
+            .Position = pt.RowFields.Count
+            On Error Resume Next
+            .Subtotals = Array(False, False, False, False, False, False, False, False, False, False, False, False)
+            .LabelRange.Ungroup                  ' keep real dates, not Excel's year/quarter groups
+            On Error GoTo Fail
+        End With
+    Next fieldName
+
+    Set df = pt.AddDataField(pt.PivotFields("Amount"), "Amount", xlSum)
+    df.NumberFormat = "#,##0.00"
+
+    On Error Resume Next
+    pt.RowAxisLayout 1                           ' xlTabularRow
+    pt.TableStyle2 = "PivotStyleLight16"
+    On Error GoTo Fail
+    pt.ManualUpdate = False
+
+    Set ptOut = pt
+    With pt.TableRange2
+        TryCreateTxnPivot = .Row + .Rows.Count - 1
+    End With
+    Exit Function
+
+Fail:
+    Resume FailCleanup
+
+FailCleanup:
+    On Error Resume Next
+    If Not pt Is Nothing Then pt.TableRange2.Clear
+    TryCreateTxnPivot = 0
+End Function
+
+' Counterparty pivot: rows = counterparty, values = number of transactions and amount.
+' "No" rows are hidden, so new counterparties and blank ones both show.
+Private Function TryCreateNewCPPivot(ByVal pc As Object, ByVal wb As Workbook, ByVal ws As Worksheet, _
+                                     ByVal srcAddr As String, ByVal destRow As Long, ByVal ptName As String, _
+                                     ByRef ptOut As Object) As Long
+    Dim pt As Object, df As Object
+
+    On Error GoTo Fail
+    Set pt = Nothing
+    On Error Resume Next
+    Set pt = pc.CreatePivotTable(TableDestination:=ws.Cells(destRow, 2), TableName:=ptName)
+    On Error GoTo Fail
+    If pt Is Nothing Then                        ' some builds allow one pivot per cache only
+        Set pt = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=srcAddr) _
+                   .CreatePivotTable(TableDestination:=ws.Cells(destRow, 2), TableName:=ptName)
+    End If
+
+    pt.ManualUpdate = True
+    With pt.PivotFields("ECM / Alert")
+        .Orientation = xlPageField
+        .Position = 1
+    End With
+    With pt.PivotFields("ECM ID")
+        .Orientation = xlPageField
+        .Position = 2
+    End With
+    With pt.PivotFields("Alert ID")
+        .Orientation = xlPageField
+        .Position = 3
+    End With
+    With pt.PivotFields("New Counterparty?")
+        .Orientation = xlPageField
+        .Position = 4
     End With
     With pt.PivotFields("Counterparty Name")
         .Orientation = xlRowField
         .Position = 1
     End With
+
     pt.AddDataField pt.PivotFields("Transaction ID"), "No of Trx", xlCount
     Set df = pt.AddDataField(pt.PivotFields("Amount"), "Sum of Transaction Amount", xlSum)
     df.NumberFormat = "#,##0.00"
 
-    pt.PivotFields("ECM ID").CurrentPage = ecmID
-    pt.PivotFields("Alert ID").CurrentPage = alertID
-    pt.PivotFields("New Counterparty?").CurrentPage = CP_YES
+    ShowNewAndBlankCPs pt
     pt.ManualUpdate = False
 
-    ' Cosmetics only - ignore if this Excel build does not support them
     On Error Resume Next
     pt.CompactLayoutRowHeader = "New Counterparty"
     pt.TableStyle2 = "PivotStyleLight16"
     pt.PivotFields("Counterparty Name").AutoSort xlDescending, "Sum of Transaction Amount"
     On Error GoTo Fail
 
+    Set ptOut = pt
     With pt.TableRange2
         TryCreateNewCPPivot = .Row + .Rows.Count - 1
     End With
@@ -2025,32 +2112,86 @@ FailCleanup:
     TryCreateNewCPPivot = 0
 End Function
 
-' Plain-table fallback with the same content as the pivot. Returns its last row.
-Private Function WriteStaticCPBlock(ByVal ws As Worksheet, ByVal startRow As Long, ByVal agg As Object) As Long
-    Dim keys As Variant, v As Variant
-    Dim i As Long, r As Long, totCount As Long, totAmt As Double
+' ECM ID and Alert ID slicers, connected to both pivots. "Hide items with no
+' data" makes them cascade: picking an ECM ID leaves only its alerts clickable.
+Private Sub AddCPSlicers(ByVal wb As Workbook, ByVal ws As Worksheet, ByVal ptTxn As Object, _
+                         ByVal ptCP As Object, ByVal anchorRow As Long)
+    Dim sc As Object
+    Dim topPos As Double, leftPos As Double
 
-    WriteHeaderRow ws, startRow, 2, Array("New Counterparty", "No of Trx", "Sum of Transaction Amount")
+    If ptTxn Is Nothing Then Exit Sub
+    On Error GoTo Done
+    topPos = ws.Cells(anchorRow, 8).Top
+    leftPos = ws.Cells(anchorRow, 8).Left
+
+    Set sc = wb.SlicerCaches.Add2(ptTxn, "ECM ID")
+    sc.Slicers.Add ws, , "NewCP_ECM", "ECM ID", topPos, leftPos, 150, 190
+    On Error Resume Next
+    If Not ptCP Is Nothing Then sc.PivotTables.AddPivotTable ptCP
+    sc.CrossFilterType = 3                       ' xlSlicerCrossFilterHideButtonsWithNoData
+    On Error GoTo Done
+
+    Set sc = wb.SlicerCaches.Add2(ptTxn, "Alert ID")
+    sc.Slicers.Add ws, , "NewCP_Alert", "Alert ID", topPos, leftPos + 170, 190, 190
+    On Error Resume Next
+    If Not ptCP Is Nothing Then sc.PivotTables.AddPivotTable ptCP
+    sc.CrossFilterType = 3
+Done:
+End Sub
+
+' Hides only the "No" item, so new counterparties and blank ones both show
+Private Sub ShowNewAndBlankCPs(ByVal pt As Object)
+    Dim pf As Object, pi As Object
+    Set pf = pt.PivotFields("New Counterparty?")
+    On Error GoTo UseYesOnly
+    pf.EnableMultiplePageItems = True
+    For Each pi In pf.PivotItems
+        pi.Visible = (StrComp(CStr(pi.Name), CP_NO, vbTextCompare) <> 0)
+    Next pi
+    Exit Sub
+UseYesOnly:
+    Resume Fallback
+Fallback:
+    On Error Resume Next
+    pf.CurrentPage = CP_YES
+End Sub
+
+' Plain-table fallback with the same content as the pivots. Returns its last row.
+Private Function WriteStaticCPTable(ByVal ws As Worksheet, ByVal startRow As Long, ByRef tot As BatchTotals) As Long
+    Dim item As Variant, agg As Object, keys As Variant, v As Variant
+    Dim i As Long, r As Long, totCount As Long
+    Dim totAmt As Double
+
+    WriteHeaderRow ws, startRow, 2, Array("ECM ID", "Alert ID", "New Counterparty", "No of Trx", "Sum of Transaction Amount")
     r = startRow + 1
-    If Not agg Is Nothing Then
-        keys = DictKeys(agg)
-        For i = LBound(keys) To UBound(keys)
-            v = DictGet(agg, CStr(keys(i)))
-            ws.Cells(r, 2).NumberFormat = "@"
-            ws.Cells(r, 2).Value = v(0)
-            ws.Cells(r, 3).Value = v(1)
-            ws.Cells(r, 4).Value = v(2)
-            totCount = totCount + v(1)
-            totAmt = totAmt + v(2)
-            r = r + 1
-        Next i
-    End If
-    ws.Cells(r, 2).Value = "Grand Total"
-    ws.Cells(r, 3).Value = totCount
-    ws.Cells(r, 4).Value = totAmt
-    ws.Range(ws.Cells(r, 2), ws.Cells(r, 4)).Font.Bold = True
+    For Each item In tot.AlertRows
+        Set agg = Nothing
+        If IsObject(item(6)) Then Set agg = item(6)
+        If Not agg Is Nothing Then
+            keys = DictKeys(agg)
+            For i = LBound(keys) To UBound(keys)
+                v = DictGet(agg, CStr(keys(i)))
+                ws.Cells(r, 2).NumberFormat = "@"
+                ws.Cells(r, 3).NumberFormat = "@"
+                ws.Cells(r, 4).NumberFormat = "@"
+                ws.Cells(r, 2).Value = item(0)
+                ws.Cells(r, 3).Value = item(1)
+                ws.Cells(r, 4).Value = v(0)
+                ws.Cells(r, 5).Value = v(1)
+                ws.Cells(r, 6).Value = v(2)
+                totCount = totCount + v(1)
+                totAmt = totAmt + v(2)
+                r = r + 1
+            Next i
+        End If
+    Next item
 
-    With ws.Range(ws.Cells(startRow + 1, 2), ws.Cells(r, 4))
+    ws.Cells(r, 4).Value = "Grand Total"
+    ws.Cells(r, 5).Value = totCount
+    ws.Cells(r, 6).Value = totAmt
+    ws.Range(ws.Cells(r, 4), ws.Cells(r, 6)).Font.Bold = True
+
+    With ws.Range(ws.Cells(startRow + 1, 2), ws.Cells(r, 6))
         .Font.Name = FONT_UI
         .Font.Size = 9
         With .Borders
@@ -2059,9 +2200,9 @@ Private Function WriteStaticCPBlock(ByVal ws As Worksheet, ByVal startRow As Lon
             .Weight = xlThin
         End With
     End With
-    ws.Range(ws.Cells(startRow + 1, 3), ws.Cells(r, 3)).NumberFormat = "#,##0"
-    ws.Range(ws.Cells(startRow + 1, 4), ws.Cells(r, 4)).NumberFormat = "#,##0.00"
-    WriteStaticCPBlock = r
+    ws.Range(ws.Cells(startRow + 1, 5), ws.Cells(r, 5)).NumberFormat = "#,##0"
+    ws.Range(ws.Cells(startRow + 1, 6), ws.Cells(r, 6)).NumberFormat = "#,##0.00"
+    WriteStaticCPTable = r
 End Function
 
 Private Sub WriteHeaderRow(ByVal ws As Worksheet, ByVal rowIdx As Long, ByVal firstCol As Long, ByVal headers As Variant)
@@ -2083,8 +2224,14 @@ End Sub
 Private Sub ClearPivotSheet(ByVal ws As Worksheet)
     Dim i As Long
     On Error Resume Next
+    For i = ws.Shapes.Count To 1 Step -1     ' slicers from an earlier run
+        ws.Shapes(i).Delete
+    Next i
     For i = ws.PivotTables.Count To 1 Step -1
         ws.PivotTables(i).TableRange2.Clear
+    Next i
+    For i = ws.Parent.SlicerCaches.Count To 1 Step -1
+        If ws.Parent.SlicerCaches(i).Slicers.Count = 0 Then ws.Parent.SlicerCaches(i).Delete
     Next i
     On Error GoTo 0
     ws.Cells.UnMerge
@@ -2114,6 +2261,9 @@ End Sub
 '     K is increased by the number of newly identified counterparties. Any figure
 '     replaced without matching the Old file is reported in the dashboard.
 ' Lines 1-3 take the New file's overall figures (count, total, date range).
+' In the opening sentence and "Total Suspicious Dollar Amount" the total is
+' rounded up to the next whole dollar ($109,206.78 -> $109,207); everywhere
+' else amounts keep their cents.
 ' Alerted-only figures are never written anywhere in the narrative.
 ' Every date range written is the New file's own range: the period in its file
 ' name when there is one (NARRATIVE_DATE_RANGE = "FILE"), otherwise the first
@@ -2156,7 +2306,14 @@ Private Function UpdateNarrative(ByRef ctx As NarrCtx, ByVal narrativeDir As Str
     customer = CustomerFromFileName(srcPath)
     If customer = "" Then customer = CustomerFromDocument(srcPath)
     outPath = OutputNarrativePath(tot.NarrOutDir, srcPath, ctx.EcmID, ctx.AlertID, customer)
+    On Error Resume Next
     FileCopy srcPath, outPath
+    If Err.Number <> 0 Then          ' odd customer name - fall back to the plain name
+        Err.Clear
+        outPath = OutputNarrativePath(tot.NarrOutDir, srcPath, ctx.EcmID, ctx.AlertID, "")
+        FileCopy srcPath, outPath
+    End If
+    On Error GoTo Fail
     copied = True
 
     stage = "opening the narrative in Word"
@@ -2215,6 +2372,31 @@ FailCleanup:
     UpdateNarrative = "Error while " & stage & ": " & errDesc
 End Function
 
+' The document as logical lines: paragraphs split on line breaks, because some
+' narratives keep the whole SAR field block in a single paragraph.
+' Each item is Array(start position, text).
+Private Function LineSegments(ByVal doc As Object) As Collection
+    Dim col As New Collection
+    Dim p As Object
+    Dim t As String, ch As String
+    Dim base As Long, i As Long, segStart As Long
+
+    For Each p In doc.Paragraphs
+        t = p.Range.Text
+        base = p.Range.Start
+        segStart = 1
+        For i = 1 To Len(t)
+            ch = Mid$(t, i, 1)
+            If ch = Chr(11) Or ch = vbCr Or ch = vbLf Then
+                If i > segStart Then col.Add Array(base + segStart - 1, Mid$(t, segStart, i - segStart))
+                segStart = i + 1
+            End If
+        Next i
+        If Len(t) >= segStart Then col.Add Array(base + segStart - 1, Mid$(t, segStart))
+    Next p
+    Set LineSegments = col
+End Function
+
 ' Customer name from the source file name (ECM_ALERT_<customer>_...)
 Private Function CustomerFromFileName(ByVal srcPath As String) As String
     Dim tokens() As String, cand As String
@@ -2227,31 +2409,27 @@ End Function
 
 ' Customer name from the narrative's "Subject:" line (opens the source read-only)
 Private Function CustomerFromDocument(ByVal srcPath As String) As String
-    Dim doc As Object, p As Object
+    Dim doc As Object, sg As Variant
     Dim t As String, cand As String, pos As Long, n As Long
 
     On Error GoTo Done
     Set doc = GetWord().Documents.Open(FileName:=srcPath, ReadOnly:=True, AddToRecentFiles:=False)
-    For Each p In doc.Paragraphs
-        t = p.Range.Text
+    For Each sg In LineSegments(doc)
+        t = CStr(sg(1))
         n = n + 1
         pos = InStr(1, t, "Subject", vbTextCompare)
         If pos > 0 Then
             pos = InStr(pos, t, ":")
             If pos > 0 Then
-                cand = Trim$(Replace(Replace(Mid$(t, pos + 1), vbCr, ""), Chr(7), ""))
-                Do While Len(cand) > 0
-                    If Not (Right$(cand, 1) = "." Or Right$(cand, 1) = ",") Then Exit Do
-                    cand = Trim$(Left$(cand, Len(cand) - 1))
-                Loop
+                cand = CleanCustomerName(Mid$(t, pos + 1))
                 If cand <> "" Then
                     CustomerFromDocument = cand
                     Exit For
                 End If
             End If
         End If
-        If n >= 15 Then Exit For
-    Next p
+        If n >= 20 Then Exit For
+    Next sg
 Done:
     On Error Resume Next
     If Not doc Is Nothing Then doc.Close SaveChanges:=0
@@ -2279,6 +2457,14 @@ Private Function OutputNarrativePath(ByVal outDir As String, ByVal srcPath As St
     If customer <> "" Then newName = newName & "_" & customer
     newName = newName & "_Escalation Narrative"
 
+    ' keep the full path within the Windows limit
+    Do While Len(outDir & newName & ext) > 240 And customer <> ""
+        customer = Trim$(Left$(customer, Len(customer) - 5))
+        newName = NarrativePrefix(ecmID, alertID)
+        If customer <> "" Then newName = newName & "_" & customer
+        newName = newName & "_Escalation Narrative"
+    Loop
+
     target = outDir & newName & ext
     i = 1
     Do While FileExists(target)
@@ -2288,9 +2474,50 @@ Private Function OutputNarrativePath(ByVal outDir As String, ByVal srcPath As St
     OutputNarrativePath = target
 End Function
 
+' Keeps just the name: stops at a line break, at the next numbered field
+' ("2. Type of ...") or at a field colon, and caps the length
+Private Function CleanCustomerName(ByVal s As String) As String
+    Dim i As Long, ch As String, cut As Long
+
+    For i = 1 To Len(s)
+        If AscW(Mid$(s, i, 1)) < 32 Then
+            s = Left$(s, i - 1)
+            Exit For
+        End If
+    Next i
+
+    cut = InStr(s, ":")
+    If cut > 0 Then s = Left$(s, cut - 1)
+
+    For i = 1 To Len(s) - 1
+        If Mid$(s, i, 1) Like "#" And Mid$(s, i + 1, 1) = "." Then
+            s = Left$(s, i - 1)
+            Exit For
+        End If
+    Next i
+
+    s = Trim$(s)
+    Do While Len(s) > 0
+        ch = Right$(s, 1)
+        If ch <> "." And ch <> "," And ch <> "-" Then Exit Do
+        s = Trim$(Left$(s, Len(s) - 1))
+    Loop
+    If Len(s) > 60 Then s = Trim$(Left$(s, 60))
+    CleanCustomerName = s
+End Function
+
 Private Function SanitizeFileName(ByVal s As String) As String
     Dim bad As Variant, b As Variant
-    bad = Array("\", "/", ":", "*", "?", Chr(34), "<", ">", "|", vbCr, vbLf, vbTab, Chr(7))
+    Dim i As Long, out As String, ch As String
+
+    ' drop every control character (line breaks, cell marks, ...)
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If AscW(ch) >= 32 And AscW(ch) <> 127 Then out = out & ch
+    Next i
+    s = out
+
+    bad = Array("\", "/", ":", "*", "?", Chr(34), "<", ">", "|")
     For Each b In bad
         s = Replace(s, CStr(b), " ")
     Next b
@@ -2369,7 +2596,7 @@ End Function
 
 ' Locates the five lines and plans value replacements (Array(start, end, oldText, newText)).
 Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal edits As Collection, ByVal flags As Collection)
-    Dim p As Object
+    Dim segs As Collection, sg As Variant
     Dim t As String, lt As String
     Dim escS As Long, totS As Long, drS As Long, betS As Long, spcS As Long
     Dim escT As String, totT As String, drT As String, betT As String, spcT As String
@@ -2379,33 +2606,34 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
     Dim hCount As String, hAmount As String, hFrom As String, hTo As String
 
     escS = -1: totS = -1: drS = -1: betS = -1: spcS = -1
-    For Each p In doc.Paragraphs
-        t = p.Range.Text
+    Set segs = LineSegments(doc)
+    For Each sg In segs
+        t = CStr(sg(1))
         lt = LCase$(LTrim$(t))
         If escS < 0 And InStr(lt, "escalated") > 0 And InStr(lt, "totaling") > 0 Then
-            escS = p.Range.Start
+            escS = sg(0)
             escT = t
         ElseIf totS < 0 And InStr(lt, "total suspicious dollar amount") > 0 Then
-            totS = p.Range.Start
+            totS = sg(0)
             totT = t
         ElseIf drS < 0 And InStr(lt, "date range of suspicious activity") > 0 Then
-            drS = p.Range.Start
+            drS = sg(0)
             drT = t
         ElseIf betS < 0 And Left$(lt, 8) = "between " And InStr(lt, "totaling") > 0 Then
-            betS = p.Range.Start
+            betS = sg(0)
             betT = t
         ElseIf spcS < 0 And Left$(lt, 12) = "specifically" And InStr(lt, "between") > 0 And InStr(lt, "totaling") > 0 Then
-            spcS = p.Range.Start
+            spcS = sg(0)
             spcT = t
         End If
-    Next p
+    Next sg
 
     newCount = UsNumber(ctx.NewCount)
     newTotal = "$" & UsAmount(ctx.NewTotal)
 
     ' Lines 1-3: the New file's overall activity
     hCount = newCount
-    hAmount = newTotal
+    hAmount = "$" & UsWholeAmount(ctx.NewTotal)
     hFrom = UsDate(ctx.NarrFrom)
     hTo = UsDate(ctx.NarrTo)
 
@@ -2468,12 +2696,12 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
         End If
     End If
     ' Everywhere else: figures that came from the Old file
-    For Each p In doc.Paragraphs
-        pStart = p.Range.Start
+    For Each sg In segs
+        pStart = sg(0)
         If pStart <> escS And pStart <> totS And pStart <> drS And pStart <> betS And pStart <> spcS Then
-            SweepParagraph doc, ctx, edits, pStart, p.Range.Text
+            SweepParagraph doc, ctx, edits, pStart, CStr(sg(1))
         End If
-    Next p
+    Next sg
     PlanPeriodPhrase doc, ctx, edits
 
     If betS < 0 And spcS < 0 Then
@@ -2641,7 +2869,9 @@ Private Function HeaderPairs(ByRef ctx As NarrCtx, ByVal what As String) As Vari
         Case "C"
             HeaderPairs = Array(Array(UsNumber(ctx.OldCount), UsNumber(ctx.NewCount)))
         Case "A"
-            HeaderPairs = Array(Array("$" & UsAmount(ctx.OldTotal), "$" & UsAmount(ctx.NewTotal)))
+            ' the narrative may carry the Old total with or without cents
+            HeaderPairs = Array(Array("$" & UsAmount(ctx.OldTotal), "$" & UsWholeAmount(ctx.NewTotal)), _
+                                Array("$" & UsWholeAmount(ctx.OldTotal), "$" & UsWholeAmount(ctx.NewTotal)))
         Case "F"
             HeaderPairs = Array(Array(UsDate(ctx.OldMin), UsDate(ctx.NarrFrom)), _
                                 Array(UsDate(ctx.OldPeriodFrom), UsDate(ctx.NarrFrom)))
@@ -3232,6 +3462,15 @@ Private Function UsAmount(ByVal x As Double) As String
         s = "0" & s
     Loop
     UsAmount = sign & GroupThousands(Left$(s, Len(s) - 2)) & "." & Right$(s, 2)
+End Function
+
+' Amount rounded up to the next whole dollar, no cents ("109,207")
+' For ordinary rounding instead, replace -Int(-x) with Round(x, 0).
+Private Function UsWholeAmount(ByVal x As Double) As String
+    Dim n As Double, sign As String
+    If x < 0 Then sign = "-"
+    n = -Int(-Abs(x))
+    UsWholeAmount = sign & GroupThousands(Format$(n, "0"))
 End Function
 
 Private Function UsNumber(ByVal n As Long) As String
