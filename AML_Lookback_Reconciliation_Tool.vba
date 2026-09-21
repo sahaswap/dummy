@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 5.0
+' Version: 5.2
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -3932,19 +3932,43 @@ Private Function FormatPeriod(ByVal dMin As Variant, ByVal dMax As Variant, ByVa
     FormatPeriod = s
 End Function
 
-' Finds date-like tokens in a file name, e.g. "06.02.2025 to 06.03.2026"
+' Finds the period in a file name: "06.02.2025 to 06.03.2026" or,
+' when that is absent, a compact pair such as "02012026 to 04012026"
 Private Function FilePeriodText(ByVal fPath As String) As String
-    Dim baseName As String, tok As String
-    Dim i As Long, j As Long
-    Dim found1 As String, found2 As String
+    Dim baseName As String, t1 As String, t2 As String
 
     baseName = StripExtension(GetFileName(fPath))
+    CollectPeriodTokens baseName, False, t1, t2
+    If t1 = "" Or t2 = "" Then CollectPeriodTokens baseName, True, t1, t2
+
+    If t1 <> "" And t2 <> "" Then
+        FilePeriodText = t1 & " to " & t2
+    Else
+        FilePeriodText = t1
+    End If
+End Function
+
+' First two date tokens of a file name. compact = False looks for 06.02.2025 /
+' 06-02-2025 / 06/02/2025, compact = True for 8-digit runs like 02012026
+' (never one that follows a letter, so ALERT2365101 is not mistaken for a date).
+Private Sub CollectPeriodTokens(ByVal baseName As String, ByVal compact As Boolean, ByRef t1 As String, ByRef t2 As String)
+    Dim i As Long, j As Long
+    Dim tok As String, prevCh As String
+    Dim d As Date, ok As Boolean, isDate As Boolean
+    Dim part As Variant
+
+    t1 = ""
+    t2 = ""
     i = 1
     Do While i <= Len(baseName)
         If Mid$(baseName, i, 1) Like "#" Then
             j = i
             Do While j <= Len(baseName)
-                If Not (Mid$(baseName, j, 1) Like "[0-9./-]") Then Exit Do
+                If compact Then
+                    If Not (Mid$(baseName, j, 1) Like "#") Then Exit Do
+                Else
+                    If Not (Mid$(baseName, j, 1) Like "[0-9./-]") Then Exit Do
+                End If
                 j = j + 1
             Loop
             tok = Mid$(baseName, i, j - i)
@@ -3952,11 +3976,36 @@ Private Function FilePeriodText(ByVal fPath As String) As String
                 If InStr("./-", Right$(tok, 1)) = 0 Then Exit Do
                 tok = Left$(tok, Len(tok) - 1)
             Loop
-            If LooksLikeDateToken(tok) Then
-                If found1 = "" Then
-                    found1 = tok
-                ElseIf found2 = "" Then
-                    found2 = tok
+
+            If i > 1 Then prevCh = Mid$(baseName, i - 1, 1) Else prevCh = " "
+            isDate = False
+            If compact Then
+                If Len(tok) = 8 And Not (prevCh Like "[A-Za-z]") Then
+                    d = ParseDateValue(tok, ok)
+                    isDate = ok
+                End If
+            Else
+                isDate = LooksLikeDateToken(tok)
+            End If
+
+            If isDate Then
+                If t1 = "" Then
+                    t1 = tok
+                ElseIf t2 = "" Then
+                    t2 = tok
+                End If
+            ElseIf Not compact Then
+                ' two dates joined by a hyphen, e.g. "6.1.2025-6.3.2026"
+                If InStr(tok, "-") > 0 Then
+                    For Each part In Split(tok, "-")
+                        If LooksLikeDateToken(CStr(part)) Then
+                            If t1 = "" Then
+                                t1 = CStr(part)
+                            ElseIf t2 = "" Then
+                                t2 = CStr(part)
+                            End If
+                        End If
+                    Next part
                 End If
             End If
             i = j
@@ -3964,13 +4013,7 @@ Private Function FilePeriodText(ByVal fPath As String) As String
             i = i + 1
         End If
     Loop
-
-    If found1 <> "" And found2 <> "" Then
-        FilePeriodText = found1 & " to " & found2
-    Else
-        FilePeriodText = found1
-    End If
-End Function
+End Sub
 
 Private Function LooksLikeDateToken(ByVal tok As String) As Boolean
     Dim sep As String, parts() As String
@@ -4363,6 +4406,36 @@ Private Function ParseDateValue(ByVal v As Variant, ByRef ok As Boolean) As Date
                 Exit Function
             End If
         End If
+    End If
+
+    ' Compact date without separators: 02012026 (per TEXT_DATE_ORDER) or 20260201
+    If IsAllDigits(s) And Len(s) = 8 Then
+        y = CLng(Left$(s, 4))
+        If y >= 1950 And y <= 2100 Then
+            If BuildDate(y, CLng(Mid$(s, 5, 2)), CLng(Mid$(s, 7, 2)), result) Then
+                ParseDateValue = result
+                ok = True
+                Exit Function
+            End If
+        End If
+        y = CLng(Mid$(s, 5, 4))
+        If TEXT_DATE_ORDER = "DMY" Then
+            d = CLng(Left$(s, 2))
+            m = CLng(Mid$(s, 3, 2))
+        Else
+            m = CLng(Left$(s, 2))
+            d = CLng(Mid$(s, 3, 2))
+        End If
+        If m > 12 And d <= 12 Then
+            tmp = m
+            m = d
+            d = tmp
+        End If
+        If BuildDate(y, m, d, result) Then
+            ParseDateValue = result
+            ok = True
+        End If
+        Exit Function
     End If
 
     ' Numeric text holding an Excel serial
