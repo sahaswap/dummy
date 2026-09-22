@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 5.2
+' Version: 6.0
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -21,6 +21,10 @@ Attribute VB_Name = "AML_Period_Comparison"
 '     to a new subfolder; each changed value is highlighted yellow. Originals
 '     are never changed. Needs Microsoft Word.
 '  5. Single-pair and batch-folder comparison. Windows and Mac (Excel 2016+).
+'  6. Run_PreQC_Closure: pre-QC for closure (non-suspicious) alerts. Checks each
+'     Alert Write-Up against its "Combined Alerted & Non Alerted Transactions"
+'     file and writes a shaded review copy plus two report sheets. Read-only:
+'     the original write-up is never changed.
 '
 ' Counterparty rules:
 '  - Counterparty comes from a "Counterparty" column. If a sheet has none, it
@@ -274,6 +278,56 @@ End Type
 Private mWord As Object
 Private mWordCreated As Boolean
 Private mWordAlerts As Long
+
+' --- Pre-QC (closure / non-suspicious alerts) ---
+' Sheets written by Run_PreQC_Closure
+Private Const SHEET_PREQC_DASH As String = "PreQC_Dashboard"
+Private Const SHEET_PREQC_FIND As String = "PreQC_Findings"
+' Shading written into the reviewed narrative copy. Only tokens the tool actually
+' examined are shaded; untouched prose keeps its original background.
+Private Const PQ_OK As Long = 14348502       ' soft mint  RGB(214, 240, 218) - verified
+Private Const PQ_BAD As Long = 14079738      ' soft rose  RGB(250, 214, 214) - contradicts the file
+Private Const PQ_EYE As Long = 11203327      ' yellow     RGB(255, 242, 170) - needs a human eye
+Private Const PQ_NA As Long = 15788258       ' soft slate RGB(226, 232, 240) - not verifiable from the file
+' Verdict labels used on the Pre-QC sheets
+Private Const PQV_OK As String = "Verified"
+Private Const PQV_BAD As String = "Mismatch"
+Private Const PQV_EYE As String = "Check"
+Private Const PQV_NA As String = "Not checked"
+' A counterparty absent from the narrative is reported when its share of the
+' alerted total reaches this fraction.
+Private Const PQ_CP_SHARE As Double = 0.1
+' Output subfolder for the reviewed copies
+Private Const PQ_OUT_PREFIX As String = "PreQC_Reviewed_"
+
+' Everything the checks need from one Combined Alerted & Non Alerted file
+Private Type PreQCFacts
+    EcmID As String
+    AlertID As String
+    AlertNum As String
+    Customer As String
+    RuleText As String
+    Account As String
+    AcctPrefix As String
+    Ccy As String
+    DrCr As String
+    Instrument As String
+    Program As String
+    CustCountry As String
+    AlertCount As Long
+    AlertTotal As Double
+    AlertMin As Variant
+    AlertMax As Variant
+    AllCount As Long
+    AllTotal As Double
+    NonCount As Long
+    NonTotal As Double
+    AlertCPs As Object
+    NonCPs As Object
+    CPAmt As Object
+    SelfCPs As String
+    HasData As Boolean
+End Type
 
 ' =========================================================================
 ' [UI] 0. USER-FACING MACRO: CREATE / REBUILD THE DASHBOARD
@@ -2442,7 +2496,8 @@ Private Function IsNarrativeWord(ByVal s As String) As Boolean
     ls = LCase$(s)
     IsNarrativeWord = (ls = "" Or InStr(ls, "narrative") > 0 Or InStr(ls, "escalation") > 0 Or InStr(ls, "ecalation") > 0 _
                        Or InStr(ls, "write-up") > 0 Or InStr(ls, "write up") > 0 Or InStr(ls, "writeup") > 0 _
-                       Or InStr(ls, "updated") > 0 Or InStr(ls, "alert write") > 0)
+                       Or InStr(ls, "updated") > 0 Or InStr(ls, "alert write") > 0 _
+                       Or InStr(ls, "combined") > 0 Or InStr(ls, "transactions") > 0)
 End Function
 
 ' ECMID_ALERTID_Customer_Escalation Narrative.<ext> in the output folder
@@ -4632,3 +4687,1169 @@ Private Function DictKeys(ByVal d As Object) As Variant
         DictKeys = keysArr
     End If
 End Function
+
+' =========================================================================
+' [PQC] PRE-QC FOR CLOSURE (NON-SUSPICIOUS) ALERTS
+' =========================================================================
+' Reads each "<ECM>_<ALERT>_Combined Alerted & Non Alerted Transactions.xlsx"
+' with its "<ECM>_<ALERT>_<Customer>_Alert Write-Up.docx" and checks every
+' hardcoded figure in the write-up against the file. The original narrative is
+' never changed: a reviewed copy goes to a new subfolder with each examined
+' token shaded.
+'   green  = matches the file        red   = contradicts the file
+'   yellow = needs a reviewer's eye  grey  = examined, not verifiable from the file
+' Unshaded text was not checked.
+' =========================================================================
+Public Sub Run_PreQC_Closure()
+    Dim st As AppState
+    Dim srcDir As String, outDir As String
+    Dim jobs As Collection, job As Variant
+    Dim wsDash As Worksheet, wsFind As Worksheet
+    Dim fx As PreQCFacts
+    Dim items As Collection
+    Dim dashRow As Long, findRow As Long
+    Dim nOK As Long, nBad As Long, nEye As Long
+    Dim okTot As Long, badTot As Long, eyeTot As Long, nDocs As Long
+    Dim outPath As String, msg As String
+
+    srcDir = Pick_Folder("Select the folder with the Combined transaction files and Alert Write-Ups")
+    If srcDir = "" Then Exit Sub
+
+    Set jobs = PreQCJobs(srcDir)
+    If jobs.Count = 0 Then
+        MsgBox "No '...Combined Alerted & Non Alerted Transactions' file was found in that folder.", _
+               vbExclamation, "Pre-QC"
+        Exit Sub
+    End If
+
+    outDir = srcDir & PQ_OUT_PREFIX & Format(Now, "yyyymmdd_hhnnss")
+    On Error Resume Next
+    MkDir outDir
+    On Error GoTo 0
+    If FolderExists(outDir) Then
+        outDir = outDir & Application.PathSeparator
+    Else
+        outDir = srcDir
+    End If
+
+    SaveAndSpeedUp st
+    On Error GoTo Failed
+
+    Set wsDash = GetOrCreateWorksheet(ThisWorkbook, SHEET_PREQC_DASH)
+    Set wsFind = GetOrCreateWorksheet(ThisWorkbook, SHEET_PREQC_FIND)
+    PreQCPrepareSheets wsDash, wsFind
+    dashRow = 4
+    findRow = 4
+
+    For Each job In jobs
+        nDocs = nDocs + 1
+        ClearFacts fx
+        Set items = New Collection
+        outPath = ""
+        LoadClosureFacts CStr(job(0)), CStr(job(1)), CStr(job(2)), CStr(job(3)), fx
+        If CStr(job(1)) = "" Then
+            AddPQItem items, "Write-up", "", "", PQV_NA, "no Alert Write-Up found for this alert"
+        Else
+            outPath = ReviewWriteUp(CStr(job(1)), outDir, fx, items)
+        End If
+        CountVerdicts items, nOK, nBad, nEye
+        okTot = okTot + nOK
+        badTot = badTot + nBad
+        eyeTot = eyeTot + nEye
+        WritePreQCDash wsDash, dashRow, fx, nOK, nBad, nEye, CStr(job(1)), outPath
+        WritePreQCFindings wsFind, findRow, fx, items
+        dashRow = dashRow + 1
+    Next job
+
+    FinishPreQCSheet wsDash, 13, dashRow - 1, "No alerts were checked."
+    FinishPreQCSheet wsFind, 7, findRow - 1, "Nothing flagged - every checked figure matched the file."
+    ReleaseWord
+    RestoreApp st
+    wsDash.Activate
+
+    msg = "Pre-QC complete." & vbCrLf & vbCrLf & _
+          nDocs & " alert(s) checked" & vbCrLf & _
+          okTot & " verified, " & badTot & " mismatch, " & eyeTot & " to look at" & vbCrLf & vbCrLf & _
+          "Reviewed copies: " & outDir
+    If badTot > 0 Then
+        MsgBox msg, vbExclamation, "Pre-QC"
+    Else
+        MsgBox msg, vbInformation, "Pre-QC"
+    End If
+    Exit Sub
+
+Failed:
+    msg = Err.Description
+    ReleaseWord
+    RestoreApp st
+    MsgBox "Pre-QC stopped: " & msg, vbCritical, "Pre-QC"
+End Sub
+
+' Pairs every Combined file in the folder with its Alert Write-Up
+Private Function PreQCJobs(ByVal folderPath As String) As Collection
+    Dim jobs As New Collection
+    Dim files As Collection, docs As Collection, f As Variant
+    Dim fName As String, ecmID As String, alertID As String, matchKey As String
+
+    Set files = ListExcelFiles(folderPath, "")
+    Set docs = ListWordFiles(folderPath)
+    For Each f In files
+        fName = GetFileName(CStr(f))
+        If InStr(1, fName, "Combined", vbTextCompare) > 0 Then
+            ExtractFileIDs CStr(f), ecmID, alertID, matchKey
+            If ecmID <> "" Then
+                jobs.Add Array(CStr(f), MatchWriteUp(docs, ecmID, alertID), ecmID, alertID)
+            End If
+        End If
+    Next f
+    Set PreQCJobs = jobs
+End Function
+
+Private Function ListWordFiles(ByVal folderPath As String) As Collection
+    Dim col As New Collection
+    Dim sFile As String, ext As String, p As Long
+
+    If Right$(folderPath, 1) <> Application.PathSeparator Then folderPath = folderPath & Application.PathSeparator
+    sFile = Dir(folderPath, vbReadOnly)
+    Do While sFile <> ""
+        p = InStrRev(sFile, ".")
+        If p > 0 Then
+            ext = LCase$(Mid$(sFile, p))
+            If ext = ".docx" Or ext = ".docm" Or ext = ".doc" Then
+                If Left$(sFile, 2) <> "~$" Then
+                    If Left$(sFile, 2) <> "._" Then col.Add folderPath & sFile
+                End If
+            End If
+        End If
+        sFile = Dir()
+    Loop
+    Set ListWordFiles = col
+End Function
+
+Private Function MatchWriteUp(ByVal docs As Collection, ByVal ecmID As String, ByVal alertID As String) As String
+    Dim d As Variant, fName As String, prefix As String
+
+    prefix = NarrativePrefix(ecmID, alertID)
+    For Each d In docs
+        fName = GetFileName(CStr(d))
+        If StrComp(Left$(fName, Len(prefix)), prefix, vbTextCompare) = 0 Then
+            MatchWriteUp = CStr(d)
+            Exit Function
+        End If
+    Next d
+End Function
+
+Private Sub ClearFacts(ByRef fx As PreQCFacts)
+    Dim blank As PreQCFacts
+    fx = blank
+    Set fx.AlertCPs = CreateLookupDict()
+    Set fx.NonCPs = CreateLookupDict()
+    Set fx.CPAmt = CreateLookupDict()
+End Sub
+
+' =========================================================================
+' [PQC] READING THE COMBINED FILE
+' =========================================================================
+Private Sub LoadClosureFacts(ByVal fPath As String, ByVal docPath As String, ByVal ecmID As String, _
+                             ByVal alertID As String, ByRef fx As PreQCFacts)
+    Dim wb As Workbook, ws As Worksheet
+    Dim openedByUs As Boolean
+
+    fx.EcmID = ecmID
+    fx.AlertID = alertID
+    If docPath <> "" Then fx.Customer = CustomerFromFileName(docPath)
+
+    Set wb = GetOrOpenWorkbook(fPath, openedByUs)
+    On Error GoTo Cleanup
+
+    Set ws = FindSheet(wb, "Raw Transactions")
+    If ws Is Nothing Then Set ws = FindTransactionSheet(wb)
+    If Not ws Is Nothing Then ReadCombinedSheet ws, fx
+
+    ' "Non Alerted Transaction" is a curated review-window subset, not every
+    ' non-alerted row of the raw sheet, so it is read separately.
+    Set ws = FindSheet(wb, "Non Alerted Transaction")
+    If Not ws Is Nothing Then ReadNonAlertedSheet ws, fx
+
+Cleanup:
+    On Error Resume Next
+    If openedByUs Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+End Sub
+
+Private Sub ReadCombinedSheet(ByVal ws As Worksheet, ByRef fx As PreQCFacts)
+    Dim block As Variant
+    Dim lastRow As Long, lastCol As Long, hdrRow As Long
+    Dim cAlerted As Long, cAmt As Long, cTxDate As Long, cCP As Long, cDrCr As Long
+    Dim cNum As Long, cRule As Long, cAcct As Long, cCcy As Long, cCode As Long
+    Dim cPType As Long, cPName As Long, cOCty As Long, cBCty As Long
+    Dim r As Long, isAlert As Boolean, okDate As Boolean
+    Dim amt As Double, dv As Date, cp As String, key As String, dr As String
+    Dim custKey As String
+
+    lastRow = LastUsedRow(ws)
+    lastCol = LastUsedCol(ws)
+    If lastRow < 2 Then Exit Sub
+    If lastCol < 1 Then Exit Sub
+
+    hdrRow = CombinedHeaderRow(ws, lastCol)
+    If hdrRow = 0 Then Exit Sub
+    If hdrRow >= lastRow Then Exit Sub
+
+    block = ReadBlock(ws, hdrRow, 1, lastRow, lastCol)
+
+    cAlerted = NamedCol(block, lastCol, "Is Alerted Transaction?")
+    cAmt = NamedCol(block, lastCol, "Transaction Amount")
+    cTxDate = NamedCol(block, lastCol, "Transaction Date")
+    cCP = NamedCol(block, lastCol, "Counterparty")
+    cDrCr = NamedCol(block, lastCol, "Dr Cr")
+    cNum = NamedCol(block, lastCol, "Velocity Alert ID")
+    cRule = NamedCol(block, lastCol, "Alert Information")
+    cAcct = NamedCol(block, lastCol, "Account No")
+    cCcy = NamedCol(block, lastCol, "Currency")
+    cCode = NamedCol(block, lastCol, "Transaction Code")
+    cPType = NamedCol(block, lastCol, "Party Type2")
+    cPName = NamedCol(block, lastCol, "Party Name2")
+    cOCty = NamedCol(block, lastCol, "Originator Country")
+    cBCty = NamedCol(block, lastCol, "Beneficiary Country")
+    If cAmt = 0 Then Exit Sub
+
+    custKey = NormCP(fx.Customer)
+
+    For r = 2 To UBound(block, 1)
+        If Not IsEmptyBlockRow(block, r, lastCol) Then
+            amt = ValueToNumber(BlockCell(block, r, cAmt))
+            dv = ParseDateValue(BlockCell(block, r, cTxDate), okDate)
+            cp = Trim$(CellText(BlockCell(block, r, cCP)))
+            dr = UCase$(Trim$(CellText(BlockCell(block, r, cDrCr))))
+            isAlert = (LCase$(Trim$(CellText(BlockCell(block, r, cAlerted)))) = "yes")
+
+            fx.AllCount = fx.AllCount + 1
+            fx.AllTotal = fx.AllTotal + amt
+
+            If isAlert Then
+                fx.HasData = True
+                fx.AlertCount = fx.AlertCount + 1
+                fx.AlertTotal = fx.AlertTotal + amt
+                If okDate Then
+                    If Not IsDate(fx.AlertMin) Then
+                        fx.AlertMin = dv
+                        fx.AlertMax = dv
+                    Else
+                        If dv < CDate(fx.AlertMin) Then fx.AlertMin = dv
+                        If dv > CDate(fx.AlertMax) Then fx.AlertMax = dv
+                    End If
+                End If
+                If fx.DrCr = "" Then fx.DrCr = dr
+                If fx.AlertNum = "" Then fx.AlertNum = Trim$(CellText(BlockCell(block, r, cNum)))
+                If fx.RuleText = "" Then fx.RuleText = Trim$(CellText(BlockCell(block, r, cRule)))
+                If fx.Account = "" Then fx.Account = Trim$(CellText(BlockCell(block, r, cAcct)))
+                If fx.Ccy = "" Then fx.Ccy = Trim$(CellText(BlockCell(block, r, cCcy)))
+                If fx.Instrument = "" Then fx.Instrument = InstrumentOf(CellText(BlockCell(block, r, cCode)))
+                If fx.CustCountry = "" Then
+                    If dr = "CR" Then
+                        fx.CustCountry = Trim$(CellText(BlockCell(block, r, cBCty)))
+                    Else
+                        fx.CustCountry = Trim$(CellText(BlockCell(block, r, cOCty)))
+                    End If
+                End If
+                If cp <> "" Then
+                    key = NormCP(cp)
+                    If key = custKey Then
+                        AddToList fx.SelfCPs, cp
+                    Else
+                        If Not DictExists(fx.AlertCPs, key) Then DictAdd fx.AlertCPs, key, cp
+                        If DictExists(fx.CPAmt, key) Then
+                            DictSet fx.CPAmt, key, CDbl(DictGet(fx.CPAmt, key)) + amt
+                        Else
+                            DictAdd fx.CPAmt, key, amt
+                        End If
+                    End If
+                End If
+            End If
+
+            If fx.Program = "" Then
+                If LCase$(Trim$(CellText(BlockCell(block, r, cPType)))) = "settlementprogram" Then
+                    fx.Program = Trim$(CellText(BlockCell(block, r, cPName)))
+                End If
+            End If
+        End If
+    Next r
+
+    If fx.Account <> "" Then
+        If InStr(fx.Account, "-") > 0 Then
+            fx.AcctPrefix = Left$(fx.Account, InStr(fx.Account, "-") - 1)
+        Else
+            fx.AcctPrefix = fx.Account
+        End If
+    End If
+End Sub
+
+Private Sub ReadNonAlertedSheet(ByVal ws As Worksheet, ByRef fx As PreQCFacts)
+    Dim block As Variant
+    Dim lastRow As Long, lastCol As Long, hdrRow As Long
+    Dim cAmt As Long, cCP As Long
+    Dim r As Long, cp As String, key As String
+
+    lastRow = LastUsedRow(ws)
+    lastCol = LastUsedCol(ws)
+    If lastRow < 2 Then Exit Sub
+    If lastCol < 1 Then Exit Sub
+
+    hdrRow = CombinedHeaderRow(ws, lastCol)
+    If hdrRow = 0 Then Exit Sub
+    If hdrRow >= lastRow Then Exit Sub
+
+    block = ReadBlock(ws, hdrRow, 1, lastRow, lastCol)
+    cAmt = NamedCol(block, lastCol, "Transaction Amount")
+    cCP = NamedCol(block, lastCol, "Counterparty")
+    If cAmt = 0 Then Exit Sub
+
+    For r = 2 To UBound(block, 1)
+        If Not IsEmptyBlockRow(block, r, lastCol) Then
+            fx.NonCount = fx.NonCount + 1
+            fx.NonTotal = fx.NonTotal + ValueToNumber(BlockCell(block, r, cAmt))
+            cp = Trim$(CellText(BlockCell(block, r, cCP)))
+            If cp <> "" Then
+                key = NormCP(cp)
+                If Not DictExists(fx.NonCPs, key) Then DictAdd fx.NonCPs, key, cp
+            End If
+        End If
+    Next r
+End Sub
+
+' Row holding "Transaction Amount" within the first HEADER_SCAN_ROWS rows
+Private Function CombinedHeaderRow(ByVal ws As Worksheet, ByVal lastCol As Long) As Long
+    Dim r As Long, c As Long, h As String
+    For r = 1 To HEADER_SCAN_ROWS
+        For c = 1 To lastCol
+            h = LCase$(Trim$(CellText(ws.Cells(r, c).Value)))
+            If h = "transaction amount" Then
+                CombinedHeaderRow = r
+                Exit Function
+            End If
+        Next c
+    Next r
+End Function
+
+' Column index of an exact header name in row 1 of the block (0 = absent)
+Private Function NamedCol(ByVal block As Variant, ByVal lastCol As Long, ByVal colName As String) As Long
+    Dim c As Long
+    For c = 1 To lastCol
+        If StrComp(Trim$(CellText(BlockCell(block, 1, c))), colName, vbTextCompare) = 0 Then
+            NamedCol = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+Private Function BlockCell(ByVal block As Variant, ByVal r As Long, ByVal c As Long) As Variant
+    If c < 1 Then Exit Function
+    If r < 1 Then Exit Function
+    If r > UBound(block, 1) Then Exit Function
+    If c > UBound(block, 2) Then Exit Function
+    BlockCell = block(r, c)
+End Function
+
+Private Function IsEmptyBlockRow(ByVal block As Variant, ByVal r As Long, ByVal lastCol As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim$(CellText(BlockCell(block, r, c))) <> "" Then Exit Function
+    Next c
+    IsEmptyBlockRow = True
+End Function
+
+Private Function ValueToNumber(ByVal v As Variant) As Double
+    Dim s As String, i As Long, ch As String, out As String
+    If IsNumeric(v) Then
+        ValueToNumber = CDbl(v)
+        Exit Function
+    End If
+    s = CellText(v)
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "[0-9.]" Then out = out & ch
+    Next i
+    If out <> "" Then
+        If IsNumeric(out) Then ValueToNumber = CDbl(out)
+    End If
+End Function
+
+' "ACH" or "WIRE" from the transaction code; "" when neither is recognised
+Private Function InstrumentOf(ByVal code As String) As String
+    Dim s As String
+    s = UCase$(code)
+    If InStr(s, "ACH") > 0 Then
+        InstrumentOf = "ACH"
+    ElseIf InStr(s, "CTRC") > 0 Then
+        InstrumentOf = "WIRE"
+    ElseIf InStr(s, "WIRE") > 0 Then
+        InstrumentOf = "WIRE"
+    ElseIf InStr(s, "FED_") > 0 Then
+        InstrumentOf = "WIRE"
+    ElseIf InStr(s, "SWIFT") > 0 Then
+        InstrumentOf = "WIRE"
+    End If
+End Function
+
+Private Sub AddToList(ByRef s As String, ByVal item As String)
+    If item = "" Then Exit Sub
+    If InStr(1, "; " & s & ";", "; " & item & ";", vbTextCompare) > 0 Then Exit Sub
+    If s = "" Then
+        s = item
+    Else
+        s = s & "; " & item
+    End If
+End Sub
+
+' =========================================================================
+' [PQC] CHECKING AND SHADING THE WRITE-UP
+' =========================================================================
+Private Function ReviewWriteUp(ByVal srcPath As String, ByVal outDir As String, ByRef fx As PreQCFacts, _
+                               ByVal items As Collection) As String
+    Dim doc As Object
+    Dim outPath As String, fName As String, errDesc As String
+
+    fName = GetFileName(srcPath)
+    outPath = outDir & fName
+    On Error GoTo Failed
+    If FileExists(outPath) Then Kill outPath
+    FileCopy srcPath, outPath
+
+    Set doc = GetWord().Documents.Open(FileName:=outPath, ReadOnly:=False, AddToRecentFiles:=False)
+    doc.TrackRevisions = False
+    CheckWriteUp doc, fx, items
+    InsertPreQCLegend doc
+    doc.Save
+    doc.Close SaveChanges:=0
+    Set doc = Nothing
+    ReviewWriteUp = outPath
+    Exit Function
+
+Failed:
+    errDesc = Err.Description
+    On Error Resume Next
+    If Not doc Is Nothing Then doc.Close SaveChanges:=0
+    On Error GoTo 0
+    AddPQItem items, "Write-up", fName, "", PQV_NA, "could not be reviewed (" & errDesc & ")"
+End Function
+
+Private Sub CheckWriteUp(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection)
+    Dim segs As Collection, seg As Variant
+    Dim t As String, segStart As Long
+    Dim n As Long, activityDone As Boolean
+
+    Set segs = LineSegments(doc)
+    n = 0
+    For Each seg In segs
+        segStart = CLng(seg(0))
+        t = CStr(seg(1))
+        n = n + 1
+        If n <= 12 Then CheckHeaderLine doc, fx, items, segStart, t
+        If InStr(1, t, "alerted due to", vbTextCompare) > 0 Then
+            CheckTriggerLine doc, fx, items, segStart, t
+        ElseIf IsActivityLine(t, activityDone) Then
+            activityDone = True
+            CheckActivityLine doc, fx, items, segStart, t
+        Else
+            SweepTokens doc, fx, items, segStart, t
+        End If
+    Next seg
+
+    CheckCounterparties doc, fx, items
+    CheckOtherActivity fx, items
+    If fx.SelfCPs <> "" Then
+        AddPQItem items, "Data quality", "", fx.SelfCPs, PQV_EYE, _
+                  "counterparty equals the customer's own name on alerted rows - confirm this is an internal transfer"
+    End If
+End Sub
+
+' "Alert ID:", "Customer:", "Program:", "Rule(s) Triggered:", "Country Risk Rating:"
+Private Sub CheckHeaderLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection, _
+                            ByVal segStart As Long, ByVal t As String)
+    Dim label As String, val As String, pos As Long, vStart As Long
+    Dim ok As Boolean
+
+    pos = InStr(t, ":")
+    If pos = 0 Then Exit Sub
+    If pos > 30 Then Exit Sub
+    label = LCase$(Trim$(Left$(t, pos - 1)))
+    val = CleanSegment(Mid$(t, pos + 1))
+    If val = "" Then Exit Sub
+    vStart = segStart + pos + PadBefore(Mid$(t, pos + 1))
+
+    Select Case label
+        Case "alert id"
+            ok = False
+            If fx.AlertNum <> "" Then ok = (InStr(1, val, fx.AlertNum, vbTextCompare) > 0)
+            JudgeHeader doc, items, vStart, val, "Alert ID", fx.AlertNum, ok
+        Case "customer"
+            JudgeHeader doc, items, vStart, val, "Customer", fx.Customer, SameName(val, fx.Customer)
+        Case "rule(s) triggered", "rules triggered", "rule triggered"
+            ok = False
+            If fx.RuleText <> "" Then ok = (InStr(1, val, fx.RuleText, vbTextCompare) > 0)
+            JudgeHeader doc, items, vStart, val, "Rule(s) Triggered", fx.RuleText, ok
+        Case "program"
+            If fx.Program = "" Then
+                AddPQItem items, "Program", val, "", PQV_NA, "no SettlementProgram party in the file"
+                ShadeAt doc, vStart, Len(val), PQ_NA
+            Else
+                JudgeHeader doc, items, vStart, val, "Program", fx.Program, ProgramMatches(val, fx.Program)
+            End If
+        Case "country risk rating"
+            If fx.CustCountry = "" Then
+                AddPQItem items, "Country", val, "", PQV_NA, "no customer country in the file"
+                ShadeAt doc, vStart, Len(val), PQ_NA
+            Else
+                JudgeHeader doc, items, vStart, val, "Country", fx.CustCountry, CountryMatches(val, fx.CustCountry)
+            End If
+    End Select
+End Sub
+
+Private Sub JudgeHeader(ByVal doc As Object, ByVal items As Collection, ByVal vStart As Long, _
+                        ByVal val As String, ByVal label As String, ByVal fileVal As String, ByVal ok As Boolean)
+    If fileVal = "" Then
+        AddPQItem items, label, val, "", PQV_NA, "the file has no value to compare"
+        ShadeAt doc, vStart, Len(val), PQ_NA
+    ElseIf ok Then
+        AddPQItem items, label, val, fileVal, PQV_OK, ""
+        ShadeAt doc, vStart, Len(val), PQ_OK
+    Else
+        AddPQItem items, label, val, fileVal, PQV_BAD, "does not match the file"
+        ShadeAt doc, vStart, Len(val), PQ_BAD
+    End If
+End Sub
+
+' "... covering the period from D1 to D2"
+Private Sub CheckTriggerLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection, _
+                             ByVal segStart As Long, ByVal t As String)
+    Dim pos As Long, n As Long, seen As Long
+    Dim tok As String, want As String
+
+    pos = 1
+    Do
+        pos = FindDateToken(t, pos, Len(t), n)
+        If pos = 0 Then Exit Do
+        seen = seen + 1
+        tok = Mid$(t, pos, n)
+        If seen = 1 Then
+            want = UsDate(fx.AlertMin)
+        Else
+            want = UsDate(fx.AlertMax)
+        End If
+        JudgeToken doc, items, segStart + pos - 1, tok, "Review period date " & seen, want
+        pos = pos + n
+    Loop
+End Sub
+
+' The one sentence that states the alerted figures: "... totaling $X ...". Later
+' paragraphs also use "totaling" without a figure, so an amount is required and
+' only the first such sentence is treated as the activity line.
+Private Function IsActivityLine(ByVal t As String, ByVal alreadyDone As Boolean) As Boolean
+    Dim pos As Long, n As Long
+    If alreadyDone Then Exit Function
+    pos = InStr(1, t, "totaling", vbTextCompare)
+    If pos = 0 Then Exit Function
+    IsActivityLine = (FindAmountToken(t, pos, Len(t), n) > 0)
+End Function
+
+' "Between D1 and D2, there were N <direction> <instrument> transfers totaling $X,
+'  sent/received by CUSTOMER through their PROGRAM account #ACCT ..."
+Private Sub CheckActivityLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection, _
+                              ByVal segStart As Long, ByVal t As String)
+    Dim pos As Long, n As Long, seen As Long
+    Dim tok As String, want As String
+    Dim followWords As Variant
+    Dim lt As String, wantDir As String, gotDir As String
+    Dim wantIns As String, gotIns As String, gotInsWord As String
+
+    ' Only the wording before "totaling" describes the transactions; the rest of the
+    ' paragraph is due-diligence prose that may mention "wire" for other reasons.
+    lt = LCase$(t)
+    pos = InStr(lt, "totaling")
+    If pos > 0 Then lt = Left$(lt, pos - 1)
+    followWords = Array("transaction", "transfer", "txn", "credit", "debit", "payment", "wire", "deposit")
+
+    pos = 1
+    Do
+        pos = FindDateToken(t, pos, Len(t), n)
+        If pos = 0 Then Exit Do
+        seen = seen + 1
+        tok = Mid$(t, pos, n)
+        If seen = 1 Then
+            want = UsDate(fx.AlertMin)
+        Else
+            want = UsDate(fx.AlertMax)
+        End If
+        JudgeToken doc, items, segStart + pos - 1, tok, "Activity date " & seen, want
+        pos = pos + n
+    Loop
+
+    pos = FindCountToken(t, 1, Len(t), followWords, n)
+    If pos > 0 Then
+        tok = Mid$(t, pos, n)
+        JudgeToken doc, items, segStart + pos - 1, tok, "Transaction count", UsNumber(fx.AlertCount)
+    End If
+
+    pos = FindAmountToken(t, 1, Len(t), n)
+    If pos > 0 Then
+        tok = Mid$(t, pos, n)
+        JudgeToken doc, items, segStart + pos - 1, tok, "Total amount", "$" & UsAmount(fx.AlertTotal)
+    End If
+
+    If fx.DrCr = "CR" Then
+        wantDir = "incoming"
+    ElseIf fx.DrCr = "DR" Then
+        wantDir = "outgoing"
+    End If
+    If InStr(lt, "incoming") > 0 Then gotDir = "incoming"
+    If InStr(lt, "outgoing") > 0 Then gotDir = "outgoing"
+    If wantDir <> "" Then
+        If gotDir = "" Then
+            AddPQItem items, "Direction", "", wantDir, PQV_NA, "no direction word in the sentence"
+        Else
+            JudgeWord doc, items, segStart, t, gotDir, "Direction", wantDir, (gotDir = wantDir)
+        End If
+    End If
+
+    wantIns = fx.Instrument
+    If InStr(lt, " ach ") > 0 Then
+        gotIns = "ACH"
+        gotInsWord = "ACH"
+    End If
+    If InStr(lt, "wire") > 0 Then
+        gotIns = "WIRE"
+        gotInsWord = "wire"
+    End If
+    If wantIns <> "" Then
+        If gotIns = "" Then
+            AddPQItem items, "Instrument", "", wantIns, PQV_NA, "no ACH or wire wording in the sentence"
+        Else
+            JudgeWord doc, items, segStart, t, gotInsWord, "Instrument", wantIns, (gotIns = wantIns)
+        End If
+    End If
+
+    If fx.AcctPrefix <> "" Then
+        pos = InStr(1, t, fx.AcctPrefix, vbTextCompare)
+        If pos > 0 Then
+            AddPQItem items, "Account number", fx.AcctPrefix, fx.AcctPrefix, PQV_OK, ""
+            ShadeAt doc, segStart + pos - 1, Len(fx.AcctPrefix), PQ_OK
+        ElseIf InStr(t, "#") > 0 Then
+            pos = InStr(t, "#")
+            n = AccountTokenLen(t, pos)
+            AddPQItem items, "Account number", Mid$(t, pos, n), fx.AcctPrefix, PQV_BAD, _
+                      "does not match the account in the file"
+            ShadeAt doc, segStart + pos - 1, n, PQ_BAD
+        End If
+    End If
+
+    If fx.Ccy <> "" Then
+        If fx.Ccy <> "USD" Then
+            AddPQItem items, "Currency", "$", fx.Ccy, PQV_EYE, "the file is not in USD but the write-up uses $"
+        End If
+    End If
+End Sub
+
+Private Function AccountTokenLen(ByVal t As String, ByVal pos As Long) As Long
+    Dim j As Long
+    j = pos + 1
+    Do While j <= Len(t)
+        If Not (Mid$(t, j, 1) Like "[A-Za-z0-9-]") Then Exit Do
+        j = j + 1
+    Loop
+    AccountTokenLen = j - pos
+End Function
+
+' Any other amount, date or transaction count anywhere in the document
+Private Sub SweepTokens(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection, _
+                        ByVal segStart As Long, ByVal t As String)
+    Dim pos As Long, n As Long, tok As String, lbl As String
+    Dim followWords As Variant
+
+    followWords = Array("transaction", "transfer", "txn", "credit", "debit", "payment", "wire", "deposit")
+
+    pos = 1
+    Do
+        pos = FindAmountToken(t, pos, Len(t), n)
+        If pos = 0 Then Exit Do
+        tok = Mid$(t, pos, n)
+        lbl = BindAmount(fx, tok)
+        BindToken doc, items, segStart + pos - 1, tok, "Amount", lbl
+        pos = pos + n
+    Loop
+
+    pos = 1
+    Do
+        pos = FindDateToken(t, pos, Len(t), n)
+        If pos = 0 Then Exit Do
+        tok = Mid$(t, pos, n)
+        lbl = BindDate(fx, tok)
+        BindToken doc, items, segStart + pos - 1, tok, "Date", lbl
+        pos = pos + n
+    Loop
+
+    pos = 1
+    Do
+        pos = FindCountToken(t, pos, Len(t), followWords, n)
+        If pos = 0 Then Exit Do
+        tok = Mid$(t, pos, n)
+        If Not LooksLikeYear(tok) Then
+            lbl = BindCount(fx, tok)
+            BindToken doc, items, segStart + pos - 1, tok, "Count", lbl
+        End If
+        pos = pos + n
+    Loop
+End Sub
+
+' A bare four-digit 19xx/20xx is a year in the prose ("Regulations 2011"), not a count
+Private Function LooksLikeYear(ByVal tok As String) As Boolean
+    Dim v As Double
+    If Len(tok) <> 4 Then Exit Function
+    If InStr(tok, ",") > 0 Then Exit Function
+    If Not IsNumeric(tok) Then Exit Function
+    v = CDbl(tok)
+    LooksLikeYear = (v >= 1900 And v <= 2100)
+End Function
+
+Private Sub BindToken(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, _
+                      ByVal tok As String, ByVal kind As String, ByVal label As String)
+    If label = "" Then
+        AddPQItem items, kind & " (elsewhere)", tok, "", PQV_EYE, "no figure in the file matches this"
+        ShadeAt doc, absPos, Len(tok), PQ_EYE
+    Else
+        AddPQItem items, kind & " (elsewhere)", tok, label, PQV_OK, ""
+        ShadeAt doc, absPos, Len(tok), PQ_OK
+    End If
+End Sub
+
+Private Function BindAmount(ByRef fx As PreQCFacts, ByVal tok As String) As String
+    Dim v As Double
+    v = ValueToNumber(tok)
+    If SameMoney(v, fx.AlertTotal) Then
+        BindAmount = "alerted total"
+    ElseIf SameMoney(v, fx.AllTotal) Then
+        BindAmount = "total of all transactions"
+    ElseIf SameMoney(v, fx.NonTotal) Then
+        BindAmount = "non-alerted total"
+    Else
+        BindAmount = CPAmountLabel(fx, v)
+    End If
+End Function
+
+Private Function CPAmountLabel(ByRef fx As PreQCFacts, ByVal v As Double) As String
+    Dim keys As Variant, k As Variant
+    If DictCount(fx.CPAmt) = 0 Then Exit Function
+    keys = DictKeys(fx.CPAmt)
+    For Each k In keys
+        If SameMoney(CDbl(DictGet(fx.CPAmt, CStr(k))), v) Then
+            CPAmountLabel = "total for " & CPDisplay(fx, CStr(k))
+            Exit Function
+        End If
+    Next k
+End Function
+
+Private Function CPDisplay(ByRef fx As PreQCFacts, ByVal key As String) As String
+    If DictExists(fx.AlertCPs, key) Then
+        CPDisplay = CStr(DictGet(fx.AlertCPs, key))
+    Else
+        CPDisplay = key
+    End If
+End Function
+
+Private Function BindDate(ByRef fx As PreQCFacts, ByVal tok As String) As String
+    If tok = UsDate(fx.AlertMin) Then
+        BindDate = "first alerted transaction"
+    ElseIf tok = UsDate(fx.AlertMax) Then
+        BindDate = "last alerted transaction"
+    End If
+End Function
+
+Private Function BindCount(ByRef fx As PreQCFacts, ByVal tok As String) As String
+    Dim v As Double
+    v = ValueToNumber(tok)
+    If v = fx.AlertCount Then
+        BindCount = "alerted transaction count"
+    ElseIf v = DictCount(fx.AlertCPs) Then
+        BindCount = "alerted counterparty count"
+    ElseIf v = fx.NonCount Then
+        BindCount = "non-alerted transaction count"
+    ElseIf v = fx.AllCount Then
+        BindCount = "count of all transactions"
+    End If
+End Function
+
+Private Sub JudgeToken(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, _
+                       ByVal tok As String, ByVal label As String, ByVal want As String)
+    If want = "" Then
+        AddPQItem items, label, tok, "", PQV_NA, "the file has no value to compare"
+        ShadeAt doc, absPos, Len(tok), PQ_NA
+    ElseIf NormValue(tok) = NormValue(want) Then
+        AddPQItem items, label, tok, want, PQV_OK, ""
+        ShadeAt doc, absPos, Len(tok), PQ_OK
+    Else
+        AddPQItem items, label, tok, want, PQV_BAD, "the file says " & want
+        ShadeAt doc, absPos, Len(tok), PQ_BAD
+    End If
+End Sub
+
+Private Sub JudgeWord(ByVal doc As Object, ByVal items As Collection, ByVal segStart As Long, ByVal t As String, _
+                      ByVal word As String, ByVal label As String, ByVal want As String, ByVal ok As Boolean)
+    Dim pos As Long
+    pos = InStr(1, t, word, vbTextCompare)
+    If ok Then
+        AddPQItem items, label, word, want, PQV_OK, ""
+        If pos > 0 Then ShadeAt doc, segStart + pos - 1, Len(word), PQ_OK
+    Else
+        AddPQItem items, label, word, want, PQV_BAD, "the file says " & want
+        If pos > 0 Then ShadeAt doc, segStart + pos - 1, Len(word), PQ_BAD
+    End If
+End Sub
+
+' Every alerted counterparty: named in the write-up or not
+Private Sub CheckCounterparties(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal items As Collection)
+    Dim docKey As String
+    Dim keys As Variant, k As Variant
+    Dim cp As String, share As Double, amt As Double
+    Dim named As Long, total As Long
+
+    total = DictCount(fx.AlertCPs)
+    If total = 0 Then Exit Sub
+    docKey = NormCP(doc.Content.Text)
+
+    keys = DictKeys(fx.AlertCPs)
+    For Each k In keys
+        cp = CStr(DictGet(fx.AlertCPs, CStr(k)))
+        amt = 0
+        If DictExists(fx.CPAmt, CStr(k)) Then amt = CDbl(DictGet(fx.CPAmt, CStr(k)))
+        share = 0
+        If fx.AlertTotal <> 0 Then share = amt / fx.AlertTotal
+        If InStr(1, docKey, CStr(k), vbTextCompare) > 0 Then
+            named = named + 1
+            AddPQItem items, "Counterparty named", cp, "$" & UsAmount(amt), PQV_OK, ""
+            ShadeFirst doc, cp, PQ_OK
+        ElseIf share >= PQ_CP_SHARE Then
+            AddPQItem items, "Counterparty missing", "", cp & " ($" & UsAmount(amt) & ")", PQV_BAD, _
+                      Format$(share * 100, "0") & "% of the alerted total and not named in the write-up"
+        Else
+            AddPQItem items, "Counterparty not named", "", cp & " ($" & UsAmount(amt) & ")", PQV_NA, _
+                      "below " & Format$(PQ_CP_SHARE * 100, "0") & "% of the alerted total"
+        End If
+    Next k
+    If named = 0 Then
+        AddPQItem items, "Counterparty coverage", "0 of " & UsNumber(total), "", PQV_EYE, _
+                  "no alerted counterparty is named in the write-up"
+    End If
+End Sub
+
+' Supports the "same counterparties ... plus N additional" wording in OTHER ACTIVITY REVIEW
+Private Sub CheckOtherActivity(ByRef fx As PreQCFacts, ByVal items As Collection)
+    Dim keys As Variant, k As Variant
+    Dim inBoth As Long, extra As Long, verdict As String, tail As String
+
+    If DictCount(fx.NonCPs) = 0 Then Exit Sub
+    keys = DictKeys(fx.NonCPs)
+    For Each k In keys
+        If DictExists(fx.AlertCPs, CStr(k)) Then
+            inBoth = inBoth + 1
+        Else
+            extra = extra + 1
+        End If
+    Next k
+    If inBoth > 0 Then
+        verdict = PQV_OK
+    Else
+        verdict = PQV_EYE
+    End If
+    If extra = 1 Then
+        tail = "1 additional counterparty"
+    Else
+        tail = UsNumber(extra) & " additional counterparties"
+    End If
+    AddPQItem items, "Other activity counterparties", "", _
+              UsNumber(inBoth) & " also in the alert period, " & tail, verdict, _
+              "the Other Activity Review should describe " & tail
+End Sub
+
+' =========================================================================
+' [PQC] SMALL COMPARISONS
+' =========================================================================
+Private Function SameMoney(ByVal a As Double, ByVal b As Double) As Boolean
+    SameMoney = (Abs(a - b) < 0.005)
+End Function
+
+Private Function SameName(ByVal a As String, ByVal b As String) As Boolean
+    Dim ka As String, kb As String
+    ka = NormCP(a)
+    kb = NormCP(b)
+    If ka = "" Then Exit Function
+    If kb = "" Then Exit Function
+    If ka = kb Then
+        SameName = True
+    ElseIf InStr(1, ka, kb, vbTextCompare) > 0 Then
+        SameName = True
+    ElseIf InStr(1, kb, ka, vbTextCompare) > 0 Then
+        SameName = True
+    End If
+End Function
+
+' "Airwallex" against "AIRWALLEX US LLC ORIG", "Currencycloud" against "Currency Cloud Stlmnt"
+Private Function ProgramMatches(ByVal narrVal As String, ByVal fileVal As String) As Boolean
+    Dim a As String, b As String
+    a = Replace(NormCP(narrVal), " ", "")
+    b = Replace(NormCP(fileVal), " ", "")
+    If a = "" Then Exit Function
+    If b = "" Then Exit Function
+    If InStr(1, b, a, vbTextCompare) > 0 Then
+        ProgramMatches = True
+    ElseIf InStr(1, a, b, vbTextCompare) > 0 Then
+        ProgramMatches = True
+    ElseIf Len(a) >= 5 Then
+        ProgramMatches = (InStr(1, b, Left$(a, 5), vbTextCompare) > 0)
+    End If
+End Function
+
+' "Low (UK)" against a file country of "GB"
+Private Function CountryMatches(ByVal narrVal As String, ByVal fileVal As String) As Boolean
+    Dim inside As String, p1 As Long, p2 As Long
+    Dim a As String, b As String
+
+    p1 = InStr(narrVal, "(")
+    p2 = InStr(narrVal, ")")
+    inside = narrVal
+    If p1 > 0 Then
+        If p2 > p1 Then inside = Mid$(narrVal, p1 + 1, p2 - p1 - 1)
+    End If
+    a = CountryKey(inside)
+    b = CountryKey(fileVal)
+    If a = "" Then Exit Function
+    If b = "" Then Exit Function
+    CountryMatches = (a = b)
+End Function
+
+Private Function CountryKey(ByVal s As String) As String
+    Dim k As String
+    k = UCase$(Trim$(s))
+    Select Case k
+        Case "UK", "GB", "GBR", "UNITED KINGDOM"
+            CountryKey = "GB"
+        Case "USA", "US", "UNITED STATES"
+            CountryKey = "US"
+        Case Else
+            CountryKey = k
+    End Select
+End Function
+
+' Header value without control characters or trailing punctuation
+Private Function CleanSegment(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If AscW(ch) >= 32 Then out = out & ch
+    Next i
+    out = Trim$(out)
+    Do While Len(out) > 0
+        If Not (Right$(out, 1) = "." Or Right$(out, 1) = ",") Then Exit Do
+        out = Trim$(Left$(out, Len(out) - 1))
+    Loop
+    CleanSegment = out
+End Function
+
+Private Function PadBefore(ByVal s As String) As Long
+    Dim i As Long, n As Long
+    n = 0
+    For i = 1 To Len(s)
+        If Mid$(s, i, 1) <> " " Then Exit For
+        n = n + 1
+    Next i
+    PadBefore = n
+End Function
+
+' =========================================================================
+' [PQC] WORD SHADING
+' =========================================================================
+Private Sub ShadeAt(ByVal doc As Object, ByVal absPos As Long, ByVal tokLen As Long, ByVal colr As Long)
+    Dim rng As Object
+    If tokLen <= 0 Then Exit Sub
+    On Error Resume Next
+    Set rng = doc.Range(absPos, absPos + tokLen)
+    If Not rng Is Nothing Then rng.Shading.BackgroundPatternColor = colr
+    On Error GoTo 0
+End Sub
+
+Private Sub ShadeFirst(ByVal doc As Object, ByVal findText As String, ByVal colr As Long)
+    Dim hits As Collection, h As Variant
+    If findText = "" Then Exit Sub
+    Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, findText, False)
+    For Each h In hits
+        ShadeAt doc, CLng(h(0)), CLng(h(1)) - CLng(h(0)), colr
+        Exit For
+    Next h
+End Sub
+
+Private Sub InsertPreQCLegend(ByVal doc As Object)
+    Dim rng As Object, para As Object
+    Dim txt As String
+
+    txt = "Pre-QC colour key - green: matches the transaction file. Red: contradicts the file. " & _
+          "Yellow: needs a reviewer's eye. Grey: examined but not verifiable from the file. " & _
+          "Unshaded text was not checked. This copy is for review only."
+    If InStr(1, doc.Paragraphs(1).Range.Text, "Pre-QC colour key", vbTextCompare) > 0 Then Exit Sub
+
+    doc.Paragraphs(1).Range.InsertParagraphBefore
+    Set para = doc.Paragraphs(1)
+    para.Range.InsertBefore txt
+
+    Set para = doc.Paragraphs(1)
+    Set rng = doc.Range(para.Range.Start, para.Range.End - 1)
+    On Error Resume Next
+    rng.Style = "Normal"
+    On Error GoTo 0
+    With rng.Font
+        .Bold = False
+        .Italic = True
+        .Underline = 0                       ' wdUnderlineNone
+        .Color = 0                           ' black
+        .Size = 9
+    End With
+    rng.ParagraphFormat.Alignment = 0        ' wdAlignParagraphLeft
+    rng.Shading.BackgroundPatternColor = PQ_EYE
+End Sub
+
+' =========================================================================
+' [PQC] REPORT SHEETS
+' =========================================================================
+Private Sub AddPQItem(ByVal items As Collection, ByVal label As String, ByVal narrVal As String, _
+                      ByVal fileVal As String, ByVal verdict As String, ByVal note As String)
+    items.Add Array(label, narrVal, fileVal, verdict, note)
+End Sub
+
+Private Sub CountVerdicts(ByVal items As Collection, ByRef nOK As Long, ByRef nBad As Long, ByRef nEye As Long)
+    Dim it As Variant
+    nOK = 0
+    nBad = 0
+    nEye = 0
+    For Each it In items
+        Select Case CStr(it(3))
+            Case PQV_OK
+                nOK = nOK + 1
+            Case PQV_BAD
+                nBad = nBad + 1
+            Case PQV_EYE
+                nEye = nEye + 1
+        End Select
+    Next it
+End Sub
+
+Private Sub PreQCPrepareSheets(ByVal wsDash As Worksheet, ByVal wsFind As Worksheet)
+    wsDash.Cells.Clear
+    wsFind.Cells.Clear
+    wsDash.Range("B2").Value = "PRE-QC: CLOSURE (NON-SUSPICIOUS) ALERT WRITE-UPS"
+    wsFind.Range("B2").Value = "PRE-QC FINDINGS"
+    StylePQTitle wsDash.Range("B2")
+    StylePQTitle wsFind.Range("B2")
+    WriteHeaderRow wsDash, 3, 2, Array("ECM ID", "Alert ID", "Customer", "Rule", "Alerted Txns", _
+                                       "Alerted Amount", "Alerted Period", "Verified", "Mismatch", _
+                                       "To Check", "Status", "Write-Up", "Reviewed Copy")
+    WriteHeaderRow wsFind, 3, 2, Array("ECM ID", "Alert ID", "Check", "Write-Up Says", "File Says", _
+                                       "Verdict", "Note")
+End Sub
+
+Private Sub StylePQTitle(ByVal c As Range)
+    With c
+        .Font.Name = FONT_UI
+        .Font.Size = 14
+        .Font.Bold = True
+        .Font.Color = COLOR_TEXT_DARK
+    End With
+End Sub
+
+Private Sub WritePreQCDash(ByVal ws As Worksheet, ByVal rowIdx As Long, ByRef fx As PreQCFacts, _
+                           ByVal nOK As Long, ByVal nBad As Long, ByVal nEye As Long, _
+                           ByVal docPath As String, ByVal outPath As String)
+    Dim status As String
+
+    If docPath = "" Then
+        status = "No write-up found"
+    ElseIf Not fx.HasData Then
+        status = "No alerted rows in the file"
+    ElseIf nBad > 0 Then
+        status = "Mismatch - review"
+    ElseIf nEye > 0 Then
+        status = "Check flagged items"
+    Else
+        status = "Clean"
+    End If
+
+    ws.Cells(rowIdx, 2).Value = fx.EcmID
+    ws.Cells(rowIdx, 3).Value = fx.AlertID
+    ws.Cells(rowIdx, 4).Value = fx.Customer
+    ws.Cells(rowIdx, 5).Value = fx.RuleText
+    ws.Cells(rowIdx, 6).Value = fx.AlertCount
+    ws.Cells(rowIdx, 7).Value = fx.AlertTotal
+    ws.Cells(rowIdx, 8).Value = DateText(fx.AlertMin) & " - " & DateText(fx.AlertMax)
+    ws.Cells(rowIdx, 9).Value = nOK
+    ws.Cells(rowIdx, 10).Value = nBad
+    ws.Cells(rowIdx, 11).Value = nEye
+    ws.Cells(rowIdx, 12).Value = status
+    ws.Cells(rowIdx, 13).Value = GetFileName(docPath)
+    ws.Cells(rowIdx, 14).Value = GetFileName(outPath)
+    ws.Cells(rowIdx, 7).NumberFormat = "$#,##0.00"
+
+    If nBad > 0 Then
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_ALERT_RED, COLOR_FILL_RED
+        HighlightCell ws.Cells(rowIdx, 10), COLOR_ALERT_RED, COLOR_FILL_RED
+    ElseIf nEye > 0 Then
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_AMBER, COLOR_FILL_AMBER
+    Else
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_SUCCESS_GREEN, COLOR_FILL_GREEN
+    End If
+End Sub
+
+Private Sub WritePreQCFindings(ByVal ws As Worksheet, ByRef rowIdx As Long, ByRef fx As PreQCFacts, _
+                               ByVal items As Collection)
+    Dim it As Variant, verdict As String
+    For Each it In items
+        verdict = CStr(it(3))
+        If verdict <> PQV_OK Then
+            ws.Cells(rowIdx, 2).Value = fx.EcmID
+            ws.Cells(rowIdx, 3).Value = fx.AlertID
+            ws.Cells(rowIdx, 4).Value = CStr(it(0))
+            ws.Cells(rowIdx, 5).Value = CStr(it(1))
+            ws.Cells(rowIdx, 6).Value = CStr(it(2))
+            ws.Cells(rowIdx, 7).Value = verdict
+            ws.Cells(rowIdx, 8).Value = CStr(it(4))
+            Select Case verdict
+                Case PQV_BAD
+                    HighlightCell ws.Cells(rowIdx, 7), COLOR_ALERT_RED, COLOR_FILL_RED
+                Case PQV_EYE
+                    HighlightCell ws.Cells(rowIdx, 7), COLOR_AMBER, COLOR_FILL_AMBER
+                Case Else
+                    HighlightCell ws.Cells(rowIdx, 7), COLOR_TEXT_MUTED, COLOR_CARD_BG
+            End Select
+            rowIdx = rowIdx + 1
+        End If
+    Next it
+End Sub
+
+Private Sub FinishPreQCSheet(ByVal ws As Worksheet, ByVal nCols As Long, ByVal lastRow As Long, _
+                             ByVal emptyMsg As String)
+    Dim c As Long, endRow As Long
+
+    endRow = lastRow
+    If endRow < 4 Then
+        ws.Cells(4, 2).Value = emptyMsg
+        ws.Cells(4, 2).Font.Italic = True
+        ws.Cells(4, 2).Font.Color = COLOR_TEXT_MUTED
+        endRow = 4
+    End If
+    With ws.Range(ws.Cells(4, 2), ws.Cells(endRow, nCols + 1))
+        .Font.Name = FONT_UI
+        .Font.Size = 9.5
+        .VerticalAlignment = xlTop
+    End With
+    For c = 2 To nCols + 1
+        ws.Columns(c).AutoFit
+        If ws.Columns(c).ColumnWidth > 46 Then ws.Columns(c).ColumnWidth = 46
+    Next c
+    SetSheetZoom ws, SHEET_ZOOM
+End Sub
