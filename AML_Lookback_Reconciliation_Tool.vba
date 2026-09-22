@@ -2,7 +2,7 @@ Attribute VB_Name = "AML_Period_Comparison"
 ' =========================================================================
 ' [AML] AML TRANSACTION MONITORING: LOOKBACK PERIOD BATCH COMPARISON COCKPIT
 ' =========================================================================
-' Version: 6.0
+' Version: 6.5
 '
 ' Purpose:
 '  1. Compares the Old vs. New transaction file of each alert when the review
@@ -20,11 +20,17 @@ Attribute VB_Name = "AML_Period_Comparison"
 '     first sentence of the "Specifically, between ..." line. Edited copies go
 '     to a new subfolder; each changed value is highlighted yellow. Originals
 '     are never changed. Needs Microsoft Word.
-'  5. Single-pair and batch-folder comparison. Windows and Mac (Excel 2016+).
+'  5. Single-pair and batch-folder comparison. Windows, Excel 2016 or later.
 '  6. Run_PreQC_Closure: pre-QC for closure (non-suspicious) alerts. Checks each
 '     Alert Write-Up against its "Combined Alerted & Non Alerted Transactions"
-'     file and writes a shaded review copy plus two report sheets. Read-only:
-'     the original write-up is never changed.
+'     file (alerted rows only).
+'  7. Run_PreQC_Escalation: pre-QC for escalation narratives against the
+'     lookback transaction file, using the same rules as the narrative updater.
+'     Both pre-QC macros are read-only: they write a shaded review copy of each
+'     narrative plus a summary and a findings sheet. Buttons on the dashboard.
+'     The review copy also gets Word's spelling and grammar check: clear typing
+'     slips are corrected there and listed, everything else is marked for the
+'     reviewer (see PQ_PROOF).
 '
 ' Counterparty rules:
 '  - Counterparty comes from a "Counterparty" column. If a sheet has none, it
@@ -74,11 +80,7 @@ Private Const COLOR_FILL_RED As Long = 15921918     ' RGB(254, 242, 242)
 Private Const COLOR_FILL_AMBER As Long = 13104126   ' RGB(254, 243, 199)
 Private Const COLOR_FILL_GREEN As Long = 16055792   ' RGB(240, 253, 244)
 
-#If Mac Then
-Private Const FONT_UI As String = "Calibri"
-#Else
 Private Const FONT_UI As String = "Segoe UI"
-#End If
 
 ' --- Sheet Names ---
 Private Const SHEET_DASHBOARD As String = "Comparison Dashboard"
@@ -88,7 +90,7 @@ Private Const SHEET_NEWCP_PIVOTS As String = "New_CP_Pivots"
 Private Const SHEET_LEGACY_MODIFIED As String = "Discrepancy_Modified_Txns"   ' created by v3.0; removed on run
 
 ' --- Dashboard Layout ---
-Private Const DASH_VERSION As String = "AML-PERIOD-COMPARISON-3.2"
+Private Const DASH_VERSION As String = "AML-PERIOD-COMPARISON-3.3"
 Private Const DASH_TITLE As String = "AML TRANSACTION MONITORING - LOOKBACK PERIOD BATCH RECONCILIATION COCKPIT"
 Private Const FIRST_DATA_ROW As Long = 15
 ' Zoom applied to the sheets after a run
@@ -279,10 +281,12 @@ Private mWord As Object
 Private mWordCreated As Boolean
 Private mWordAlerts As Long
 
-' --- Pre-QC (closure / non-suspicious alerts) ---
-' Sheets written by Run_PreQC_Closure
-Private Const SHEET_PREQC_DASH As String = "PreQC_Dashboard"
-Private Const SHEET_PREQC_FIND As String = "PreQC_Findings"
+' --- Pre-QC (closure and escalation narratives) ---
+' Sheets written by Run_PreQC_Closure and Run_PreQC_Escalation
+Private Const SHEET_PQ_CLOSURE As String = "PreQC_Closure"
+Private Const SHEET_PQ_CLOSURE_FIND As String = "PreQC_Closure_Findings"
+Private Const SHEET_PQ_ESC As String = "PreQC_Escalation"
+Private Const SHEET_PQ_ESC_FIND As String = "PreQC_Escalation_Findings"
 ' Shading written into the reviewed narrative copy. Only tokens the tool actually
 ' examined are shaded; untouched prose keeps its original background.
 Private Const PQ_OK As Long = 14348502       ' soft mint  RGB(214, 240, 218) - verified
@@ -294,13 +298,38 @@ Private Const PQV_OK As String = "Verified"
 Private Const PQV_BAD As String = "Mismatch"
 Private Const PQV_EYE As String = "Check"
 Private Const PQV_NA As String = "Not checked"
-' A counterparty absent from the narrative is reported when its share of the
-' alerted total reaches this fraction.
+' A counterparty (or bank) absent from the narrative is reported when its share
+' of the total reaches this fraction.
 Private Const PQ_CP_SHARE As Double = 0.1
+' Escalation wording checks: "all high dollar" is contradicted by transactions under
+' PQ_SMALL_AMT; "consecutive days" when fewer than PQ_CLOSE_GAP_SHARE of the gaps between
+' transaction dates are 1-2 days. Own-name transfers are reported between PQ_CP_SHARE
+' and PQ_OWN_MAX_SHARE of the volume (above that the whole narrative is about them).
+Private Const PQ_SMALL_AMT As Double = 10000
+Private Const PQ_CLOSE_GAP_SHARE As Double = 0.25
+Private Const PQ_OWN_MAX_SHARE As Double = 0.9
+' Escalation narratives cover this many counterparties: the top one per alerted rule,
+' then the largest in the lookback activity (see EscSelection)
+Private Const PQ_ESC_CP_COUNT As Long = 5
 ' Output subfolder for the reviewed copies
 Private Const PQ_OUT_PREFIX As String = "PreQC_Reviewed_"
+' Word's spelling and grammar check on each reviewed copy (see ProofReviewedCopy).
+' PQ_PROOF_FIX = False only marks and lists, without correcting anything.
+' PQ_PROOF_MAX limits the spelling and grammar flags listed per narrative.
+Private Const PQ_PROOF As Boolean = True
+Private Const PQ_PROOF_FIX As Boolean = True
+Private Const PQ_PROOF_MAX As Long = 40
+Private Const PQV_PROOF As String = "Proofing"
+' Words Word's dictionary may not know that are normal in these narratives
+Private Const PQ_PROOF_WORDS As String = "ach iat dba aml kyc cdd edd osdd rfi sar cfsb ecm fintech " & _
+    "ecommerce lookback onboard onboarded onboarding offboard offboarded offboarding omnichannel prefund " & _
+    "prefunded prefunding payout payouts crypto cryptocurrency cryptocurrencies stablecoin stablecoins " & _
+    "counterparty counterparties remitter remitters"
+Private Const WD_UNDERLINE_WAVY As Long = 11
+Private Const WD_COLOR_RED As Long = 255
+Private Const WD_COLOR_BLUE As Long = 16711680
 
-' Everything the checks need from one Combined Alerted & Non Alerted file
+' Everything the closure checks need from one Combined Alerted & Non Alerted file
 Private Type PreQCFacts
     EcmID As String
     AlertID As String
@@ -327,6 +356,43 @@ Private Type PreQCFacts
     CPAmt As Object
     SelfCPs As String
     HasData As Boolean
+End Type
+
+' Extra facts the escalation checks need from a lookback file, on top of the
+' TxnSet the narrative updater uses (so both tools read the same numbers)
+Private Type EscFacts
+    AmtSet As Object       ' amount in cents -> label
+    CntSet As Object       ' count -> label
+    DateSet As Object      ' yyyymmdd -> label
+    Groups As Object       ' "kind|value" -> Array(count, amount)
+    CPs As Object          ' normalised counterparty -> display name
+    CPAmt As Object        ' normalised counterparty -> amount
+    Banks As Object        ' normalised bank name -> amount
+    Programs As String     ' settlement program parties, "; " separated
+    AcctPrefix As String
+    Total As Double
+    TxN As Long            ' transactions, one per unique transaction ID
+    TxDate() As Date
+    TxHasDate() As Boolean
+    TxAmt() As Double
+    TxCP() As String       ' normalised counterparty
+    TxDir() As String      ' "C" / "D" / ""
+    TxIns() As String      ' "ACH" / "WIRE" / ""
+    TxAl() As Boolean      ' flagged "Is Alerted Transaction? = Yes"
+    TxRule() As String     ' "Alert Information" (may hold several rules)
+    Holders As Object      ' normalised account-holder name -> rows
+    Holder As String       ' most frequent account holder
+    Families As Object     ' first word shared by 2+ counterparties
+    HasAlertFile As Boolean
+    AlertFile As String
+    AlertN As Long
+    AlertTotal As Double
+    AlertMin As Variant
+    AlertMax As Variant
+    AlertRule As String
+    AlertMissing As Long   ' alerted rows absent from the lookback file
+    LookbackAlerted As Long
+    OnceFlags As String
 End Type
 
 ' =========================================================================
@@ -373,7 +439,6 @@ Public Sub Run_Batch_Comparison()
     ' Step 1: Select folder (parent with Old/New subfolders, or the Old folder itself)
     selectedFolder = Pick_Folder("Select the folder containing 'Old' and 'New' subfolders (or select the 'Old' folder)")
     If selectedFolder = "" Then Exit Sub
-    GrantMacAccess Array(selectedFolder)
 
     If FolderExists(selectedFolder & "Old") And FolderExists(selectedFolder & "New") Then
         oldFolder = selectedFolder & "Old" & pSep
@@ -392,7 +457,6 @@ Public Sub Run_Batch_Comparison()
         Exit Sub
     End If
 
-    GrantMacAccess Array(oldFolder, newFolder)
     Set jobs = BuildBatchJobs(oldFolder, newFolder, wbDashboard.FullName)
     If jobs Is Nothing Then Exit Sub
 
@@ -437,7 +501,6 @@ Public Sub Run_Single_Pair_Comparison()
                   "Compare them anyway?", vbQuestion + vbYesNo, "Alert Mismatch") <> vbYes Then Exit Sub
     End If
 
-    GrantMacAccess Array(oldFile, newFile)
     Set jobs = New Collection
     jobs.Add Array(newEcm, newAlert, oldFile, newFile, "PAIR")
     RunJobs wbDashboard, jobs, "Single Alert", AskNarrativeFolder()
@@ -492,13 +555,9 @@ Public Sub Export_To_New_Workbook()
 
     defaultFileName = "AML_Lookback_Reconciliation_Report_" & Format(Now, "yyyymmdd_hhnnss") & ".xlsx"
 
-#If Mac Then
-    savePath = Application.GetSaveAsFilename(InitialFileName:=defaultFileName)
-#Else
     savePath = Application.GetSaveAsFilename(InitialFileName:=defaultFileName, _
                                             FileFilter:="Excel Workbook (*.xlsx), *.xlsx", _
                                             Title:="Export AML Comparison Report to New Workbook")
-#End If
     If VarType(savePath) = vbBoolean Then Exit Sub      ' user cancelled
 
     finalPath = Trim$(CStr(savePath))
@@ -1518,6 +1577,8 @@ Public Function Setup_Comparison_Dashboard(ByVal wb As Workbook, Optional ByVal 
     CreateActionButton ws, 12, "G", "G", "[VIEW] New CP Pivots", "View_New_CP_Pivots", RGB(13, 148, 136)
     CreateActionButton ws, 12, "H", "K", "[VIEW] Dropped Txns", "View_Dropped_Transactions", RGB(13, 148, 136)
     CreateActionButton ws, 12, "L", "O", "[RESET] Reset Dashboard", "Clear_Comparison_Dashboard", RGB(100, 116, 139)
+    CreateActionButton ws, 12, "R", "R", "[PRE-QC] Closure Write-Ups", "Run_PreQC_Closure", RGB(109, 40, 217)
+    CreateActionButton ws, 12, "S", "S", "[PRE-QC] Escalation Narratives", "Run_PreQC_Escalation", RGB(190, 24, 93)
 
     ' Table Header Row
     headers = Array("ECM ID", "Alert ID", "Old File Name [sheet]", "New File Name [sheet]", _
@@ -2658,7 +2719,7 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
     Dim newCount As String, newTotal As String
     Dim sentEnd As Long, k As Long, kLen As Long, kTxt As String, k2 As Long, kLen2 As Long, aPos As Long
     Dim pStart As Long
-    Dim hCount As String, hAmount As String, hFrom As String, hTo As String
+    Dim hCount As String, hAmount As String, hFrom As String, hTo As String, cv As Long
 
     escS = -1: totS = -1: drS = -1: betS = -1: spcS = -1
     Set segs = LineSegments(doc)
@@ -2694,7 +2755,7 @@ Private Sub PlanNarrativeEdits(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal 
 
     If escS >= 0 Then
         sentEnd = SentenceEnd(escT, 1)
-        k = FindCountToken(escT, 1, sentEnd, Array("transaction", "transfer", "txn"), kLen)
+        k = NextCount(escT, 1, sentEnd, Array("transaction", "transfer", "txn"), kLen, cv)
         If k > 0 Then PlanFigure doc, edits, flags, escS, escT, k, kLen, HeaderPairs(ctx, "C"), hCount, _
                                  "opening sentence", "transaction count"
         aPos = InStr(1, escT, "totaling", vbTextCompare)
@@ -2839,7 +2900,7 @@ Private Sub SwapIfOld(ByVal doc As Object, ByVal edits As Collection, ByVal parS
     For Each pr In pairs
         If CStr(pr(0)) <> "" And CStr(pr(1)) <> "" Then
             If NormValue(CStr(pr(0))) = curKey Then
-                AddValueEdit doc, edits, parStart, t, pos, cur, CStr(pr(1))
+                AddValueEdit doc, edits, parStart, t, pos, cur, InCountStyle(cur, CStr(pr(1)))
                 Exit Sub
             End If
         End If
@@ -2942,7 +3003,7 @@ Private Sub PlanActivityLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal ed
                              ByVal parStart As Long, ByVal t As String, ByVal lineName As String)
     Dim sentEnd As Long, p1 As Long, l1 As Long, p2 As Long, l2 As Long
     Dim pos As Long, p As Long, n As Long, nextP As Long, nn As Long, a As Long, an As Long, bound As Long
-    Dim hint As String, followWords As Variant
+    Dim hint As String, followWords As Variant, cv As Long, cv2 As Long
     Dim firstPair As Boolean
 
     firstPair = True
@@ -2965,7 +3026,7 @@ Private Sub PlanActivityLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal ed
 
     pos = 1
     Do
-        p = FindCountToken(t, pos, sentEnd, followWords, n)
+        p = NextCount(t, pos, sentEnd, followWords, n, cv)
         If p = 0 Then Exit Do
         hint = CountDirection(t, p, n)
         If firstPair Then
@@ -2974,9 +3035,9 @@ Private Sub PlanActivityLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal ed
         Else
             PlanFigure doc, edits, flags, parStart, t, p, n, CountPairs(ctx, hint), "", lineName, "transaction count"
         End If
-        nextP = FindCountToken(t, p + n, sentEnd, followWords, nn)
+        nextP = NextCount(t, p + n, sentEnd, followWords, nn, cv2)
         If nextP > 0 Then bound = nextP - 1 Else bound = sentEnd
-        a = FindAmountToken(t, p + n, bound, an)
+        a = AmountAfterTotaling(t, p + n, bound, an)
         If a > 0 Then
             If firstPair Then
                 PlanFigure doc, edits, flags, parStart, t, a, an, AmountPairs(ctx, hint), _
@@ -3003,7 +3064,11 @@ Private Sub PlanFigure(ByVal doc As Object, ByVal edits As Collection, ByVal fla
     Dim cur As String, curKey As String, pr As Variant, oldList As String
 
     cur = Mid$(t, pos, n)
-    curKey = NormValue(cur)
+    If NumberWordValue(LCase$(cur)) > 0 Then
+        curKey = NormValue(CStr(NumberWordValue(LCase$(cur))))
+    Else
+        curKey = NormValue(cur)
+    End If
     For Each pr In pairs
         If CStr(pr(1)) <> "" Then
             If NormValue(CStr(pr(1))) = curKey Then Exit Sub
@@ -3012,7 +3077,7 @@ Private Sub PlanFigure(ByVal doc As Object, ByVal edits As Collection, ByVal fla
     For Each pr In pairs
         If CStr(pr(0)) <> "" And CStr(pr(1)) <> "" Then
             If NormValue(CStr(pr(0))) = curKey Then
-                AddValueEdit doc, edits, parStart, t, pos, cur, CStr(pr(1))
+                AddValueEdit doc, edits, parStart, t, pos, cur, InCountStyle(cur, CStr(pr(1)))
                 Exit Sub
             End If
             If oldList <> "" Then oldList = oldList & " / "
@@ -3021,7 +3086,7 @@ Private Sub PlanFigure(ByVal doc As Object, ByVal edits As Collection, ByVal fla
     Next pr
 
     If forceNew <> "" And NormValue(forceNew) <> curKey Then
-        AddValueEdit doc, edits, parStart, t, pos, cur, forceNew
+        AddValueEdit doc, edits, parStart, t, pos, cur, InCountStyle(cur, forceNew)
         flags.Add Array("", lineName & ": " & what & " " & cur & " did not match the Old file (" & oldList & _
                   "); replaced with the New file figure " & forceNew & " - please check")
     ElseIf forceNew = "" Then
@@ -3092,7 +3157,7 @@ End Function
 ' "D" for debits ("10 debit ...", "sent 620 ..."), otherwise ""
 Private Function CountDirection(ByVal t As String, ByVal pos As Long, ByVal n As Long) As String
     Dim rest As String, before As String, words() As String, i As Long, cnt As Long, w As String
-    rest = LCase$(Mid$(t, pos + n, 40))
+    rest = LCase$(Replace(Mid$(t, pos + n, 40), Chr(160), " "))
     words = Split(Application.WorksheetFunction.Trim(Replace(Replace(rest, ",", " "), ".", " ")), " ")
     For i = 0 To UBound(words)
         w = words(i)
@@ -3110,7 +3175,7 @@ Private Function CountDirection(ByVal t As String, ByVal pos As Long, ByVal n As
         End If
     Next i
     If pos > 1 Then
-        before = LCase$(Application.WorksheetFunction.Trim(Mid$(t, 1, pos - 1)))
+        before = LCase$(Application.WorksheetFunction.Trim(Replace(Mid$(t, 1, pos - 1), Chr(160), " ")))
         If Right$(before, 8) = "received" Or Right$(before, 9) = "receiving" Then
             CountDirection = "C"
         ElseIf Right$(before, 4) = "sent" Or Right$(before, 7) = "sending" Or Right$(before, 4) = "paid" Then
@@ -3143,10 +3208,10 @@ Private Sub AddValueEdit(ByVal doc As Object, ByVal edits As Collection, ByVal p
     Dim s As Long, e As Long, hits As Collection, h As Variant, v As Variant
 
     If NormValue(oldText) = NormValue(newText) Then Exit Sub
-    s = parStart + offset - 1
+    s = TruePos(doc, parStart + offset - 1, Len(oldText))
     e = s + Len(oldText)
     If doc.Range(s, e).Text <> oldText Then
-        Set hits = WdFindIn(doc, parStart, parStart + Len(t) + 50, oldText, False)
+        Set hits = WdFindIn(doc, parStart, doc.Range(parStart, parStart).Paragraphs(1).Range.End, oldText, False)
         If hits.Count = 0 Then Exit Sub
         h = hits(1)
         s = h(0)
@@ -3175,6 +3240,27 @@ Private Function NormValue(ByVal s As String) As String
     Else
         NormValue = s
     End If
+End Function
+
+' The new figure written the way the old one was: a count written as a word ("two") gets a
+' word ("five", "Five" at the start of a sentence) up to twenty, otherwise digits
+Private Function InCountStyle(ByVal oldText As String, ByVal newText As String) As String
+    Dim words As Variant, v As Long, w As String
+    InCountStyle = newText
+    If NumberWordValue(LCase$(oldText)) = 0 Then Exit Function
+    If newText Like "*[!0-9]*" Or newText = "" Then Exit Function
+    v = CLng(newText)
+    If v < 1 Or v > 20 Then Exit Function
+    words = Array("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", _
+                  "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", _
+                  "nineteen", "twenty")
+    w = CStr(words(v - 1))
+    If oldText = UCase$(oldText) Then
+        w = UCase$(w)
+    ElseIf Left$(oldText, 1) = UCase$(Left$(oldText, 1)) Then
+        w = UCase$(Left$(w, 1)) & Mid$(w, 2)
+    End If
+    InCountStyle = w
 End Function
 
 ' Applies edits from the end of the document backwards so earlier positions stay valid.
@@ -3319,18 +3405,10 @@ End Function
 ' --- Text scanning helpers (positions are 1-based within the line text) ---
 
 ' End of the first sentence: the first ". " / ".<paragraph end>" not inside a number
+' End of the sentence starting at fromPos (the full stop, or Len(t)); "Inc.", "Ltd.", "Co."
+' and initials do not end a sentence
 Private Function SentenceEnd(ByVal t As String, ByVal fromPos As Long) As Long
-    Dim i As Long, nextCh As String
-    For i = fromPos To Len(t)
-        If Mid$(t, i, 1) = "." Then
-            nextCh = Mid$(t, i + 1, 1)
-            If nextCh = " " Or nextCh = vbCr Or nextCh = "" Or nextCh = Chr(160) Then
-                SentenceEnd = i
-                Exit Function
-            End If
-        End If
-    Next i
-    SentenceEnd = Len(t)
+    SentenceEnd = PQSentenceEnd(t, fromPos)
 End Function
 
 ' First m/d/yyyy or mm/dd/yyyy date in t between fromPos and toPos; returns its position (0 = none)
@@ -3401,7 +3479,7 @@ Private Function FindCountToken(ByVal t As String, ByVal fromPos As Long, ByVal 
             If i > 1 Then prevCh = Mid$(t, i - 1, 1) Else prevCh = " "
             nextCh = Mid$(t, j, 1)
             If Not (prevCh Like "[A-Za-z0-9$./]") And Not (nextCh Like "[A-Za-z0-9/.]") Then
-                rest = LCase$(Mid$(t, j, 60))
+                rest = LCase$(Replace(Mid$(t, j, 60), Chr(160), " "))
                 rest = Replace(Replace(Replace(rest, vbCr, " "), ",", " "), ".", " ")
                 words = Split(Application.WorksheetFunction.Trim(rest), " ")
                 n = 0
@@ -3630,7 +3708,6 @@ Private Function AskNarrativeFolder() As String
               "value highlighted in yellow; the original documents are not changed." & vbCrLf & _
               "No = compare transactions only.", vbQuestion + vbYesNo, "Update Narratives") <> vbYes Then Exit Function
     folderPath = Pick_Folder("Select the folder containing the escalation narratives (ECMID_ALERTID_*.docx)")
-    If folderPath <> "" Then GrantMacAccess Array(folderPath)
     AskNarrativeFolder = folderPath
 End Function
 
@@ -3645,7 +3722,7 @@ Private Function DateText(ByVal v As Variant) As String
     End If
 End Function
 ' =========================================================================
-' [HELPER] 11. FILES, FOLDERS AND WORKBOOKS (Mac & Windows)
+' [HELPER] 11. FILES, FOLDERS AND WORKBOOKS
 ' =========================================================================
 Private Function GetOrOpenWorkbook(ByVal fPath As String, ByRef openedByUs As Boolean) As Workbook
     Dim wb As Workbook, fName As String
@@ -3731,30 +3808,11 @@ Private Function FindTransactionSheet(ByVal wb As Workbook) As Worksheet
 End Function
 
 Private Function Pick_Folder(ByVal promptTitle As String) As String
-    Dim result As String
-#If Mac Then
-    Dim script As String, errNum As Long
-    script = "return POSIX path of (choose folder with prompt """ & Replace(promptTitle, """", "'") & """)"
-    On Error Resume Next
-    result = MacScript(script)
-    errNum = Err.Number
-    On Error GoTo 0
-    If errNum <> 0 Then
-        ' MacScript also raises when Cancel is pressed; offer a manual path in case the picker is blocked
-        result = ""
-        If MsgBox("No folder was selected." & vbCrLf & vbCrLf & _
-                  "If the folder picker did not appear, click Yes to paste the folder path instead.", _
-                  vbQuestion + vbYesNo, "Select Folder") = vbYes Then
-            result = InputBox(promptTitle & vbCrLf & vbCrLf & "Example: /Users/you/Documents/Lookback/Old", "Folder Path")
-        End If
-    End If
-#Else
-    Dim fd As Object
+    Dim result As String, fd As Object
     Set fd = Application.FileDialog(4) ' msoFileDialogFolderPicker
     fd.Title = promptTitle
     fd.AllowMultiSelect = False
     If fd.Show = -1 Then result = fd.SelectedItems(1)
-#End If
     result = Trim$(result)
     If result <> "" Then
         If Right$(result, 1) <> Application.PathSeparator Then result = result & Application.PathSeparator
@@ -3764,12 +3822,7 @@ End Function
 
 Private Function Pick_Excel_File(ByVal promptTitle As String) As String
     Dim vFile As Variant
-#If Mac Then
-    ' File filters are not supported on Mac
-    vFile = Application.GetOpenFilename()
-#Else
     vFile = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm;*.xls;*.xlsb),*.xlsx;*.xlsm;*.xls;*.xlsb", , promptTitle)
-#End If
     If VarType(vFile) = vbBoolean Then
         Pick_Excel_File = ""
     ElseIf Not IsExcelFileName(CStr(vFile)) Then
@@ -3780,18 +3833,6 @@ Private Function Pick_Excel_File(ByVal promptTitle As String) As String
     End If
 End Function
 
-Private Sub GrantMacAccess(ByVal paths As Variant)
-#If Mac Then
-    #If MAC_OFFICE_VERSION >= 15 Then
-    ' Excel 2016+ for Mac is sandboxed: ask once for access to the chosen files/folders
-    Dim granted As Boolean
-    On Error Resume Next
-    granted = GrantAccessToMultipleFiles(paths)
-    On Error GoTo 0
-    #End If
-#End If
-End Sub
-
 Private Function ListExcelFiles(ByVal folderPath As String, ByVal excludePath As String) As Collection
     Dim col As New Collection
     Dim names As New Collection
@@ -3800,7 +3841,7 @@ Private Function ListExcelFiles(ByVal folderPath As String, ByVal excludePath As
 
     If Right$(folderPath, 1) <> Application.PathSeparator Then folderPath = folderPath & Application.PathSeparator
 
-    ' Dir without a wildcard works on both Windows and Mac; filter by extension here
+    ' list every file and filter by extension here
     sFile = Dir(folderPath, vbReadOnly)
     Do While sFile <> ""
         If IsExcelFileName(sFile) And Left$(sFile, 2) <> "~$" And Left$(sFile, 2) <> "._" _
@@ -4608,61 +4649,29 @@ Private Sub SortStrings(ByRef arr As Variant)
 End Sub
 
 ' =========================================================================
-' [DICT] 14. KEY-VALUE LOOKUP (Scripting.Dictionary on Windows,
-'            Collection fallback on Mac). Keys are case-insensitive on both.
+' [DICT] 14. KEY-VALUE LOOKUP (Scripting.Dictionary, keys case-insensitive)
 ' =========================================================================
 Private Function CreateLookupDict() As Object
     Dim d As Object
-    On Error Resume Next
     Set d = CreateObject("Scripting.Dictionary")
-    On Error GoTo 0
-
-    If d Is Nothing Then
-        Set d = New Collection
-    Else
-        d.CompareMode = 1 ' vbTextCompare - same behaviour as Collection keys
-    End If
+    d.CompareMode = 1 ' vbTextCompare
     Set CreateLookupDict = d
 End Function
 
 Private Function DictExists(ByVal d As Object, ByVal k As String) As Boolean
-    Dim dummy As Variant
-    If TypeName(d) = "Dictionary" Then
-        DictExists = d.Exists(k)
-    Else
-        On Error Resume Next
-        dummy = d(k)
-        DictExists = (Err.Number = 0)
-        Err.Clear
-        On Error GoTo 0
-    End If
+    DictExists = d.Exists(k)
 End Function
 
 Private Sub DictAdd(ByVal d As Object, ByVal k As String, ByVal v As Variant)
-    If TypeName(d) = "Dictionary" Then
-        d.Add k, v
-    Else
-        d.Add Array(k, v), k      ' Collection items keep their key at index 0
-    End If
+    d.Add k, v
 End Sub
-
 
 Private Sub DictSet(ByVal d As Object, ByVal k As String, ByVal v As Variant)
-    If TypeName(d) = "Dictionary" Then
-        d(k) = v
-    Else
-        d.Remove k
-        d.Add Array(k, v), k
-    End If
+    d(k) = v
 End Sub
+
 Private Function DictGet(ByVal d As Object, ByVal k As String) As Variant
-    Dim pair As Variant
-    If TypeName(d) = "Dictionary" Then
-        DictGet = d(k)
-    Else
-        pair = d(k)
-        DictGet = pair(1)
-    End If
+    DictGet = d(k)
 End Function
 
 Private Function DictCount(ByVal d As Object) As Long
@@ -4670,35 +4679,65 @@ Private Function DictCount(ByVal d As Object) As Long
 End Function
 
 Private Function DictKeys(ByVal d As Object) As Variant
-    Dim keysArr() As String
-    Dim i As Long, pair As Variant
-    If TypeName(d) = "Dictionary" Then
-        DictKeys = d.Keys
-    Else
-        If d.Count = 0 Then
-            DictKeys = Array()
-            Exit Function
-        End If
-        ReDim keysArr(0 To d.Count - 1)
-        For Each pair In d
-            keysArr(i) = CStr(pair(0))
-            i = i + 1
-        Next pair
-        DictKeys = keysArr
+    DictKeys = d.Keys
+End Function
+
+' =========================================================================
+' [PQC] PRE-QC: SHARED RUNNER PIECES
+' =========================================================================
+' Both pre-QC macros check every hardcoded figure in a narrative against its
+' transaction file. The original narrative is never changed: a reviewed copy
+' goes to a new subfolder with each examined token shaded.
+'   green  = matches the file        red   = contradicts the file
+'   yellow = needs a reviewer's eye  grey  = examined, not verifiable from the file
+' Unshaded text was not checked.
+' =========================================================================
+
+' Workbook the report sheets go to: the one holding the dashboard, like the comparison
+Private Function PreQCBook() As Workbook
+    Set PreQCBook = ActiveWorkbook
+    If PreQCBook Is Nothing Then
+        MsgBox "Open the workbook that should hold the pre-QC sheets first.", vbExclamation, "Pre-QC"
     End If
 End Function
+
+' "<folder>PreQC_Reviewed_<timestamp><sep>", or the folder itself if it cannot be created
+Private Function PreQCOutDir(ByVal baseDir As String) As String
+    Dim outDir As String
+    outDir = baseDir & PQ_OUT_PREFIX & Format(Now, "yyyymmdd_hhnnss")
+    On Error Resume Next
+    MkDir outDir
+    On Error GoTo 0
+    If FolderExists(outDir) Then
+        PreQCOutDir = outDir & Application.PathSeparator
+    Else
+        PreQCOutDir = baseDir
+    End If
+End Function
+
+Private Sub PreQCDoneMessage(ByVal nDocs As Long, ByVal okTot As Long, ByVal badTot As Long, _
+                             ByVal eyeTot As Long, ByVal outDir As String, ByVal kind As String, _
+                             ByVal fixTot As Long, ByVal revTot As Long)
+    Dim msg As String
+    msg = kind & " pre-QC complete." & vbCrLf & vbCrLf & _
+          nDocs & " alert(s) checked" & vbCrLf & _
+          okTot & " verified, " & badTot & " mismatch, " & eyeTot & " to look at" & vbCrLf
+    If PQ_PROOF Then msg = msg & "Spelling / grammar: " & fixTot & " corrected, " & revTot & " to review" & vbCrLf
+    msg = msg & vbCrLf & "Reviewed copies: " & outDir
+    If badTot > 0 Then
+        MsgBox msg, vbExclamation, "Pre-QC"
+    Else
+        MsgBox msg, vbInformation, "Pre-QC"
+    End If
+End Sub
 
 ' =========================================================================
 ' [PQC] PRE-QC FOR CLOSURE (NON-SUSPICIOUS) ALERTS
 ' =========================================================================
 ' Reads each "<ECM>_<ALERT>_Combined Alerted & Non Alerted Transactions.xlsx"
-' with its "<ECM>_<ALERT>_<Customer>_Alert Write-Up.docx" and checks every
-' hardcoded figure in the write-up against the file. The original narrative is
-' never changed: a reviewed copy goes to a new subfolder with each examined
-' token shaded.
-'   green  = matches the file        red   = contradicts the file
-'   yellow = needs a reviewer's eye  grey  = examined, not verifiable from the file
-' Unshaded text was not checked.
+' with its "<ECM>_<ALERT>_<Customer>_Alert Write-Up.docx". Closure write-ups
+' state the ALERTED transactions only, so the figures are checked against the
+' rows flagged "Is Alerted Transaction? = Yes".
 ' =========================================================================
 Public Sub Run_PreQC_Closure()
     Dim st As AppState
@@ -4710,34 +4749,32 @@ Public Sub Run_PreQC_Closure()
     Dim dashRow As Long, findRow As Long
     Dim nOK As Long, nBad As Long, nEye As Long
     Dim okTot As Long, badTot As Long, eyeTot As Long, nDocs As Long
+    Dim nFix As Long, nRev As Long, fixTot As Long, revTot As Long
     Dim outPath As String, msg As String
+    Dim wbOut As Workbook
 
+    Set wbOut = PreQCBook()
+    If wbOut Is Nothing Then Exit Sub
     srcDir = Pick_Folder("Select the folder with the Combined transaction files and Alert Write-Ups")
     If srcDir = "" Then Exit Sub
 
-    Set jobs = PreQCJobs(srcDir)
+    Set jobs = PreQCClosureJobs(srcDir)
     If jobs.Count = 0 Then
         MsgBox "No '...Combined Alerted & Non Alerted Transactions' file was found in that folder.", _
                vbExclamation, "Pre-QC"
         Exit Sub
     End If
-
-    outDir = srcDir & PQ_OUT_PREFIX & Format(Now, "yyyymmdd_hhnnss")
-    On Error Resume Next
-    MkDir outDir
-    On Error GoTo 0
-    If FolderExists(outDir) Then
-        outDir = outDir & Application.PathSeparator
-    Else
-        outDir = srcDir
-    End If
+    outDir = PreQCOutDir(srcDir)
 
     SaveAndSpeedUp st
     On Error GoTo Failed
 
-    Set wsDash = GetOrCreateWorksheet(ThisWorkbook, SHEET_PREQC_DASH)
-    Set wsFind = GetOrCreateWorksheet(ThisWorkbook, SHEET_PREQC_FIND)
-    PreQCPrepareSheets wsDash, wsFind
+    Set wsDash = GetOrCreateWorksheet(wbOut, SHEET_PQ_CLOSURE)
+    Set wsFind = GetOrCreateWorksheet(wbOut, SHEET_PQ_CLOSURE_FIND)
+    PreQCPrepareSheets wsDash, wsFind, "PRE-QC: CLOSURE (NON-SUSPICIOUS) ALERT WRITE-UPS", _
+                       Array("ECM ID", "Alert ID", "Customer", "Rule", "Alerted Txns", _
+                             "Alerted Amount", "Alerted Period", "Verified", "Mismatch", _
+                             "To Check", "Status", "Write-Up", "Reviewed Copy", "Spelling / Grammar")
     dashRow = 4
     findRow = 4
 
@@ -4746,36 +4783,26 @@ Public Sub Run_PreQC_Closure()
         ClearFacts fx
         Set items = New Collection
         outPath = ""
-        LoadClosureFacts CStr(job(0)), CStr(job(1)), CStr(job(2)), CStr(job(3)), fx
-        If CStr(job(1)) = "" Then
-            AddPQItem items, "Write-up", "", "", PQV_NA, "no Alert Write-Up found for this alert"
-        Else
-            outPath = ReviewWriteUp(CStr(job(1)), outDir, fx, items)
-        End If
+        outPath = RunClosureJob(job, outDir, fx, items)
         CountVerdicts items, nOK, nBad, nEye
         okTot = okTot + nOK
         badTot = badTot + nBad
         eyeTot = eyeTot + nEye
         WritePreQCDash wsDash, dashRow, fx, nOK, nBad, nEye, CStr(job(1)), outPath
-        WritePreQCFindings wsFind, findRow, fx, items
+        wsDash.Cells(dashRow, 15).Value = ProofSummary(items)
+        ProofCounts items, nFix, nRev
+        fixTot = fixTot + nFix
+        revTot = revTot + nRev
+        WritePreQCFindings wsFind, findRow, CStr(job(2)), CStr(job(3)), items
         dashRow = dashRow + 1
     Next job
 
-    FinishPreQCSheet wsDash, 13, dashRow - 1, "No alerts were checked."
+    FinishPreQCSheet wsDash, 14, dashRow - 1, "No alerts were checked."
     FinishPreQCSheet wsFind, 7, findRow - 1, "Nothing flagged - every checked figure matched the file."
     ReleaseWord
     RestoreApp st
     wsDash.Activate
-
-    msg = "Pre-QC complete." & vbCrLf & vbCrLf & _
-          nDocs & " alert(s) checked" & vbCrLf & _
-          okTot & " verified, " & badTot & " mismatch, " & eyeTot & " to look at" & vbCrLf & vbCrLf & _
-          "Reviewed copies: " & outDir
-    If badTot > 0 Then
-        MsgBox msg, vbExclamation, "Pre-QC"
-    Else
-        MsgBox msg, vbInformation, "Pre-QC"
-    End If
+    PreQCDoneMessage nDocs, okTot, badTot, eyeTot, outDir, "Closure", fixTot, revTot
     Exit Sub
 
 Failed:
@@ -4785,58 +4812,42 @@ Failed:
     MsgBox "Pre-QC stopped: " & msg, vbCritical, "Pre-QC"
 End Sub
 
+' One alert; a file that cannot be read is reported on its row instead of stopping the run
+Private Function RunClosureJob(ByVal job As Variant, ByVal outDir As String, ByRef fx As PreQCFacts, _
+                               ByVal items As Collection) As String
+    Dim errDesc As String
+    On Error GoTo Failed
+    LoadClosureFacts CStr(job(0)), CStr(job(1)), CStr(job(2)), CStr(job(3)), fx
+    If CStr(job(1)) = "" Then
+        AddPQItem items, "Write-up", "", "", PQV_NA, "no Alert Write-Up found for this alert"
+    Else
+        RunClosureJob = ReviewWriteUp(CStr(job(1)), outDir, fx, items)
+    End If
+    Exit Function
+Failed:
+    errDesc = Err.Description
+    fx.EcmID = CStr(job(2))
+    fx.AlertID = CStr(job(3))
+    AddPQItem items, "Transaction file", GetFileName(CStr(job(0))), "", PQV_EYE, "could not be read (" & errDesc & ")"
+End Function
+
 ' Pairs every Combined file in the folder with its Alert Write-Up
-Private Function PreQCJobs(ByVal folderPath As String) As Collection
+Private Function PreQCClosureJobs(ByVal folderPath As String) As Collection
     Dim jobs As New Collection
-    Dim files As Collection, docs As Collection, f As Variant
-    Dim fName As String, ecmID As String, alertID As String, matchKey As String
+    Dim files As Collection, f As Variant
+    Dim fName As String, ecmID As String, alertID As String, matchKey As String, note As String
 
     Set files = ListExcelFiles(folderPath, "")
-    Set docs = ListWordFiles(folderPath)
     For Each f In files
         fName = GetFileName(CStr(f))
         If InStr(1, fName, "Combined", vbTextCompare) > 0 Then
             ExtractFileIDs CStr(f), ecmID, alertID, matchKey
             If ecmID <> "" Then
-                jobs.Add Array(CStr(f), MatchWriteUp(docs, ecmID, alertID), ecmID, alertID)
+                jobs.Add Array(CStr(f), FindNarrativeFile(folderPath, ecmID, alertID, note), ecmID, alertID)
             End If
         End If
     Next f
-    Set PreQCJobs = jobs
-End Function
-
-Private Function ListWordFiles(ByVal folderPath As String) As Collection
-    Dim col As New Collection
-    Dim sFile As String, ext As String, p As Long
-
-    If Right$(folderPath, 1) <> Application.PathSeparator Then folderPath = folderPath & Application.PathSeparator
-    sFile = Dir(folderPath, vbReadOnly)
-    Do While sFile <> ""
-        p = InStrRev(sFile, ".")
-        If p > 0 Then
-            ext = LCase$(Mid$(sFile, p))
-            If ext = ".docx" Or ext = ".docm" Or ext = ".doc" Then
-                If Left$(sFile, 2) <> "~$" Then
-                    If Left$(sFile, 2) <> "._" Then col.Add folderPath & sFile
-                End If
-            End If
-        End If
-        sFile = Dir()
-    Loop
-    Set ListWordFiles = col
-End Function
-
-Private Function MatchWriteUp(ByVal docs As Collection, ByVal ecmID As String, ByVal alertID As String) As String
-    Dim d As Variant, fName As String, prefix As String
-
-    prefix = NarrativePrefix(ecmID, alertID)
-    For Each d In docs
-        fName = GetFileName(CStr(d))
-        If StrComp(Left$(fName, Len(prefix)), prefix, vbTextCompare) = 0 Then
-            MatchWriteUp = CStr(d)
-            Exit Function
-        End If
-    Next d
+    Set PreQCClosureJobs = jobs
 End Function
 
 Private Sub ClearFacts(ByRef fx As PreQCFacts)
@@ -4968,10 +4979,8 @@ Private Sub ReadCombinedSheet(ByVal ws As Worksheet, ByRef fx As PreQCFacts)
                 End If
             End If
 
-            If fx.Program = "" Then
-                If LCase$(Trim$(CellText(BlockCell(block, r, cPType)))) = "settlementprogram" Then
-                    fx.Program = Trim$(CellText(BlockCell(block, r, cPName)))
-                End If
+            If LCase$(Trim$(CellText(BlockCell(block, r, cPType)))) = "settlementprogram" Then
+                AddToList fx.Program, Trim$(CellText(BlockCell(block, r, cPName)))
             End If
         End If
     Next r
@@ -5032,8 +5041,9 @@ Private Function CombinedHeaderRow(ByVal ws As Worksheet, ByVal lastCol As Long)
     Next r
 End Function
 
-' Column index of an exact header name in row 1 of the block (0 = absent)
-Private Function NamedCol(ByVal block As Variant, ByVal lastCol As Long, ByVal colName As String) As Long
+' Column index of an exact header name in row 1 of the block (0 = absent). The block is
+' passed ByRef: a Variant array passed ByVal is copied on every call.
+Private Function NamedCol(ByRef block As Variant, ByVal lastCol As Long, ByVal colName As String) As Long
     Dim c As Long
     For c = 1 To lastCol
         If StrComp(Trim$(CellText(BlockCell(block, 1, c))), colName, vbTextCompare) = 0 Then
@@ -5043,7 +5053,7 @@ Private Function NamedCol(ByVal block As Variant, ByVal lastCol As Long, ByVal c
     Next c
 End Function
 
-Private Function BlockCell(ByVal block As Variant, ByVal r As Long, ByVal c As Long) As Variant
+Private Function BlockCell(ByRef block As Variant, ByVal r As Long, ByVal c As Long) As Variant
     If c < 1 Then Exit Function
     If r < 1 Then Exit Function
     If r > UBound(block, 1) Then Exit Function
@@ -5051,7 +5061,7 @@ Private Function BlockCell(ByVal block As Variant, ByVal r As Long, ByVal c As L
     BlockCell = block(r, c)
 End Function
 
-Private Function IsEmptyBlockRow(ByVal block As Variant, ByVal r As Long, ByVal lastCol As Long) As Boolean
+Private Function IsEmptyBlockRow(ByRef block As Variant, ByVal r As Long, ByVal lastCol As Long) As Boolean
     Dim c As Long
     For c = 1 To lastCol
         If Trim$(CellText(BlockCell(block, r, c))) <> "" Then Exit Function
@@ -5079,7 +5089,7 @@ End Function
 Private Function InstrumentOf(ByVal code As String) As String
     Dim s As String
     s = UCase$(code)
-    If InStr(s, "ACH") > 0 Then
+    If InStr(s, "ACH") > 0 Or InStr(s, "IAT") > 0 Then
         InstrumentOf = "ACH"
     ElseIf InStr(s, "CTRC") > 0 Then
         InstrumentOf = "WIRE"
@@ -5119,6 +5129,9 @@ Private Function ReviewWriteUp(ByVal srcPath As String, ByVal outDir As String, 
     Set doc = GetWord().Documents.Open(FileName:=outPath, ReadOnly:=False, AddToRecentFiles:=False)
     doc.TrackRevisions = False
     CheckWriteUp doc, fx, items
+    ProofReviewedCopy doc, fx.Customer & " " & fx.RuleText & " " & fx.Program & " " & fx.SelfCPs & " " & _
+                      fx.CustCountry & " " & DictWords(fx.AlertCPs) & " " & DictWords(fx.NonCPs) & " " & _
+                      DictWords(fx.CPAmt), items
     InsertPreQCLegend doc
     doc.Save
     doc.Close SaveChanges:=0
@@ -5194,7 +5207,12 @@ Private Sub CheckHeaderLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal i
                 AddPQItem items, "Program", val, "", PQV_NA, "no SettlementProgram party in the file"
                 ShadeAt doc, vStart, Len(val), PQ_NA
             Else
-                JudgeHeader doc, items, vStart, val, "Program", fx.Program, ProgramMatches(val, fx.Program)
+                If ProgramMatches(val, fx.Program) Then
+                    JudgeHeader doc, items, vStart, val, "Program", fx.Program, True
+                Else
+                    AddPQItem items, "Program", val, fx.Program, PQV_EYE, "the settlement party in the file differs"
+                    ShadeAt doc, vStart, Len(val), PQ_EYE
+                End If
             End If
         Case "country risk rating"
             If fx.CustCountry = "" Then
@@ -5265,7 +5283,7 @@ Private Sub CheckActivityLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal
 
     ' Only the wording before "totaling" describes the transactions; the rest of the
     ' paragraph is due-diligence prose that may mention "wire" for other reasons.
-    lt = LCase$(t)
+    lt = LCase$(Replace(t, Chr(160), " "))
     pos = InStr(lt, "totaling")
     If pos > 0 Then lt = Left$(lt, pos - 1)
     followWords = Array("transaction", "transfer", "txn", "credit", "debit", "payment", "wire", "deposit")
@@ -5291,7 +5309,7 @@ Private Sub CheckActivityLine(ByVal doc As Object, ByRef fx As PreQCFacts, ByVal
         JudgeToken doc, items, segStart + pos - 1, tok, "Transaction count", UsNumber(fx.AlertCount)
     End If
 
-    pos = FindAmountToken(t, 1, Len(t), n)
+    pos = AmountAfterTotaling(t, 1, Len(t), n)
     If pos > 0 Then
         tok = Mid$(t, pos, n)
         JudgeToken doc, items, segStart + pos - 1, tok, "Total amount", "$" & UsAmount(fx.AlertTotal)
@@ -5592,19 +5610,31 @@ Private Function SameName(ByVal a As String, ByVal b As String) As Boolean
     End If
 End Function
 
-' "Airwallex" against "AIRWALLEX US LLC ORIG", "Currencycloud" against "Currency Cloud Stlmnt"
+' "Airwallex" against "AIRWALLEX US LLC ORIG", "Currencycloud" against "Currency Cloud Stlmnt".
+' fileVal may list several parties separated by "; ".
 Private Function ProgramMatches(ByVal narrVal As String, ByVal fileVal As String) As Boolean
+    Dim parts() As String, i As Long
+    parts = Split(fileVal, "; ")
+    For i = 0 To UBound(parts)
+        If OneProgramMatches(narrVal, parts(i)) Then
+            ProgramMatches = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function OneProgramMatches(ByVal narrVal As String, ByVal fileVal As String) As Boolean
     Dim a As String, b As String
     a = Replace(NormCP(narrVal), " ", "")
     b = Replace(NormCP(fileVal), " ", "")
     If a = "" Then Exit Function
     If b = "" Then Exit Function
     If InStr(1, b, a, vbTextCompare) > 0 Then
-        ProgramMatches = True
+        OneProgramMatches = True
     ElseIf InStr(1, a, b, vbTextCompare) > 0 Then
-        ProgramMatches = True
+        OneProgramMatches = True
     ElseIf Len(a) >= 5 Then
-        ProgramMatches = (InStr(1, b, Left$(a, 5), vbTextCompare) > 0)
+        OneProgramMatches = (InStr(1, b, Left$(a, 5), vbTextCompare) > 0)
     End If
 End Function
 
@@ -5644,6 +5674,7 @@ Private Function CleanSegment(ByVal s As String) As String
     Dim i As Long, ch As String, out As String
     For i = 1 To Len(s)
         ch = Mid$(s, i, 1)
+        If ch = Chr(160) Then ch = " "
         If AscW(ch) >= 32 Then out = out & ch
     Next i
     out = Trim$(out)
@@ -5658,7 +5689,7 @@ Private Function PadBefore(ByVal s As String) As Long
     Dim i As Long, n As Long
     n = 0
     For i = 1 To Len(s)
-        If Mid$(s, i, 1) <> " " Then Exit For
+        If Mid$(s, i, 1) <> " " And Mid$(s, i, 1) <> Chr(160) Then Exit For
         n = n + 1
     Next i
     PadBefore = n
@@ -5667,7 +5698,14 @@ End Function
 ' =========================================================================
 ' [PQC] WORD SHADING
 ' =========================================================================
+' Shades a token whose position was worked out as paragraph start + index in the paragraph text
 Private Sub ShadeAt(ByVal doc As Object, ByVal absPos As Long, ByVal tokLen As Long, ByVal colr As Long)
+    If tokLen <= 0 Then Exit Sub
+    ShadeExact doc, TruePos(doc, absPos, tokLen), tokLen, colr
+End Sub
+
+' Shades an exact document range (positions that came from Word's Find)
+Private Sub ShadeExact(ByVal doc As Object, ByVal absPos As Long, ByVal tokLen As Long, ByVal colr As Long)
     Dim rng As Object
     If tokLen <= 0 Then Exit Sub
     On Error Resume Next
@@ -5676,13 +5714,53 @@ Private Sub ShadeAt(ByVal doc As Object, ByVal absPos As Long, ByVal tokLen As L
     On Error GoTo 0
 End Sub
 
+' Word counts the hidden code of fields - and hyperlinks are fields - in document positions,
+' but Range.Text leaves it out. A position worked out as paragraph start + index in the
+' paragraph's text therefore lands too early after a hyperlink. When the paragraph has such
+' hidden characters, the token is found again with Find: the same occurrence of the same text,
+' counted from the start of the paragraph. Paragraphs without them are returned unchanged.
+Private Function TruePos(ByVal doc As Object, ByVal absPos As Long, ByVal tokLen As Long) As Long
+    Dim pr As Object, pText As String, k As Long, tok As String, occ As Long, p As Long
+    Dim hits As Collection
+
+    TruePos = absPos
+    On Error GoTo Done
+    Set pr = doc.Range(absPos, absPos).Paragraphs(1).Range
+    pText = pr.Text
+    If Len(pText) = pr.End - pr.Start Then Exit Function
+    k = absPos - pr.Start
+    If k < 0 Or k + tokLen > Len(pText) Then Exit Function
+    tok = Mid$(pText, k + 1, tokLen)
+    ' occurrence number of the token at index k, counted the way Find counts (case-insensitive,
+    ' non-overlapping)
+    occ = 0
+    p = InStr(1, pText, tok, vbTextCompare)
+    Do While p > 0
+        occ = occ + 1
+        If p >= k + 1 Then Exit Do
+        p = InStr(p + Len(tok), pText, tok, vbTextCompare)
+    Loop
+    If p <> k + 1 Then Exit Function
+    Set hits = WdFindIn(doc, pr.Start, pr.End, tok, False)
+    If hits.Count >= occ Then TruePos = CLng(hits(occ)(0))
+Done:
+End Function
+
+' Shades the first mention of findText that has no shading yet (a Financial Institutions
+' or Subject line may already carry its own verdict colour)
 Private Sub ShadeFirst(ByVal doc As Object, ByVal findText As String, ByVal colr As Long)
-    Dim hits As Collection, h As Variant
+    Dim hits As Collection, h As Variant, cur As Long
     If findText = "" Then Exit Sub
     Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, findText, False)
     For Each h In hits
-        ShadeAt doc, CLng(h(0)), CLng(h(1)) - CLng(h(0)), colr
-        Exit For
+        cur = -16777216
+        On Error Resume Next
+        cur = doc.Range(CLng(h(0)), CLng(h(1))).Shading.BackgroundPatternColor
+        On Error GoTo 0
+        If cur = -16777216 Or cur = 16777215 Then       ' wdColorAutomatic / white
+            ShadeExact doc, CLng(h(0)), CLng(h(1)) - CLng(h(0)), colr
+            Exit For
+        End If
     Next h
 End Sub
 
@@ -5693,6 +5771,11 @@ Private Sub InsertPreQCLegend(ByVal doc As Object)
     txt = "Pre-QC colour key - green: matches the transaction file. Red: contradicts the file. " & _
           "Yellow: needs a reviewer's eye. Grey: examined but not verifiable from the file. " & _
           "Unshaded text was not checked. This copy is for review only."
+    If PQ_PROOF Then
+        txt = txt & " Spelling and grammar: wavy red underline = possible misspelling, wavy blue underline = " & _
+              "Word grammar flag; words and spacing the tool corrected are listed on the findings sheet " & _
+              "(corrected words shaded yellow)."
+    End If
     If InStr(1, doc.Paragraphs(1).Range.Text, "Pre-QC colour key", vbTextCompare) > 0 Then Exit Sub
 
     doc.Paragraphs(1).Range.InsertParagraphBefore
@@ -5740,17 +5823,16 @@ Private Sub CountVerdicts(ByVal items As Collection, ByRef nOK As Long, ByRef nB
     Next it
 End Sub
 
-Private Sub PreQCPrepareSheets(ByVal wsDash As Worksheet, ByVal wsFind As Worksheet)
+Private Sub PreQCPrepareSheets(ByVal wsDash As Worksheet, ByVal wsFind As Worksheet, ByVal title As String, _
+                               ByVal dashHeaders As Variant)
     wsDash.Cells.Clear
     wsFind.Cells.Clear
-    wsDash.Range("B2").Value = "PRE-QC: CLOSURE (NON-SUSPICIOUS) ALERT WRITE-UPS"
-    wsFind.Range("B2").Value = "PRE-QC FINDINGS"
+    wsDash.Range("B2").Value = title
+    wsFind.Range("B2").Value = title & " - FINDINGS"
     StylePQTitle wsDash.Range("B2")
     StylePQTitle wsFind.Range("B2")
-    WriteHeaderRow wsDash, 3, 2, Array("ECM ID", "Alert ID", "Customer", "Rule", "Alerted Txns", _
-                                       "Alerted Amount", "Alerted Period", "Verified", "Mismatch", _
-                                       "To Check", "Status", "Write-Up", "Reviewed Copy")
-    WriteHeaderRow wsFind, 3, 2, Array("ECM ID", "Alert ID", "Check", "Write-Up Says", "File Says", _
+    WriteHeaderRow wsDash, 3, 2, dashHeaders
+    WriteHeaderRow wsFind, 3, 2, Array("ECM ID", "Alert ID", "Check", "Narrative Says", "File Says", _
                                        "Verdict", "Note")
 End Sub
 
@@ -5805,14 +5887,14 @@ Private Sub WritePreQCDash(ByVal ws As Worksheet, ByVal rowIdx As Long, ByRef fx
     End If
 End Sub
 
-Private Sub WritePreQCFindings(ByVal ws As Worksheet, ByRef rowIdx As Long, ByRef fx As PreQCFacts, _
-                               ByVal items As Collection)
+Private Sub WritePreQCFindings(ByVal ws As Worksheet, ByRef rowIdx As Long, ByVal ecmID As String, _
+                               ByVal alertID As String, ByVal items As Collection)
     Dim it As Variant, verdict As String
     For Each it In items
         verdict = CStr(it(3))
         If verdict <> PQV_OK Then
-            ws.Cells(rowIdx, 2).Value = fx.EcmID
-            ws.Cells(rowIdx, 3).Value = fx.AlertID
+            ws.Cells(rowIdx, 2).Value = ecmID
+            ws.Cells(rowIdx, 3).Value = alertID
             ws.Cells(rowIdx, 4).Value = CStr(it(0))
             ws.Cells(rowIdx, 5).Value = CStr(it(1))
             ws.Cells(rowIdx, 6).Value = CStr(it(2))
@@ -5823,6 +5905,8 @@ Private Sub WritePreQCFindings(ByVal ws As Worksheet, ByRef rowIdx As Long, ByRe
                     HighlightCell ws.Cells(rowIdx, 7), COLOR_ALERT_RED, COLOR_FILL_RED
                 Case PQV_EYE
                     HighlightCell ws.Cells(rowIdx, 7), COLOR_AMBER, COLOR_FILL_AMBER
+                Case PQV_PROOF
+                    HighlightCell ws.Cells(rowIdx, 7), COLOR_ACCENT_BLUE, COLOR_CARD_BG
                 Case Else
                     HighlightCell ws.Cells(rowIdx, 7), COLOR_TEXT_MUTED, COLOR_CARD_BG
             End Select
@@ -5853,3 +5937,2804 @@ Private Sub FinishPreQCSheet(ByVal ws As Worksheet, ByVal nCols As Long, ByVal l
     Next c
     SetSheetZoom ws, SHEET_ZOOM
 End Sub
+
+' First amount after the word "totaling" between fromPos and toPos, or the first
+' amount at all when the word is absent. "62 transfers for amounts ranging from
+' $305.00 to $99,998.00 totaling $1,775,116.00" must give $1,775,116.00.
+Private Function AmountAfterTotaling(ByVal t As String, ByVal fromPos As Long, ByVal toPos As Long, _
+                                     ByRef tokLen As Long) As Long
+    Dim tp As Long, p As Long
+    If fromPos < 1 Then fromPos = 1
+    If toPos > Len(t) Then toPos = Len(t)
+    If toPos < fromPos Then Exit Function
+    tp = InStr(fromPos, t, "totaling", vbTextCompare)
+    If tp > 0 And tp < toPos Then
+        p = FindAmountToken(t, tp, toPos, tokLen)
+        If p > 0 Then
+            AmountAfterTotaling = p
+            Exit Function
+        End If
+    End If
+    AmountAfterTotaling = FindAmountToken(t, fromPos, toPos, tokLen)
+End Function
+
+' =========================================================================
+' [PQC] PRE-QC FOR ESCALATION NARRATIVES
+' =========================================================================
+' Reads each lookback transaction file (plus the alerted transaction file when
+' one sits next to it) with its escalation narrative and checks every figure,
+' sentence by sentence:
+'   - opening sentence and Total Suspicious Dollar Amount: overall activity,
+'     whole dollars rounded up
+'   - Date Range of Suspicious Activity and the "Between ..." line: the period in
+'     the lookback file name (NARRATIVE_DATE_RANGE = "FILE")
+'   - "Between ..." first figures: all, credit or debit activity, with cents
+'   - every other "N transactions totaling $X" claim is recomputed from the rows,
+'     using the date window and the counterparty named in that sentence
+'   - ACH vs wire wording against the transaction codes of the rows described
+'   - Subject, program partner, account number and banks against the file
+'   - customer name spelling, own-name transfers, the alerted activity and the
+'     "all high dollar" / "consecutive days" wording
+' The headline facts come from LoadTxnFile, so pre-QC and the updater read the
+' same numbers.
+' =========================================================================
+Public Sub Run_PreQC_Escalation()
+    Dim st As AppState
+    Dim lookDir As String, narrDir As String, outDir As String, note As String
+    Dim jobs As Collection, job As Variant
+    Dim wsDash As Worksheet, wsFind As Worksheet
+    Dim items As Collection
+    Dim dashRow As Long, findRow As Long
+    Dim nOK As Long, nBad As Long, nEye As Long
+    Dim okTot As Long, badTot As Long, eyeTot As Long, nDocs As Long
+    Dim nFix As Long, nRev As Long, fixTot As Long, revTot As Long
+    Dim outPath As String, msg As String, docPath As String, alertInfo As String
+    Dim ctx As NarrCtx, blankCtx As NarrCtx
+    Dim wbOut As Workbook
+
+    Set wbOut = PreQCBook()
+    If wbOut Is Nothing Then Exit Sub
+    lookDir = Pick_Folder("Select the folder with the lookback transaction files")
+    If lookDir = "" Then Exit Sub
+
+    Set jobs = PreQCEscalationJobs(lookDir)
+    If jobs.Count = 0 Then
+        MsgBox "No lookback transaction file (ECMID_ALERTID_...xlsx) was found in that folder.", vbExclamation, "Pre-QC"
+        Exit Sub
+    End If
+
+    ' Narratives next to the lookback files, or in a folder of their own
+    narrDir = ""
+    For Each job In jobs
+        If FindNarrativeFile(lookDir, CStr(job(1)), CStr(job(2)), note) <> "" Then
+            narrDir = lookDir
+            Exit For
+        End If
+    Next job
+    If narrDir = "" Then
+        narrDir = Pick_Folder("Select the folder with the escalation narratives")
+        If narrDir = "" Then Exit Sub
+    End If
+    outDir = PreQCOutDir(narrDir)
+
+    SaveAndSpeedUp st
+    On Error GoTo Failed
+
+    Set wsDash = GetOrCreateWorksheet(wbOut, SHEET_PQ_ESC)
+    Set wsFind = GetOrCreateWorksheet(wbOut, SHEET_PQ_ESC_FIND)
+    PreQCPrepareSheets wsDash, wsFind, "PRE-QC: ESCALATION NARRATIVES", _
+                       Array("ECM ID", "Alert ID", "Lookback File", "Transactions", "Total Amount", _
+                             "Narrative Period", "Alerted", "Verified", "Mismatch", "To Check", "Status", _
+                             "Narrative", "Reviewed Copy", "Spelling / Grammar")
+    dashRow = 4
+    findRow = 4
+
+    For Each job In jobs
+        nDocs = nDocs + 1
+        Set items = New Collection
+        ctx = blankCtx
+        alertInfo = ""
+        docPath = FindNarrativeFile(narrDir, CStr(job(1)), CStr(job(2)), note)
+        outPath = RunEscalationJob(job, docPath, outDir, ctx, items, alertInfo)
+        If note <> "" Then AddPQItem items, "Narrative", GetFileName(docPath), "", PQV_EYE, note
+        CountVerdicts items, nOK, nBad, nEye
+        okTot = okTot + nOK
+        badTot = badTot + nBad
+        eyeTot = eyeTot + nEye
+        WriteEscDash wsDash, dashRow, ctx, CStr(job(1)), CStr(job(2)), alertInfo, nOK, nBad, nEye, docPath, outPath
+        wsDash.Cells(dashRow, 15).Value = ProofSummary(items)
+        ProofCounts items, nFix, nRev
+        fixTot = fixTot + nFix
+        revTot = revTot + nRev
+        WritePreQCFindings wsFind, findRow, CStr(job(1)), CStr(job(2)), items
+        dashRow = dashRow + 1
+    Next job
+
+    FinishPreQCSheet wsDash, 14, dashRow - 1, "No alerts were checked."
+    FinishPreQCSheet wsFind, 7, findRow - 1, "Nothing flagged - every checked figure matched the file."
+    ReleaseWord
+    RestoreApp st
+    wsDash.Activate
+    PreQCDoneMessage nDocs, okTot, badTot, eyeTot, outDir, "Escalation", fixTot, revTot
+    Exit Sub
+
+Failed:
+    msg = Err.Description
+    ReleaseWord
+    RestoreApp st
+    MsgBox "Pre-QC stopped: " & msg, vbCritical, "Pre-QC"
+End Sub
+
+' Lookback files in the folder: names containing "Lookback", or every Excel file with
+' ECM/alert IDs when none does. Combined closure files are skipped. Each job is
+' Array(lookback path, ECM ID, alert ID, alerted-file path or "").
+Private Function PreQCEscalationJobs(ByVal folderPath As String) As Collection
+    Dim jobs As New Collection, anyLookback As Boolean
+    Dim files As Collection, f As Variant, alerted As Object
+    Dim fName As String, ecmID As String, alertID As String, matchKey As String, key As String, aPath As String
+
+    Set files = ListExcelFiles(folderPath, "")
+    Set alerted = CreateLookupDict()
+    For Each f In files
+        fName = GetFileName(CStr(f))
+        If InStr(1, fName, "lookback", vbTextCompare) > 0 Then
+            anyLookback = True
+        ElseIf IsAlertedFileName(fName) Then
+            ExtractFileIDs CStr(f), ecmID, alertID, matchKey
+            If ecmID <> "" Then
+                key = NarrativePrefix(ecmID, alertID)
+                If Not DictExists(alerted, key) Then DictAdd alerted, key, CStr(f)
+            End If
+        End If
+    Next f
+    For Each f In files
+        fName = GetFileName(CStr(f))
+        If InStr(1, fName, "Combined", vbTextCompare) = 0 And Not IsAlertedFileName(fName) Then
+            If (Not anyLookback) Or InStr(1, fName, "lookback", vbTextCompare) > 0 Then
+                ExtractFileIDs CStr(f), ecmID, alertID, matchKey
+                If ecmID <> "" Then
+                    key = NarrativePrefix(ecmID, alertID)
+                    aPath = ""
+                    If DictExists(alerted, key) Then aPath = CStr(DictGet(alerted, key))
+                    jobs.Add Array(CStr(f), ecmID, alertID, aPath)
+                End If
+            End If
+        End If
+    Next f
+    Set PreQCEscalationJobs = jobs
+End Function
+
+' "..._Alerted_Transaction.xlsx": an alerted-transactions extract, not a lookback file
+Private Function IsAlertedFileName(ByVal fName As String) As Boolean
+    Dim s As String
+    s = LCase$(fName)
+    If InStr(s, "alerted") = 0 Then Exit Function
+    If InStr(s, "lookback") > 0 Or InStr(s, "combined") > 0 Or InStr(s, "non alerted") > 0 Or InStr(s, "non-alerted") > 0 Then Exit Function
+    IsAlertedFileName = True
+End Function
+
+Private Function RunEscalationJob(ByVal job As Variant, ByVal docPath As String, ByVal outDir As String, _
+                                  ByRef ctx As NarrCtx, ByVal items As Collection, ByRef alertInfo As String) As String
+    Dim ts As TxnSet, ats As TxnSet, pr As PairResult, ef As EscFacts, aef As EscFacts
+    Dim errDesc As String, customer As String
+
+    On Error GoTo Failed
+    LoadTxnFile CStr(job(0)), ts, CreateLookupDict()
+    BuildNarrCtx ctx, CStr(job(1)), CStr(job(2)), CStr(job(0)), CStr(job(0)), ts, ts, pr
+    LoadEscFacts CStr(job(0)), ts, ef
+    InitEscFacts aef
+    If CStr(job(3)) <> "" Then
+        LoadTxnFile CStr(job(3)), ats, CreateLookupDict()
+        AttachAlertedFile ts, ats, ef, GetFileName(CStr(job(3)))
+        LoadEscRows CStr(job(3)), aef
+        alertInfo = UsNumber(ef.AlertN) & " / $" & UsAmount(ef.AlertTotal) & " (alerted file)"
+    ElseIf ts.AlertCount > 0 Then
+        alertInfo = UsNumber(ts.AlertCount) & " / $" & UsAmount(ts.AlertAmt) & " (lookback flag)"
+    End If
+    If ts.UniqueCount = 0 Then
+        AddPQItem items, "Lookback file", GetFileName(CStr(job(0))), "", PQV_EYE, "no transactions were read from the file"
+    End If
+    If docPath = "" Then
+        AddPQItem items, "Narrative", "", "", PQV_NA, "no narrative found for this alert"
+    Else
+        customer = CustomerFromFileName(docPath)
+        RunEscalationJob = ReviewEscalation(docPath, outDir, ctx, ef, aef, items, customer)
+    End If
+    Exit Function
+Failed:
+    errDesc = Err.Description
+    AddPQItem items, "Lookback file", GetFileName(CStr(job(0))), "", PQV_EYE, "could not be read (" & errDesc & ")"
+End Function
+
+Private Sub AttachAlertedFile(ByRef ts As TxnSet, ByRef ats As TxnSet, ByRef ef As EscFacts, ByVal fName As String)
+    Dim keys As Variant, k As Variant
+    ef.HasAlertFile = True
+    ef.AlertFile = fName
+    ef.AlertN = ats.UniqueCount
+    ef.AlertTotal = ats.TotalAmt
+    ef.AlertMin = ats.MinDate
+    ef.AlertMax = ats.MaxDate
+    ef.AlertRule = ats.RuleText
+    ef.LookbackAlerted = ts.AlertCount
+    ef.AlertMissing = 0
+    If DictCount(ats.Map) > 0 Then
+        keys = DictKeys(ats.Map)
+        For Each k In keys
+            If Not DictExists(ts.Map, CStr(k)) Then ef.AlertMissing = ef.AlertMissing + 1
+        Next k
+    End If
+    AddAmtFact ef, ats.TotalAmt, "alerted file total"
+    AddAmtFact ef, -Int(-Abs(ats.TotalAmt)), "alerted file total rounded up"
+    AddCntFact ef, ats.UniqueCount, "alerted file count"
+End Sub
+
+' =========================================================================
+' [PQC] ESCALATION FACT BOOK
+' =========================================================================
+Private Sub InitEscFacts(ByRef ef As EscFacts)
+    Set ef.AmtSet = CreateLookupDict()
+    Set ef.CntSet = CreateLookupDict()
+    Set ef.DateSet = CreateLookupDict()
+    Set ef.Groups = CreateLookupDict()
+    Set ef.CPs = CreateLookupDict()
+    Set ef.CPAmt = CreateLookupDict()
+    Set ef.Banks = CreateLookupDict()
+    Set ef.Holders = CreateLookupDict()
+    Set ef.Families = CreateLookupDict()
+    ef.TxN = 0
+End Sub
+
+' Rows of the alerted transaction file, for the counterparty selection
+Private Sub LoadEscRows(ByVal fPath As String, ByRef ef As EscFacts)
+    Dim wb As Workbook, ws As Worksheet
+    Dim openedByUs As Boolean
+    InitEscFacts ef
+    Set wb = GetOrOpenWorkbook(fPath, openedByUs)
+    On Error GoTo Cleanup
+    Set ws = FindTransactionSheet(wb)
+    If Not ws Is Nothing Then ReadEscSheet ws, ef
+Cleanup:
+    On Error Resume Next
+    If openedByUs Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+End Sub
+
+Private Sub LoadEscFacts(ByVal fPath As String, ByRef ts As TxnSet, ByRef ef As EscFacts)
+    Dim wb As Workbook, ws As Worksheet
+    Dim openedByUs As Boolean
+
+    InitEscFacts ef
+    ef.Total = ts.TotalAmt
+
+    Set wb = GetOrOpenWorkbook(fPath, openedByUs)
+    On Error GoTo Cleanup
+    Set ws = FindTransactionSheet(wb)
+    If Not ws Is Nothing Then ReadEscSheet ws, ef
+
+    ' Headline figures, identical to what the narrative updater writes
+    AddAmtFact ef, ts.TotalAmt, "total of all transactions"
+    AddAmtFact ef, -Int(-Abs(ts.TotalAmt)), "total rounded up"
+    AddAmtFact ef, ts.CrAmt, "credit total"
+    AddAmtFact ef, ts.DrAmt, "debit total"
+    AddAmtFact ef, ts.AlertAmt, "alerted total"
+    AddAmtFact ef, ts.MinAmt, "smallest transaction"
+    AddAmtFact ef, ts.MaxAmt, "largest transaction"
+    If ts.UniqueCount > 0 Then AddAmtFact ef, Round(ts.TotalAmt / ts.UniqueCount, 2), "average transaction"
+    If ts.CrCount > 0 Then AddAmtFact ef, Round(ts.CrAmt / ts.CrCount, 2), "average credit"
+    If ts.DrCount > 0 Then AddAmtFact ef, Round(ts.DrAmt / ts.DrCount, 2), "average debit"
+    AddCntFact ef, ts.UniqueCount, "count of all transactions"
+    AddCntFact ef, ts.CrCount, "credit count"
+    AddCntFact ef, ts.DrCount, "debit count"
+    AddCntFact ef, ts.AlertCount, "alerted count"
+    AddCntFact ef, DictCount(ef.CPs), "distinct counterparties"
+    AddGroupFacts ef
+    FinishEscFacts ef
+
+Cleanup:
+    On Error Resume Next
+    If openedByUs Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+End Sub
+
+Private Sub ReadEscSheet(ByVal ws As Worksheet, ByRef ef As EscFacts)
+    Dim block As Variant, seen As Object
+    Dim lastRow As Long, lastCol As Long, hdrRow As Long, cap As Long
+    Dim cTx As Long, cAmt As Long, cTxDate As Long, cCP As Long, cDrCr As Long, cCode As Long, cDesc As Long
+    Dim cAcct As Long, cOrig As Long, cBen As Long, cAl As Long, cRule As Long
+    Dim cPT(1 To 5) As Long, cPN(1 To 5) As Long
+    Dim r As Long, q As Long, okDate As Boolean
+    Dim tx As String, amt As Double, dv As Date, cp As String, cpKey As String, dr As String, dirKey As String
+    Dim code As String, pType As String, pName As String, holder As String, ins As String
+
+    lastRow = LastUsedRow(ws)
+    lastCol = LastUsedCol(ws)
+    If lastRow < 2 Then Exit Sub
+    If lastCol < 1 Then Exit Sub
+    hdrRow = FindHeaderRow(ws, FLD_TXID)
+    If hdrRow = 0 Then Exit Sub
+    If hdrRow >= lastRow Then Exit Sub
+
+    block = ReadBlock(ws, hdrRow, 1, lastRow, lastCol)
+    cTx = NamedCol(block, lastCol, "Transaction ID")
+    cAmt = NamedCol(block, lastCol, "Transaction Amount")
+    cTxDate = NamedCol(block, lastCol, "Transaction Date")
+    cCP = NamedCol(block, lastCol, "Counterparty")
+    cDrCr = NamedCol(block, lastCol, "Dr Cr")
+    cCode = NamedCol(block, lastCol, "Transaction Code")
+    cDesc = NamedCol(block, lastCol, "Transaction Code Description")
+    cAcct = NamedCol(block, lastCol, "Account No")
+    cOrig = NamedCol(block, lastCol, "Originator Name")
+    cBen = NamedCol(block, lastCol, "Beneficiary Name")
+    cAl = NamedCol(block, lastCol, "Is Alerted Transaction?")
+    If cAl = 0 Then cAl = NamedCol(block, lastCol, "Is Alerted Transaction")
+    cRule = NamedCol(block, lastCol, "Alert Information")
+    For q = 1 To 5
+        cPT(q) = NamedCol(block, lastCol, "Party Type" & q)
+        cPN(q) = NamedCol(block, lastCol, "Party Name" & q)
+    Next q
+    If cTx = 0 Or cAmt = 0 Then Exit Sub
+
+    cap = UBound(block, 1)
+    ReDim ef.TxDate(1 To cap)
+    ReDim ef.TxHasDate(1 To cap)
+    ReDim ef.TxAmt(1 To cap)
+    ReDim ef.TxCP(1 To cap)
+    ReDim ef.TxDir(1 To cap)
+    ReDim ef.TxIns(1 To cap)
+    ReDim ef.TxAl(1 To cap)
+    ReDim ef.TxRule(1 To cap)
+
+    Set seen = CreateLookupDict()
+    For r = 2 To UBound(block, 1)
+        tx = Trim$(CellText(BlockCell(block, r, cTx)))
+        If tx <> "" Then
+            If Not DictExists(seen, tx) Then
+                DictAdd seen, tx, True
+                amt = Abs(ValueToNumber(BlockCell(block, r, cAmt)))
+                dv = ParseDateValue(BlockCell(block, r, cTxDate), okDate)
+                dr = UCase$(Trim$(CellText(BlockCell(block, r, cDrCr))))
+                dirKey = DeriveCounterparty(dr, "C", "D")
+                cp = Trim$(CellText(BlockCell(block, r, cCP)))
+                If cCP = 0 Then cp = DeriveCounterparty(dr, CellText(BlockCell(block, r, cOrig)), CellText(BlockCell(block, r, cBen)))
+                cpKey = NormCP(cp)
+                code = Trim$(CellText(BlockCell(block, r, cCode)))
+                ins = InstrumentOf(code)
+                If ins = "" Then ins = InstrumentOf(CellText(BlockCell(block, r, cDesc)))
+
+                ef.TxN = ef.TxN + 1
+                ef.TxAmt(ef.TxN) = amt
+                ef.TxHasDate(ef.TxN) = okDate
+                If okDate Then ef.TxDate(ef.TxN) = dv
+                ef.TxCP(ef.TxN) = cpKey
+                ef.TxDir(ef.TxN) = dirKey
+                ef.TxIns(ef.TxN) = ins
+                ef.TxAl(ef.TxN) = IsYes(CellText(BlockCell(block, r, cAl)))
+                ef.TxRule(ef.TxN) = Trim$(CellText(BlockCell(block, r, cRule)))
+
+                AddAmtFact ef, amt, "a single transaction"
+                If okDate Then
+                    If Not DictExists(ef.DateSet, Format$(dv, "yyyymmdd")) Then DictAdd ef.DateSet, Format$(dv, "yyyymmdd"), "transaction date"
+                End If
+                If ef.AcctPrefix = "" Then
+                    ef.AcctPrefix = Trim$(CellText(BlockCell(block, r, cAcct)))
+                    If InStr(ef.AcctPrefix, "-") > 0 Then ef.AcctPrefix = Left$(ef.AcctPrefix, InStr(ef.AcctPrefix, "-") - 1)
+                End If
+
+                ' Account holder: the beneficiary of a credit, the originator of a debit
+                holder = NormCP(DeriveCounterparty(dr, CellText(BlockCell(block, r, cBen)), CellText(BlockCell(block, r, cOrig))))
+                If holder <> "" Then AddToAmount ef.Holders, holder, 1
+
+                If cpKey <> "" Then
+                    If Not DictExists(ef.CPs, cpKey) Then DictAdd ef.CPs, cpKey, cp
+                    AddToAmount ef.CPAmt, cpKey, amt
+                    AddGroup ef, "counterparty " & cpKey, amt
+                    If dirKey <> "" Then AddGroup ef, "counterparty " & cpKey & " (" & dirKey & ")", amt
+                End If
+                If code <> "" Then
+                    AddGroup ef, "code " & code, amt
+                    If dirKey <> "" Then AddGroup ef, "code " & code & " (" & dirKey & ")", amt
+                End If
+                If okDate Then AddGroup ef, "month " & Format$(dv, "yyyy-mm"), amt
+                If amt > 0 Then
+                    If Abs(amt - 100 * Int(amt / 100 + 0.0000001)) < 0.005 Then AddGroup ef, "round-dollar (100s)", amt
+                    If Abs(amt - 1000 * Int(amt / 1000 + 0.0000001)) < 0.005 Then AddGroup ef, "round-dollar (1000s)", amt
+                End If
+
+                For q = 1 To 5
+                    pType = LCase$(Trim$(CellText(BlockCell(block, r, cPT(q)))))
+                    pName = Trim$(CellText(BlockCell(block, r, cPN(q))))
+                    If pType <> "" And pName <> "" Then
+                        If pType = "settlementprogram" Then
+                            AddToList ef.Programs, pName
+                        Else
+                            AddToAmount ef.Banks, NormCP(pName), amt
+                        End If
+                    End If
+                Next q
+            End If
+        End If
+    Next r
+End Sub
+
+' Most frequent account holder, and first words used by 2+ counterparties
+' ("AMAZON" for AMAZON.C1BWFDWAB, AMAZON MEXICO SERVICES INC, ...)
+Private Sub FinishEscFacts(ByRef ef As EscFacts)
+    Dim keys As Variant, k As Variant, best As Double, w As String, firstWords As Object
+
+    If DictCount(ef.Holders) > 0 Then
+        keys = DictKeys(ef.Holders)
+        For Each k In keys
+            If CDbl(DictGet(ef.Holders, CStr(k))) > best Then
+                best = CDbl(DictGet(ef.Holders, CStr(k)))
+                ef.Holder = CStr(k)
+            End If
+        Next k
+    End If
+
+    Set firstWords = CreateLookupDict()
+    If DictCount(ef.CPs) > 0 Then
+        keys = DictKeys(ef.CPs)
+        For Each k In keys
+            w = FirstWord(CStr(k))
+            If Len(w) >= 4 Then AddToAmount firstWords, w, 1
+        Next k
+        keys = DictKeys(firstWords)
+        For Each k In keys
+            If CDbl(DictGet(firstWords, CStr(k))) >= 2 Then DictAdd ef.Families, CStr(k), True
+        Next k
+    End If
+End Sub
+
+Private Function FirstWord(ByVal s As String) As String
+    Dim p As Long
+    s = Trim$(s)
+    p = InStr(s, " ")
+    If p > 0 Then FirstWord = Left$(s, p - 1) Else FirstWord = s
+End Function
+
+Private Sub AddGroup(ByRef ef As EscFacts, ByVal label As String, ByVal amt As Double)
+    Dim v As Variant
+    If DictExists(ef.Groups, label) Then
+        v = DictGet(ef.Groups, label)
+        DictSet ef.Groups, label, Array(CLng(v(0)) + 1, CDbl(v(1)) + amt)
+    Else
+        DictAdd ef.Groups, label, Array(CLng(1), amt)
+    End If
+End Sub
+
+Private Sub AddToAmount(ByVal d As Object, ByVal key As String, ByVal amt As Double)
+    If key = "" Then Exit Sub
+    If DictExists(d, key) Then
+        DictSet d, key, CDbl(DictGet(d, key)) + amt
+    Else
+        DictAdd d, key, amt
+    End If
+End Sub
+
+Private Sub AddGroupFacts(ByRef ef As EscFacts)
+    Dim keys As Variant, k As Variant, v As Variant
+    If DictCount(ef.Groups) = 0 Then Exit Sub
+    keys = DictKeys(ef.Groups)
+    For Each k In keys
+        v = DictGet(ef.Groups, CStr(k))
+        AddCntFact ef, CLng(v(0)), CStr(k) & " count"
+        AddAmtFact ef, CDbl(v(1)), CStr(k) & " total"
+    Next k
+End Sub
+
+Private Function CentsKey(ByVal x As Double) As String
+    CentsKey = Format$(Round(Abs(x) * 100, 0), "0")
+End Function
+
+Private Sub AddAmtFact(ByRef ef As EscFacts, ByVal x As Double, ByVal label As String)
+    Dim k As String
+    k = CentsKey(x)
+    If Not DictExists(ef.AmtSet, k) Then DictAdd ef.AmtSet, k, label
+End Sub
+
+Private Sub AddCntFact(ByRef ef As EscFacts, ByVal n As Long, ByVal label As String)
+    Dim k As String
+    k = CStr(n)
+    If Not DictExists(ef.CntSet, k) Then DictAdd ef.CntSet, k, label
+End Sub
+
+Private Function AmtFactLabel(ByRef ef As EscFacts, ByVal v As Double) As String
+    Dim k As String
+    k = CentsKey(v)
+    If DictExists(ef.AmtSet, k) Then AmtFactLabel = CStr(DictGet(ef.AmtSet, k))
+End Function
+
+Private Function CntFactLabel(ByRef ef As EscFacts, ByVal n As Long) As String
+    Dim k As String
+    k = CStr(n)
+    If DictExists(ef.CntSet, k) Then CntFactLabel = CStr(DictGet(ef.CntSet, k))
+End Function
+
+' =========================================================================
+' [PQC] ESCALATION: SUBSETS OF TRANSACTIONS
+' =========================================================================
+' A claim's scope: an optional date window, an optional counterparty ("=KEY" for one
+' counterparty, "^WORD" for every counterparty starting with WORD) and an optional
+' direction ("C"/"D").
+Private Sub SubsetStats(ByRef ef As EscFacts, ByVal hasWin As Boolean, ByVal wFrom As Date, ByVal wTo As Date, _
+                        ByVal cpOpt As String, ByVal dirOpt As String, _
+                        ByRef n As Long, ByRef amt As Double, ByRef nAch As Long, ByRef nWire As Long)
+    Dim i As Long, k As String, fam As String
+    n = 0
+    amt = 0
+    nAch = 0
+    nWire = 0
+    If cpOpt <> "" Then
+        k = Mid$(cpOpt, 2)
+        fam = k & " "
+    End If
+    For i = 1 To ef.TxN
+        If TxInScope(ef, i, hasWin, wFrom, wTo, cpOpt, k, fam, dirOpt) Then
+            n = n + 1
+            amt = amt + ef.TxAmt(i)
+            If ef.TxIns(i) = "ACH" Then nAch = nAch + 1
+            If ef.TxIns(i) = "WIRE" Then nWire = nWire + 1
+        End If
+    Next i
+End Sub
+
+Private Function TxInScope(ByRef ef As EscFacts, ByVal i As Long, ByVal hasWin As Boolean, ByVal wFrom As Date, _
+                           ByVal wTo As Date, ByVal cpOpt As String, ByVal k As String, ByVal fam As String, _
+                           ByVal dirOpt As String) As Boolean
+    If hasWin Then
+        If Not ef.TxHasDate(i) Then Exit Function
+        If ef.TxDate(i) < wFrom Or ef.TxDate(i) > wTo Then Exit Function
+    End If
+    If cpOpt <> "" Then
+        If Left$(cpOpt, 1) = "=" Then
+            If ef.TxCP(i) <> k Then Exit Function
+        Else
+            If ef.TxCP(i) <> k And Left$(ef.TxCP(i), Len(fam)) <> fam Then Exit Function
+        End If
+    End If
+    If dirOpt <> "" Then
+        If ef.TxDir(i) <> dirOpt Then Exit Function
+    End If
+    TxInScope = True
+End Function
+
+Private Function ScopeText(ByVal hasWin As Boolean, ByVal wFrom As Date, ByVal wTo As Date, _
+                           ByVal cpOpt As String, ByVal dirOpt As String) As String
+    Dim s As String
+    If dirOpt = "C" Then s = "credits"
+    If dirOpt = "D" Then s = "debits"
+    If cpOpt <> "" Then
+        If s <> "" Then s = s & ", "
+        If Left$(cpOpt, 1) = "=" Then s = s & Mid$(cpOpt, 2) Else s = s & Mid$(cpOpt, 2) & "*"
+    End If
+    If hasWin Then
+        If s <> "" Then s = s & ", "
+        s = s & UsDate(wFrom) & "-" & UsDate(wTo)
+    End If
+    If s = "" Then s = "all activity"
+    ScopeText = s
+End Function
+
+' Counterparties named in a sentence: exact names, then name families ("Amazon")
+Private Function CPOptions(ByRef ef As EscFacts, ByVal s As String) As Collection
+    Dim col As New Collection, key As String, keys As Variant, k As Variant, famHit As Object
+
+    Set CPOptions = col
+    key = " " & NormCP(s) & " "
+    Set famHit = CreateLookupDict()
+    If DictCount(ef.CPs) > 0 Then
+        keys = DictKeys(ef.CPs)
+        For Each k In keys
+            If CStr(k) <> "" Then
+                If InStr(key, " " & CStr(k) & " ") > 0 Then
+                    col.Add "=" & CStr(k)
+                    If Not DictExists(famHit, FirstWord(CStr(k))) Then DictAdd famHit, FirstWord(CStr(k)), True
+                End If
+            End If
+        Next k
+    End If
+    If DictCount(ef.Families) > 0 Then
+        keys = DictKeys(ef.Families)
+        For Each k In keys
+            If InStr(key, " " & CStr(k) & " ") > 0 And Not DictExists(famHit, CStr(k)) Then col.Add "^" & CStr(k)
+        Next k
+    End If
+End Function
+
+' =========================================================================
+' [PQC] ESCALATION: TEXT HELPERS
+' =========================================================================
+' End of the sentence starting at fromPos (the position of its full stop, or Len(t)).
+' "Inc.", "Ltd.", "N.A." and single initials do not end a sentence.
+Private Function PQSentenceEnd(ByVal t As String, ByVal fromPos As Long) As Long
+    Dim i As Long, j As Long, nextCh As String, w As String
+    For i = fromPos To Len(t)
+        If Mid$(t, i, 1) = "." Then
+            nextCh = Mid$(t, i + 1, 1)
+            If nextCh = " " Or nextCh = "" Or nextCh = vbCr Or nextCh = vbLf Or nextCh = Chr(160) Then
+                j = i - 1
+                Do While j >= fromPos
+                    If Not (Mid$(t, j, 1) Like "[A-Za-z.]") Then Exit Do
+                    j = j - 1
+                Loop
+                w = LCase$(Mid$(t, j + 1, i - j - 1))
+                Do While Right$(w, 1) = "."
+                    w = Left$(w, Len(w) - 1)
+                Loop
+                If Not IsAbbreviation(w) Then
+                    PQSentenceEnd = i
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+    PQSentenceEnd = Len(t)
+End Function
+
+Private Function IsAbbreviation(ByVal w As String) As Boolean
+    If Len(w) = 1 Then
+        IsAbbreviation = True
+        Exit Function
+    End If
+    Select Case w
+        Case "inc", "ltd", "llc", "co", "corp", "mr", "ms", "mrs", "dr", "st", "no", "jr", "sr", _
+             "u.s", "n.a", "e.g", "i.e", "al", "vs"
+            IsAbbreviation = True
+    End Select
+End Function
+
+Private Function NumberWordValue(ByVal w As String) As Long
+    Dim words As Variant, i As Long
+    words = Array("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", _
+                  "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", _
+                  "nineteen", "twenty")
+    For i = 0 To UBound(words)
+        If w = CStr(words(i)) Then
+            NumberWordValue = i + 1
+            Exit Function
+        End If
+    Next i
+End Function
+
+' True when one of the next three words after position j starts with a follow word
+Private Function FollowedBy(ByVal t As String, ByVal j As Long, ByVal followWords As Variant) As Boolean
+    Dim rest As String, words() As String, w As Variant, fw As Variant, n As Long
+    rest = LCase$(Replace(Mid$(t, j, 60), Chr(160), " "))
+    rest = Replace(Replace(Replace(Replace(Replace(Replace(rest, vbCr, " "), ",", " "), ".", " "), ";", " "), ":", " "), "(", " ")
+    If Trim$(rest) = "" Then Exit Function
+    words = Split(Application.WorksheetFunction.Trim(rest), " ")
+    For Each w In words
+        If CStr(w) <> "" Then
+            n = n + 1
+            For Each fw In followWords
+                If Left$(CStr(w), Len(CStr(fw))) = CStr(fw) Then
+                    FollowedBy = True
+                    Exit Function
+                End If
+            Next fw
+            If n >= 3 Then Exit For
+        End If
+    Next w
+End Function
+
+' First count written as a word ("five wire transactions"); returns its position (0 = none)
+Private Function FindCountWord(ByVal t As String, ByVal fromPos As Long, ByVal toPos As Long, _
+                               ByVal followWords As Variant, ByRef tokLen As Long, ByRef value As Long) As Long
+    Dim i As Long, j As Long, prevCh As String, w As String, v As Long
+    i = fromPos
+    Do While i <= toPos
+        If Mid$(t, i, 1) Like "[A-Za-z]" Then
+            If i > 1 Then prevCh = Mid$(t, i - 1, 1) Else prevCh = " "
+            j = i
+            Do While j <= Len(t)
+                If Not (Mid$(t, j, 1) Like "[A-Za-z]") Then Exit Do
+                j = j + 1
+            Loop
+            If Not (prevCh Like "[A-Za-z]") Then
+                w = LCase$(Mid$(t, i, j - i))
+                v = NumberWordValue(w)
+                If v > 0 Then
+                    If FollowedBy(t, j, followWords) Then
+                        tokLen = j - i
+                        value = v
+                        FindCountWord = i
+                        Exit Function
+                    End If
+                End If
+            End If
+            i = j
+        Else
+            i = i + 1
+        End If
+    Loop
+End Function
+
+' Next count in digits or words, whichever comes first
+Private Function NextCount(ByVal t As String, ByVal fromPos As Long, ByVal toPos As Long, _
+                           ByVal followWords As Variant, ByRef tokLen As Long, ByRef value As Long) As Long
+    Dim p1 As Long, l1 As Long, p2 As Long, l2 As Long, v2 As Long
+    p1 = FindCountToken(t, fromPos, toPos, followWords, l1)
+    p2 = FindCountWord(t, fromPos, toPos, followWords, l2, v2)
+    If p1 > 0 And (p2 = 0 Or p1 < p2) Then
+        tokLen = l1
+        value = CLng(ValueToNumber(Mid$(t, p1, l1)))
+        NextCount = p1
+    ElseIf p2 > 0 Then
+        tokLen = l2
+        value = v2
+        NextCount = p2
+    End If
+End Function
+
+' "wire"/"ACH" within the two words after a count; returns the claimed instrument
+Private Function InstrumentClaim(ByVal t As String, ByVal afterPos As Long, ByRef wordPos As Long, _
+                                 ByRef wordLen As Long) As String
+    Dim rest As String, words() As String, i As Long, n As Long, w As String, claim As String
+    rest = Replace(Mid$(t, afterPos, 40), Chr(160), " ")
+    rest = Replace(Replace(Replace(Replace(rest, ",", " "), ".", " "), ";", " "), ":", " ")
+    If Trim$(rest) = "" Then Exit Function
+    words = Split(Application.WorksheetFunction.Trim(rest), " ")
+    For i = 0 To UBound(words)
+        w = LCase$(words(i))
+        If w <> "" Then
+            n = n + 1
+            If Left$(w, 4) = "wire" Then
+                claim = "WIRE"
+            ElseIf w = "ach" Or w = "iat" Then
+                claim = "ACH"
+            End If
+            If claim <> "" Then
+                wordPos = InStr(afterPos, t, words(i), vbTextCompare)
+                wordLen = Len(words(i))
+                InstrumentClaim = claim
+                Exit Function
+            End If
+            If n >= 2 Then Exit For
+        End If
+    Next i
+End Function
+
+' Date tokens between lo and hi as Array(position, length, date)
+Private Function SentenceDates(ByVal t As String, ByVal lo As Long, ByVal hi As Long) As Collection
+    Dim col As New Collection, pos As Long, n As Long, d As Date, ok As Boolean
+    pos = lo
+    Do
+        pos = FindDateToken(t, pos, hi, n)
+        If pos = 0 Then Exit Do
+        d = ParseDateValue(Mid$(t, pos, n), ok)
+        If ok Then col.Add Array(pos, n, d)
+        pos = pos + n
+    Loop
+    Set SentenceDates = col
+End Function
+
+' Date window for a count at countPos: the last complete date pair before it, else the
+' first pair after it, else "on <date>" before it
+Private Function ClaimWindow(ByVal t As String, ByVal dts As Collection, ByVal countPos As Long, _
+                             ByRef wFrom As Date, ByRef wTo As Date) As Boolean
+    Dim i As Long, found As Boolean, d As Variant
+    For i = 1 To dts.Count - 1 Step 2
+        If CLng(dts(i + 1)(0)) + CLng(dts(i + 1)(1)) <= countPos Then
+            wFrom = dts(i)(2)
+            wTo = dts(i + 1)(2)
+            found = True
+        End If
+    Next i
+    If Not found And dts.Count >= 2 Then
+        wFrom = dts(1)(2)
+        wTo = dts(2)(2)
+        found = True
+    End If
+    If Not found Then
+        For Each d In dts
+            If CLng(d(0)) < countPos And CLng(d(0)) > 3 Then
+                If LCase$(Mid$(t, CLng(d(0)) - 3, 3)) = "on " Then
+                    wFrom = d(2)
+                    wTo = d(2)
+                    found = True
+                End If
+            End If
+        Next d
+    End If
+    ClaimWindow = found
+End Function
+
+' =========================================================================
+' [PQC] ESCALATION: NAMES
+' =========================================================================
+Private Function Distinctive(ByVal key As String) As Collection
+    Dim col As New Collection, parts() As String, i As Long, w As String
+    Set Distinctive = col
+    If Trim$(key) = "" Then Exit Function
+    parts = Split(Trim$(key), " ")
+    For i = 0 To UBound(parts)
+        w = parts(i)
+        If Len(w) >= 3 And Not IsLegalSuffix(w) And Not (w Like "*#*") Then col.Add w
+    Next i
+End Function
+
+Private Function IsLegalSuffix(ByVal w As String) As Boolean
+    Select Case w
+        Case "LTD", "LLC", "INC", "LIMITED", "COMPANY", "CORP", "CORPORATION", "CO", "PTY", "GMBH", "LLP", _
+             "PLC", "THE", "AND"
+            IsLegalSuffix = True
+    End Select
+End Function
+
+' Same person or company written differently: "DUSTIN HALIMAN" / "DUSTIN PATRICK HALIMAN",
+' "EVELYN NAVARRO MORALES" / "NAVARRO MORALES EVELYN"
+Private Function SameParty(ByVal a As String, ByVal b As String) As Boolean
+    Dim wa As Collection, wb As Collection, x As Variant, y As Variant, nShared As Long
+    Set wa = Distinctive(NormCP(a))
+    Set wb = Distinctive(NormCP(b))
+    If wa.Count = 0 Or wb.Count = 0 Then Exit Function
+    For Each x In wa
+        For Each y In wb
+            If CStr(x) = CStr(y) Then
+                nShared = nShared + 1
+                Exit For
+            End If
+        Next y
+    Next x
+    If nShared >= 2 Then
+        SameParty = True
+    ElseIf wa.Count = 1 And wb.Count = 1 Then
+        SameParty = (wa(1) = wb(1))
+    Else
+        SameParty = (wa(1) = wb(1) And wa(wa.Count) = wb(wb.Count))
+    End If
+End Function
+
+' Counterparty named in the narrative: its full name, its first and last distinctive words,
+' or its first two ("WELLS FARGO IFI" is named by "Wells Fargo")
+Private Function NamedIn(ByVal key As String, ByVal docWords As Object, ByVal docKey As String) As Boolean
+    Dim d As Collection
+    If InStr(" " & docKey & " ", " " & key & " ") > 0 Then
+        NamedIn = True
+        Exit Function
+    End If
+    Set d = Distinctive(key)
+    If d.Count = 0 Then Exit Function
+    If DictExists(docWords, CStr(d(1))) And DictExists(docWords, CStr(d(d.Count))) Then
+        NamedIn = True
+    ElseIf d.Count >= 2 Then
+        NamedIn = (DictExists(docWords, CStr(d(1))) And DictExists(docWords, CStr(d(2))))
+    End If
+End Function
+
+Private Function WordSet(ByVal key As String) As Object
+    Dim d As Object, parts() As String, i As Long
+    Set d = CreateLookupDict()
+    If Trim$(key) <> "" Then
+        parts = Split(key, " ")
+        For i = 0 To UBound(parts)
+            If parts(i) <> "" Then
+                If Not DictExists(d, parts(i)) Then DictAdd d, parts(i), True
+            End If
+        Next i
+    End If
+    Set WordSet = d
+End Function
+
+Private Function Levenshtein(ByVal a As String, ByVal b As String) As Long
+    Dim la As Long, lb As Long, i As Long, j As Long, cost As Long
+    Dim prevRow() As Long, curRow() As Long
+    la = Len(a)
+    lb = Len(b)
+    If Abs(la - lb) > 2 Then
+        Levenshtein = 9
+        Exit Function
+    End If
+    ReDim prevRow(0 To lb)
+    ReDim curRow(0 To lb)
+    For j = 0 To lb
+        prevRow(j) = j
+    Next j
+    For i = 1 To la
+        curRow(0) = i
+        For j = 1 To lb
+            If Mid$(a, i, 1) = Mid$(b, j, 1) Then cost = 0 Else cost = 1
+            curRow(j) = prevRow(j) + 1
+            If curRow(j - 1) + 1 < curRow(j) Then curRow(j) = curRow(j - 1) + 1
+            If prevRow(j - 1) + cost < curRow(j) Then curRow(j) = prevRow(j - 1) + cost
+        Next j
+        For j = 0 To lb
+            prevRow(j) = curRow(j)
+        Next j
+    Next i
+    Levenshtein = prevRow(lb)
+End Function
+
+' =========================================================================
+' [PQC] CHECKING THE ESCALATION NARRATIVE
+' =========================================================================
+Private Function ReviewEscalation(ByVal srcPath As String, ByVal outDir As String, ByRef ctx As NarrCtx, _
+                                  ByRef ef As EscFacts, ByRef aef As EscFacts, ByVal items As Collection, _
+                                  ByVal customer As String) As String
+    Dim doc As Object
+    Dim outPath As String, fName As String, errDesc As String
+
+    fName = GetFileName(srcPath)
+    outPath = outDir & fName
+    On Error GoTo Failed
+    If FileExists(outPath) Then Kill outPath
+    FileCopy srcPath, outPath
+
+    Set doc = GetWord().Documents.Open(FileName:=outPath, ReadOnly:=False, AddToRecentFiles:=False)
+    doc.TrackRevisions = False
+    CheckEscalation doc, ctx, ef, aef, items, customer
+    ProofReviewedCopy doc, customer & " " & ef.Programs & " " & ef.Holder & " " & DictWords(ef.CPs) & " " & _
+                      DictWords(ef.Banks) & " " & DictWords(ef.Holders) & " " & DictWords(aef.CPs), items
+    InsertPreQCLegend doc
+    doc.Save
+    doc.Close SaveChanges:=0
+    Set doc = Nothing
+    ReviewEscalation = outPath
+    Exit Function
+
+Failed:
+    errDesc = Err.Description
+    On Error Resume Next
+    If Not doc Is Nothing Then doc.Close SaveChanges:=0
+    On Error GoTo 0
+    AddPQItem items, "Narrative", fName, "", PQV_EYE, "could not be reviewed (" & errDesc & ")"
+End Function
+
+Private Sub CheckEscalation(ByVal doc As Object, ByRef ctx As NarrCtx, ByRef ef As EscFacts, ByRef aef As EscFacts, _
+                            ByVal items As Collection, ByVal customer As String)
+    Dim segs As Collection, seg As Variant
+    Dim t As String, lt As String, head As String, segStart As Long
+    Dim escDone As Boolean, totDone As Boolean, drDone As Boolean, progDone As Boolean, subjDone As Boolean
+    Dim fiDone As Boolean, betDone As Boolean
+    Dim se As Long
+    Dim inhFrom As Date, inhTo As Date, hasOwn As Boolean, ownFrom As Date, ownTo As Date
+
+    ef.OnceFlags = ""
+    Set segs = LineSegments(doc)
+    For Each seg In segs
+        segStart = CLng(seg(0))
+        t = CStr(seg(1))
+        lt = LCase$(LTrim$(t))
+        head = Left$(lt, 45)
+        If Not escDone And InStr(lt, "escalated") > 0 And InStr(lt, "totaling") > 0 Then
+            escDone = True
+            se = EscOpening(doc, ctx, items, segStart, t)
+            EscSentences doc, ctx, ef, items, segStart, t, se + 1, False, inhFrom, inhTo
+        ElseIf Not totDone And InStr(lt, "total suspicious dollar amount") > 0 Then
+            totDone = True
+            EscTotalLine doc, ctx, items, segStart, t
+        ElseIf Not drDone And InStr(lt, "date range of suspicious activity") > 0 Then
+            drDone = True
+            EscDateRange doc, ctx, items, segStart, t
+        ElseIf Not subjDone And InStr(head, "subject") > 0 And InStr(head, ":") > 0 Then
+            subjDone = True
+            EscSubjectLine doc, ef, items, segStart, t
+        ElseIf Not progDone And InStr(lt, "program partner") > 0 Then
+            progDone = True
+            EscProgramLine doc, ef, items, segStart, t
+        ElseIf Not fiDone And InStr(head, "financial institution") > 0 And InStr(Left$(t, 60), ":") > 0 Then
+            fiDone = True
+            EscBankLine doc, ef, items, segStart, t
+        ElseIf Not betDone And Left$(lt, 8) = "between " And InStr(lt, "totaling") > 0 Then
+            betDone = True
+            se = PQSentenceEnd(t, 1)
+            hasOwn = EscBetween(doc, ctx, ef, items, segStart, t, se, ownFrom, ownTo)
+            EscSentences doc, ctx, ef, items, segStart, t, se + 1, hasOwn, ownFrom, ownTo
+        Else
+            EscSentences doc, ctx, ef, items, segStart, t, 1, False, inhFrom, inhTo
+        End If
+    Next seg
+
+    If Not escDone Then AddPQItem items, "Opening sentence", "", "", PQV_EYE, "line not found"
+    If Not totDone Then AddPQItem items, "Total Suspicious Dollar Amount", "", "", PQV_EYE, "line not found"
+    If Not drDone Then AddPQItem items, "Date Range of Suspicious Activity", "", "", PQV_EYE, "line not found"
+    EscCounterparties doc, ef, items
+    EscSelection doc, ef, aef, items
+    EscAlerted doc, ef, items
+    EscNameCheck doc, ef, items, customer
+End Sub
+
+' Every sentence of t from fromPos on. The first sentence with a date pair becomes the
+' window that later sentences without dates ("Out of these transactions ...") inherit.
+Private Sub EscSentences(ByVal doc As Object, ByRef ctx As NarrCtx, ByRef ef As EscFacts, ByVal items As Collection, _
+                         ByVal segStart As Long, ByVal t As String, ByVal fromPos As Long, _
+                         ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date)
+    Dim s0 As Long, s1 As Long, hasOwn As Boolean, ownFrom As Date, ownTo As Date
+    s0 = fromPos
+    Do While s0 <= Len(t)
+        s1 = PQSentenceEnd(t, s0)
+        hasOwn = EscSentence(doc, ctx, ef, items, segStart, t, s0, s1, hasInh, inhFrom, inhTo, "Sentence", ownFrom, ownTo)
+        If hasOwn And Not hasInh Then
+            hasInh = True
+            inhFrom = ownFrom
+            inhTo = ownTo
+        End If
+        s0 = s1 + 1
+    Loop
+End Sub
+
+' "... to report 104 transactions totaling $7,394,666 conducted by ..."; returns the
+' end of the first sentence
+Private Function EscOpening(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal items As Collection, _
+                            ByVal segStart As Long, ByVal t As String) As Long
+    Dim sentEnd As Long, p As Long, n As Long, v As Long, aPos As Long
+
+    sentEnd = PQSentenceEnd(t, 1)
+    EscOpening = sentEnd
+    p = NextCount(t, 1, sentEnd, Array("transaction", "transfer", "txn"), n, v)
+    If p > 0 Then
+        If v = ctx.NewCount Then
+            MarkToken doc, items, segStart + p - 1, Mid$(t, p, n), "Opening sentence count", UsNumber(ctx.NewCount), PQV_OK, ""
+        Else
+            MarkToken doc, items, segStart + p - 1, Mid$(t, p, n), "Opening sentence count", UsNumber(ctx.NewCount), _
+                      PQV_BAD, "the file says " & UsNumber(ctx.NewCount)
+        End If
+    End If
+    aPos = InStr(1, t, "totaling", vbTextCompare)
+    If aPos < 1 Then aPos = 1
+    p = FindAmountToken(t, aPos, sentEnd, n)
+    If p > 0 Then JudgeWhole doc, items, segStart + p - 1, Mid$(t, p, n), "Opening sentence amount", ctx.NewTotal
+End Function
+
+Private Sub EscTotalLine(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal items As Collection, _
+                         ByVal segStart As Long, ByVal t As String)
+    Dim p As Long, n As Long
+    p = FindAmountToken(t, 1, Len(t), n)
+    If p > 0 Then JudgeWhole doc, items, segStart + p - 1, Mid$(t, p, n), "Total Suspicious Dollar Amount", ctx.NewTotal
+End Sub
+
+Private Sub EscDateRange(ByVal doc As Object, ByRef ctx As NarrCtx, ByVal items As Collection, _
+                         ByVal segStart As Long, ByVal t As String)
+    Dim p1 As Long, l1 As Long, p2 As Long, l2 As Long
+    p1 = FindDateToken(t, 1, Len(t), l1)
+    If p1 = 0 Then Exit Sub
+    JudgeRuleDate doc, items, segStart + p1 - 1, Mid$(t, p1, l1), "Date range start", ctx.NarrFrom, ctx
+    p2 = FindDateToken(t, p1 + l1, Len(t), l2)
+    If p2 > 0 Then JudgeRuleDate doc, items, segStart + p2 - 1, Mid$(t, p2, l2), "Date range end", ctx.NarrTo, ctx
+End Sub
+
+' "Subject: Midagency LTD" - the account holder in the file should be one of the subjects
+Private Sub EscSubjectLine(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                           ByVal segStart As Long, ByVal t As String)
+    Dim colon As Long, val As String, vStart As Long, parts() As String, i As Long, ok As Boolean
+
+    colon = InStr(t, ":")
+    If colon = 0 Then Exit Sub
+    val = CleanSegment(Mid$(t, colon + 1))
+    If val = "" Then Exit Sub
+    vStart = segStart + colon + PadBefore(Mid$(t, colon + 1))
+    parts = Split(Replace(Replace(val, ";", ","), " and ", ","), ",")
+    For i = 0 To UBound(parts)
+        If Trim$(parts(i)) <> "" And ef.Holder <> "" Then
+            If SameParty(parts(i), ef.Holder) Then ok = True
+        End If
+    Next i
+    If ok Then
+        AddPQItem items, "Subject", val, ef.Holder, PQV_OK, ""
+        ShadeAt doc, vStart, Len(val), PQ_OK
+    ElseIf ef.Holder = "" Or InStr(1, val, "unknown", vbTextCompare) > 0 Then
+        AddPQItem items, "Subject", val, ef.Holder, PQV_NA, "subject is unknown or the file has no account holder"
+        ShadeAt doc, vStart, Len(val), PQ_NA
+    Else
+        AddPQItem items, "Subject", val, ef.Holder, PQV_EYE, "the account holder in the file is " & ef.Holder
+        ShadeAt doc, vStart, Len(val), PQ_EYE
+    End If
+End Sub
+
+' "5. Associated Program Partner: Currencycloud, #8335028587" or
+' "Associated Program Partner: TransferWise INC 2, ..., Account Number: 8314367894"
+Private Sub EscProgramLine(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                           ByVal segStart As Long, ByVal t As String)
+    Dim colon As Long, vStart As Long, cut As Long, aPos As Long, aLen As Long
+    Dim val As String, progName As String, acct As String, digitsN As String, digitsF As String
+
+    colon = InStr(t, ":")
+    If colon = 0 Then Exit Sub
+    val = Mid$(t, colon + 1)
+    vStart = colon + 1 + PadBefore(val)
+    progName = Trim$(val)
+    cut = InStr(progName, ",")
+    If InStr(progName, "#") > 0 Then
+        If cut = 0 Or InStr(progName, "#") < cut Then cut = InStr(progName, "#")
+    End If
+    If cut > 0 Then progName = Trim$(Left$(progName, cut - 1))
+
+    If progName <> "" Then
+        If ef.Programs = "" Then
+            AddPQItem items, "Program partner", progName, "", PQV_NA, "no SettlementProgram party in the file"
+            ShadeAt doc, segStart + vStart - 1, Len(progName), PQ_NA
+        ElseIf ProgramMatches(progName, ef.Programs) Then
+            AddPQItem items, "Program partner", progName, ef.Programs, PQV_OK, ""
+            ShadeAt doc, segStart + vStart - 1, Len(progName), PQ_OK
+        Else
+            AddPQItem items, "Program partner", progName, ef.Programs, PQV_EYE, "the settlement party in the file differs"
+            ShadeAt doc, segStart + vStart - 1, Len(progName), PQ_EYE
+        End If
+    End If
+
+    aPos = AccountTokenAfterMarker(t, colon, aLen)
+    If aPos > 0 And ef.AcctPrefix <> "" Then
+        acct = Mid$(t, aPos, aLen)
+        digitsN = DigitsOnly(acct)
+        digitsF = DigitsOnly(ef.AcctPrefix)
+        If digitsN <> "" And InStr(digitsF, digitsN) > 0 Then
+            AddPQItem items, "Account number", acct, ef.AcctPrefix, PQV_OK, ""
+            ShadeAt doc, segStart + aPos - 1, aLen, PQ_OK
+        Else
+            AddPQItem items, "Account number", acct, ef.AcctPrefix, PQV_BAD, "does not match the account in the file"
+            ShadeAt doc, segStart + aPos - 1, aLen, PQ_BAD
+        End If
+    End If
+End Sub
+
+' Account token after "#", "Account Number", "Account No" or "Acct" (0 = none)
+Private Function AccountTokenAfterMarker(ByVal t As String, ByVal fromPos As Long, ByRef tokLen As Long) As Long
+    Dim markers As Variant, m As Variant, p As Long, best As Long, bestLen As Long, j As Long, k As Long
+    markers = Array("#", "account number", "account no", "acct")
+    For Each m In markers
+        p = InStr(fromPos, t, CStr(m), vbTextCompare)
+        If p > 0 And (best = 0 Or p < best) Then
+            best = p
+            bestLen = Len(CStr(m))
+        End If
+    Next m
+    If best = 0 Then Exit Function
+    j = best + bestLen
+    Do While j <= Len(t)
+        If Not (Mid$(t, j, 1) Like "[ :#.]") Then Exit Do
+        j = j + 1
+    Loop
+    k = j
+    Do While k <= Len(t)
+        If Not (Mid$(t, k, 1) Like "[A-Za-z0-9-]") Then Exit Do
+        k = k + 1
+    Loop
+    If k = j Then Exit Function
+    If DigitsOnly(Mid$(t, j, k - j)) = "" Then Exit Function
+    tokLen = k - j
+    AccountTokenAfterMarker = j
+End Function
+
+Private Function DigitsOnly(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then out = out & ch
+    Next i
+    DigitsOnly = out
+End Function
+
+' "Financial Institutions Involved: CFSB and WELLS FARGO BANK" - every bank that carries
+' at least PQ_CP_SHARE of the volume should be named
+Private Sub EscBankLine(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                        ByVal segStart As Long, ByVal t As String)
+    Dim colon As Long, vStart As Long, val As String, lineKey As String
+    Dim keys As Variant, k As Variant, bank As String, missing As String, bigList As String
+    Dim share As Double
+
+    colon = InStr(t, ":")
+    If colon = 0 Then Exit Sub
+    val = CleanSegment(Mid$(t, colon + 1))
+    If val = "" Then Exit Sub
+    vStart = segStart + colon + PadBefore(Mid$(t, colon + 1))
+    If DictCount(ef.Banks) = 0 Or ef.Total = 0 Then
+        AddPQItem items, "Financial institutions", val, "", PQV_NA, "no bank parties in the file"
+        ShadeAt doc, vStart, Len(val), PQ_NA
+        Exit Sub
+    End If
+
+    lineKey = Replace(NormCP(t), " ", "")
+    keys = DictKeys(ef.Banks)
+    For Each k In keys
+        bank = CStr(k)
+        share = CDbl(DictGet(ef.Banks, bank)) / ef.Total
+        If share >= PQ_CP_SHARE And Not IsJunkParty(bank) Then
+            AddToList bigList, bank
+            If Not BankNamed(bank, lineKey) Then AddToList missing, bank
+        End If
+    Next k
+    If missing = "" Then
+        AddPQItem items, "Financial institutions", val, bigList, PQV_OK, ""
+        ShadeAt doc, vStart, Len(val), PQ_OK
+    Else
+        AddPQItem items, "Financial institutions", val, bigList, PQV_EYE, "not named: " & missing
+        ShadeAt doc, vStart, Len(val), PQ_EYE
+    End If
+End Sub
+
+Private Function IsJunkParty(ByVal key As String) As Boolean
+    Select Case key
+        Case "", "NOTPROVIDED", "NOT PROVIDED", "NA", "N A", "UNKNOWN", "NONE"
+            IsJunkParty = True
+    End Select
+End Function
+
+' "COMMUNITY FEDERAL SAVINGS BANK" is named by "CFSB"; otherwise the first two words
+' of the bank, spaces ignored ("JPMORGAN CHASE" matches "JP Morgan Chase")
+Private Function BankNamed(ByVal bankKey As String, ByVal lineKey As String) As Boolean
+    Dim words() As String, stem As String
+    If Left$(bankKey, 11) = "COMMUNITY F" And InStr(lineKey, "CFSB") > 0 Then
+        BankNamed = True
+        Exit Function
+    End If
+    words = Split(bankKey, " ")
+    stem = words(0)
+    If UBound(words) >= 1 Then stem = stem & words(1)
+    BankNamed = (InStr(lineKey, stem) > 0)
+End Function
+
+' First sentence of "Between D1 and D2, <customer> received N wire transfers totaling $X":
+' rule dates, then a count/amount pair from all, credit or debit activity. Returns True
+' with the written dates as the window later sentences inherit.
+Private Function EscBetween(ByVal doc As Object, ByRef ctx As NarrCtx, ByRef ef As EscFacts, ByVal items As Collection, _
+                            ByVal segStart As Long, ByVal t As String, ByVal sentEnd As Long, _
+                            ByRef ownFrom As Date, ByRef ownTo As Date) As Boolean
+    Dim dts As Collection, p As Long, n As Long, v As Long, nextP As Long, nn As Long, vv As Long
+    Dim a As Long, an As Long, bound As Long
+    Dim cTok As String, aTok As String, hitScope As String, cntScope As String, scopeDir As String
+    Dim scopes As Variant, s As Variant
+    Dim sn As Long, sAmt As Double, sAch As Long, sWire As Long, dummy As Date, hasWin As Boolean
+
+    Set dts = SentenceDates(t, 1, sentEnd)
+    If dts.Count >= 2 Then
+        JudgeRuleDate doc, items, segStart + CLng(dts(1)(0)) - 1, Mid$(t, CLng(dts(1)(0)), CLng(dts(1)(1))), _
+                      "Between start date", ctx.NarrFrom, ctx
+        JudgeRuleDate doc, items, segStart + CLng(dts(2)(0)) - 1, Mid$(t, CLng(dts(2)(0)), CLng(dts(2)(1))), _
+                      "Between end date", ctx.NarrTo, ctx
+        ownFrom = dts(1)(2)
+        ownTo = dts(2)(2)
+        hasWin = True
+        EscBetween = True
+    End If
+
+    scopes = Array(Array("all activity", ctx.NewCount, ctx.NewTotal, ""), _
+                   Array("credits", ctx.NewCrCount, ctx.NewCrAmt, "C"), _
+                   Array("debits", ctx.NewDrCount, ctx.NewDrAmt, "D"))
+    p = NextCount(t, 1, sentEnd, Array("transaction", "transfer", "txn", "credit", "debit"), n, v)
+    If p = 0 Then Exit Function
+    cTok = Mid$(t, p, n)
+    nextP = NextCount(t, p + n, sentEnd, Array("transaction", "transfer", "txn", "credit", "debit"), nn, vv)
+    If nextP > 0 Then bound = nextP - 1 Else bound = sentEnd
+    a = AmountAfterTotaling(t, p + n, bound, an)
+    If a > 0 Then aTok = Mid$(t, a, an)
+
+    For Each s In scopes
+        If v = CLng(s(1)) Then
+            If cntScope = "" Then
+                cntScope = CStr(s(0))
+                scopeDir = CStr(s(3))
+            End If
+            If aTok = "" Then
+                hitScope = CStr(s(0))
+            ElseIf SameMoney(ValueToNumber(aTok), CDbl(s(2))) Then
+                hitScope = CStr(s(0))
+            End If
+            If hitScope <> "" Then
+                scopeDir = CStr(s(3))
+                Exit For
+            End If
+        End If
+    Next s
+
+    If hitScope <> "" Then
+        MarkToken doc, items, segStart + p - 1, cTok, "Between count", UsNumber(v) & " (" & hitScope & ")", PQV_OK, ""
+        If aTok <> "" Then MarkToken doc, items, segStart + a - 1, aTok, "Between amount", hitScope, PQV_OK, ""
+    ElseIf cntScope <> "" Then
+        MarkToken doc, items, segStart + p - 1, cTok, "Between count", UsNumber(v) & " (" & cntScope & ")", PQV_OK, ""
+        If aTok <> "" Then JudgeScopeAmount doc, items, segStart + a - 1, aTok, "Between amount", scopes, cntScope
+    Else
+        MarkToken doc, items, segStart + p - 1, cTok, "Between count", UsNumber(ctx.NewCount), PQV_BAD, _
+                  "the file has " & UsNumber(ctx.NewCount) & " (credits " & UsNumber(ctx.NewCrCount) & _
+                  ", debits " & UsNumber(ctx.NewDrCount) & ")"
+        If aTok <> "" Then
+            If AnyScopeAmount(scopes, ValueToNumber(aTok)) Then
+                MarkToken doc, items, segStart + a - 1, aTok, "Between amount", "", PQV_OK, ""
+            Else
+                MarkToken doc, items, segStart + a - 1, aTok, "Between amount", "$" & UsAmount(ctx.NewTotal), _
+                          PQV_BAD, "the file says $" & UsAmount(ctx.NewTotal)
+            End If
+        End If
+    End If
+    If cntScope <> "" Then
+        SubsetStats ef, False, dummy, dummy, "", scopeDir, sn, sAmt, sAch, sWire
+        CheckInstrument doc, items, segStart, t, p + n, sn, sAch, sWire, "Between"
+    End If
+
+    ' Further claims in the same sentence
+    If nextP > 0 Then
+        EscSentence doc, ctx, ef, items, segStart, t, nextP, sentEnd, hasWin, ownFrom, ownTo, "Between", dummy, dummy
+    End If
+End Function
+
+Private Sub JudgeScopeAmount(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, ByVal tok As String, _
+                             ByVal label As String, ByVal scopes As Variant, ByVal scopeName As String)
+    Dim s As Variant, want As Double, v As Double
+    For Each s In scopes
+        If CStr(s(0)) = scopeName Then want = CDbl(s(2))
+    Next s
+    v = ValueToNumber(tok)
+    If SameMoney(v, -Int(-Abs(want))) Then
+        MarkToken doc, items, absPos, tok, label, "$" & UsAmount(want), PQV_EYE, "whole-dollar figure; this line uses cents"
+    Else
+        MarkToken doc, items, absPos, tok, label, "$" & UsAmount(want), PQV_BAD, _
+                  "the file says $" & UsAmount(want) & " for " & scopeName
+    End If
+End Sub
+
+Private Function AnyScopeAmount(ByVal scopes As Variant, ByVal v As Double) As Boolean
+    Dim s As Variant
+    For Each s In scopes
+        If SameMoney(v, CDbl(s(2))) Then
+            AnyScopeAmount = True
+            Exit Function
+        End If
+    Next s
+End Function
+
+' "wire" or "ACH" right after a count, against the transaction codes of the rows described
+Private Sub CheckInstrument(ByVal doc As Object, ByVal items As Collection, ByVal segStart As Long, ByVal t As String, _
+                            ByVal afterPos As Long, ByVal n As Long, ByVal nAch As Long, ByVal nWire As Long, _
+                            ByVal lineName As String)
+    Dim claim As String, wPos As Long, wLen As Long, other As Long, same As Long, word As String, mix As String
+
+    claim = InstrumentClaim(t, afterPos, wPos, wLen)
+    If claim = "" Or wPos = 0 Then Exit Sub
+    word = Mid$(t, wPos, wLen)
+    mix = UsNumber(nAch) & " ACH/IAT, " & UsNumber(nWire) & " wire"
+    If nAch + nWire = 0 Then
+        MarkToken doc, items, segStart + wPos - 1, word, lineName & " instrument", "", PQV_NA, "no transaction codes to compare"
+        Exit Sub
+    End If
+    If claim = "WIRE" Then
+        other = nAch
+        same = nWire
+    Else
+        other = nWire
+        same = nAch
+    End If
+    If other = 0 Then
+        MarkToken doc, items, segStart + wPos - 1, word, lineName & " instrument", mix, PQV_OK, ""
+    ElseIf other >= same Then
+        MarkToken doc, items, segStart + wPos - 1, word, lineName & " instrument", mix, PQV_BAD, _
+                  UsNumber(other) & " of " & UsNumber(n) & IIf(claim = "WIRE", " are ACH/IAT", " are wires")
+    Else
+        MarkToken doc, items, segStart + wPos - 1, word, lineName & " instrument", mix, PQV_EYE, _
+                  UsNumber(other) & " of " & UsNumber(n) & IIf(claim = "WIRE", " are ACH/IAT", " are wires")
+    End If
+End Sub
+
+' One sentence (t, lo..hi). Every "N ... totaling $X" claim is recomputed from the rows
+' in the date window and for the counterparty named in the sentence; other amounts,
+' dates and counts are matched against the fact book. Returns True with the
+' sentence's first date pair.
+Private Function EscSentence(ByVal doc As Object, ByRef ctx As NarrCtx, ByRef ef As EscFacts, ByVal items As Collection, _
+                             ByVal segStart As Long, ByVal t As String, ByVal lo As Long, ByVal hi As Long, _
+                             ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date, _
+                             ByVal lineName As String, ByRef ownFrom As Date, ByRef ownTo As Date) As Boolean
+    Dim dts As Collection, opts As Collection, handled As Object
+    Dim followAll As Variant, d As Variant
+    Dim p As Long, n As Long, v As Long, nextP As Long, nn As Long, vv As Long, a As Long, an As Long, bound As Long
+    Dim cTok As String, aTok As String, hint As String, low As String
+
+    If hi < lo Then Exit Function
+    followAll = Array("transaction", "transfer", "txn", "credit", "debit", "payment", "wire", "deposit")
+    Set dts = SentenceDates(t, lo, hi)
+    If dts.Count >= 2 Then
+        ownFrom = dts(1)(2)
+        ownTo = dts(2)(2)
+        EscSentence = True
+    End If
+    For Each d In dts
+        If InReviewWindow(ctx, Mid$(t, CLng(d(0)), CLng(d(1)))) Then
+            BindDateToken doc, ctx, ef, items, segStart + CLng(d(0)) - 1, Mid$(t, CLng(d(0)), CLng(d(1))), "Date"
+        End If
+    Next d
+
+    Set opts = CPOptions(ef, Mid$(t, lo, hi - lo + 1))
+    Set handled = CreateLookupDict()
+
+    ' "N ... totaling $X" claims
+    p = NextCount(t, lo, hi, followAll, n, v)
+    Do While p > 0
+        cTok = Mid$(t, p, n)
+        nextP = NextCount(t, p + n, hi, followAll, nn, vv)
+        If Not LooksLikeYear(cTok) Then
+            If nextP > 0 Then bound = nextP - 1 Else bound = hi
+            a = AmountAfterTotaling(t, p + n, bound, an)
+            aTok = ""
+            If a > 0 Then
+                aTok = Mid$(t, a, an)
+                If Not DictExists(handled, CStr(a)) Then DictAdd handled, CStr(a), True
+            End If
+            hint = CountDirection(t, p, n)
+            EscClaim doc, ef, items, segStart, t, dts, opts, p, n, v, a, aTok, hint, hasInh, inhFrom, inhTo, lineName
+        End If
+        If nextP = 0 Then Exit Do
+        p = nextP
+        n = nn
+        v = vv
+    Loop
+
+    ' "N counterparties"
+    EscCounterpartyCounts doc, ef, items, segStart, t, lo, hi, dts, hasInh, inhFrom, inhTo
+
+    ' Amounts not attached to a count
+    EscLooseAmounts doc, ef, items, segStart, t, lo, hi, dts, opts, handled, hasInh, inhFrom, inhTo
+
+    ' Wording the data can contradict
+    low = LCase$(Replace(Mid$(t, lo, hi - lo + 1), Chr(160), " "))
+    EscHighDollarClaim doc, ef, items, segStart, t, lo, low, opts
+    EscConsecutiveClaim doc, ef, items, segStart, t, lo, low, opts, dts, hasInh, inhFrom, inhTo
+End Function
+
+' Candidate windows for a claim, as Array(useWindow, from, to): its own window, else
+' the inherited window and then no window
+Private Function ClaimWindows(ByVal hasOwn As Boolean, ByVal wFrom As Date, ByVal wTo As Date, _
+                              ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date) As Variant
+    If hasOwn Then
+        ClaimWindows = Array(Array(True, wFrom, wTo))
+    ElseIf hasInh Then
+        ClaimWindows = Array(Array(True, inhFrom, inhTo), Array(False, inhFrom, inhTo))
+    Else
+        ClaimWindows = Array(Array(False, wFrom, wTo))
+    End If
+End Function
+
+Private Sub EscClaim(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, ByVal segStart As Long, _
+                     ByVal t As String, ByVal dts As Collection, ByVal opts As Collection, _
+                     ByVal p As Long, ByVal n As Long, ByVal v As Long, ByVal a As Long, ByVal aTok As String, _
+                     ByVal hint As String, ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date, _
+                     ByVal lineName As String)
+    Dim hasOwn As Boolean, wFrom As Date, wTo As Date, wv As Variant
+    Dim cpIdx As Long, dirIdx As Long, useWin As Boolean, tf As Date, tt As Date
+    Dim cpOpt As String, dirOpt As String, found As Boolean, cTok As String, label As String, note As String
+    Dim sn As Long, sAmt As Double, sAch As Long, sWire As Long, aVal As Double
+
+    cTok = Mid$(t, p, n)
+    If aTok <> "" Then aVal = ValueToNumber(aTok)
+    hasOwn = ClaimWindow(t, dts, p, wFrom, wTo)
+
+    For Each wv In ClaimWindows(hasOwn, wFrom, wTo, hasInh, inhFrom, inhTo)
+        useWin = CBool(wv(0))
+        tf = CDate(wv(1))
+        tt = CDate(wv(2))
+        For cpIdx = 0 To opts.Count
+            If cpIdx = 0 Then cpOpt = "" Else cpOpt = CStr(opts(cpIdx))
+            For dirIdx = 0 To 1
+                If dirIdx = 0 Then
+                    dirOpt = ""
+                Else
+                    dirOpt = hint
+                End If
+                If dirIdx = 0 Or hint <> "" Then
+                    SubsetStats ef, useWin, tf, tt, cpOpt, dirOpt, sn, sAmt, sAch, sWire
+                    If sn = v And (aTok = "" Or SameMoney(sAmt, aVal)) Then
+                        found = True
+                        label = ScopeText(useWin, tf, tt, cpOpt, dirOpt)
+                        Exit For
+                    End If
+                End If
+            Next dirIdx
+            If found Then Exit For
+        Next cpIdx
+        If found Then Exit For
+    Next wv
+
+    If found Then
+        MarkToken doc, items, segStart + p - 1, cTok, lineName & " count", UsNumber(v) & " (" & label & ")", PQV_OK, ""
+        If aTok <> "" Then MarkToken doc, items, segStart + a - 1, aTok, lineName & " amount", label, PQV_OK, ""
+        CheckInstrument doc, items, segStart, t, p + n, sn, sAch, sWire, lineName
+        Exit Sub
+    End If
+
+    ' No subset fits: fact book, with the most specific reading as a hint
+    If hasOwn Then
+        useWin = True
+        tf = wFrom
+        tt = wTo
+    Else
+        useWin = hasInh
+        tf = inhFrom
+        tt = inhTo
+    End If
+    cpOpt = ""
+    If opts.Count > 0 Then cpOpt = CStr(opts(1))
+    SubsetStats ef, useWin, tf, tt, cpOpt, hint, sn, sAmt, sAch, sWire
+    note = "the file has " & UsNumber(sn) & " totaling $" & UsAmount(sAmt) & " for " & ScopeText(useWin, tf, tt, cpOpt, hint)
+    If CntFactLabel(ef, v) <> "" Then
+        MarkToken doc, items, segStart + p - 1, cTok, lineName & " count", CntFactLabel(ef, v), PQV_OK, ""
+    Else
+        MarkToken doc, items, segStart + p - 1, cTok, lineName & " count", "", PQV_EYE, note
+    End If
+    If aTok <> "" Then
+        If AmtFactLabel(ef, aVal) <> "" Then
+            MarkToken doc, items, segStart + a - 1, aTok, lineName & " amount", AmtFactLabel(ef, aVal), PQV_OK, ""
+        Else
+            MarkToken doc, items, segStart + a - 1, aTok, lineName & " amount", "", PQV_EYE, note
+        End If
+    End If
+End Sub
+
+Private Sub EscCounterpartyCounts(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                                  ByVal segStart As Long, ByVal t As String, ByVal lo As Long, ByVal hi As Long, _
+                                  ByVal dts As Collection, ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date)
+    Dim p As Long, n As Long, v As Long, useWin As Boolean, wFrom As Date, wTo As Date
+    Dim distinct As Object, i As Long, cnt As Long
+
+    p = NextCount(t, lo, hi, Array("counterpart"), n, v)
+    Do While p > 0
+        useWin = ClaimWindow(t, dts, p, wFrom, wTo)
+        If Not useWin And hasInh Then
+            useWin = True
+            wFrom = inhFrom
+            wTo = inhTo
+        End If
+        Set distinct = CreateLookupDict()
+        For i = 1 To ef.TxN
+            If ef.TxCP(i) <> "" Then
+                If TxInScope(ef, i, useWin, wFrom, wTo, "", "", "", "") Then
+                    If Not DictExists(distinct, ef.TxCP(i)) Then DictAdd distinct, ef.TxCP(i), True
+                End If
+            End If
+        Next i
+        cnt = DictCount(distinct)
+        If v = cnt Then
+            MarkToken doc, items, segStart + p - 1, Mid$(t, p, n), "Counterparty count", UsNumber(cnt), PQV_OK, ""
+        Else
+            MarkToken doc, items, segStart + p - 1, Mid$(t, p, n), "Counterparty count", UsNumber(cnt), PQV_EYE, _
+                      "the file has " & UsNumber(cnt) & " distinct counterparties"
+        End If
+        p = NextCount(t, p + n, hi, Array("counterpart"), n, v)
+    Loop
+End Sub
+
+Private Sub EscLooseAmounts(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                            ByVal segStart As Long, ByVal t As String, ByVal lo As Long, ByVal hi As Long, _
+                            ByVal dts As Collection, ByVal opts As Collection, ByVal handled As Object, _
+                            ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date)
+    Dim pos As Long, n As Long, tok As String, v As Double, label As String
+    Dim hasOwn As Boolean, wFrom As Date, wTo As Date, wv As Variant, useWin As Boolean, tf As Date, tt As Date
+    Dim cpIdx As Long, dirIdx As Long, cpOpt As String, dirOpt As String
+    Dim sn As Long, sAmt As Double, sAch As Long, sWire As Long
+
+    pos = lo
+    Do
+        pos = FindAmountToken(t, pos, hi, n)
+        If pos = 0 Then Exit Do
+        If Not DictExists(handled, CStr(pos)) Then
+            tok = Mid$(t, pos, n)
+            v = ValueToNumber(tok)
+            label = ""
+            hasOwn = ClaimWindow(t, dts, pos, wFrom, wTo)
+            For Each wv In ClaimWindows(hasOwn, wFrom, wTo, hasInh, inhFrom, inhTo)
+                useWin = CBool(wv(0))
+                tf = CDate(wv(1))
+                tt = CDate(wv(2))
+                For cpIdx = 0 To opts.Count
+                    If cpIdx = 0 Then cpOpt = "" Else cpOpt = CStr(opts(cpIdx))
+                    For dirIdx = 0 To 2
+                        If dirIdx = 0 Then
+                            dirOpt = ""
+                        ElseIf dirIdx = 1 Then
+                            dirOpt = "C"
+                        Else
+                            dirOpt = "D"
+                        End If
+                        If useWin Or cpOpt <> "" Or dirOpt <> "" Then
+                            SubsetStats ef, useWin, tf, tt, cpOpt, dirOpt, sn, sAmt, sAch, sWire
+                            If sn > 0 And SameMoney(sAmt, v) Then
+                                label = ScopeText(useWin, tf, tt, cpOpt, dirOpt)
+                                Exit For
+                            End If
+                        End If
+                    Next dirIdx
+                    If label <> "" Then Exit For
+                Next cpIdx
+                If label <> "" Then Exit For
+            Next wv
+            If label = "" Then label = AmtFactLabel(ef, v)
+            BindFactToken doc, items, segStart + pos - 1, tok, "Amount", label, "no figure in the file matches this"
+        End If
+        pos = pos + n
+    Loop
+End Sub
+
+' "All transactions were for high dollar amounts" against the smallest transactions
+Private Sub EscHighDollarClaim(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                               ByVal segStart As Long, ByVal t As String, ByVal lo As Long, ByVal low As String, _
+                               ByVal opts As Collection)
+    Dim i As Long, nSmall As Long, smallest As Double, cpOpt As String, k As String, fam As String
+    Dim p As Long, word As String, dummy As Date
+
+    If Not ((" " & low) Like "* all *transaction*" Or (" " & low) Like "* all *transfer*") Then Exit Sub
+    If Not (low Like "*high*dollar*" Or low Like "*high*value*") Then Exit Sub
+    If opts.Count > 0 Then
+        cpOpt = CStr(opts(1))
+        k = Mid$(cpOpt, 2)
+        fam = k & " "
+    End If
+    For i = 1 To ef.TxN
+        If TxInScope(ef, i, False, dummy, dummy, cpOpt, k, fam, "") Then
+            If ef.TxAmt(i) < PQ_SMALL_AMT Then
+                nSmall = nSmall + 1
+                If smallest = 0 Or ef.TxAmt(i) < smallest Then smallest = ef.TxAmt(i)
+            End If
+        End If
+    Next i
+    If nSmall = 0 Then Exit Sub
+    p = InStr(1, Mid$(t, lo), "high", vbTextCompare)
+    If p > 0 Then
+        p = lo + p - 1
+        word = Mid$(t, p, 4)
+        MarkToken doc, items, segStart + p - 1, word, "High-dollar wording", "", PQV_EYE, _
+                  UsNumber(nSmall) & " transactions are under $" & UsWholeAmount(PQ_SMALL_AMT) & _
+                  " (smallest $" & UsAmount(smallest) & ")"
+    End If
+End Sub
+
+' "... on nearly consecutive days" against the gaps between transaction dates
+Private Sub EscConsecutiveClaim(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, _
+                                ByVal segStart As Long, ByVal t As String, ByVal lo As Long, ByVal low As String, _
+                                ByVal opts As Collection, ByVal dts As Collection, _
+                                ByVal hasInh As Boolean, ByVal inhFrom As Date, ByVal inhTo As Date)
+    Dim useWin As Boolean, wFrom As Date, wTo As Date, cpOpt As String, k As String, fam As String
+    Dim days As Object, keys As Variant, i As Long, j As Long, tmp As Long, gap As Long
+    Dim dayNums() As Long, nDays As Long, closeGaps As Long, total As Long
+    Dim gapCount As Object, bestGap As Long, bestN As Long, p As Long
+
+    If InStr(low, "consecutive") = 0 Then Exit Sub
+    If InStr(ef.OnceFlags, "|consecutive|") > 0 Then Exit Sub
+    If dts.Count >= 2 Then
+        useWin = True
+        wFrom = dts(1)(2)
+        wTo = dts(2)(2)
+    ElseIf hasInh Then
+        useWin = True
+        wFrom = inhFrom
+        wTo = inhTo
+    End If
+    If opts.Count > 0 Then
+        cpOpt = CStr(opts(1))
+        k = Mid$(cpOpt, 2)
+        fam = k & " "
+    End If
+
+    Set days = CreateLookupDict()
+    For i = 1 To ef.TxN
+        If ef.TxHasDate(i) Then
+            If TxInScope(ef, i, useWin, wFrom, wTo, cpOpt, k, fam, "") Then
+                If Not DictExists(days, CStr(CLng(ef.TxDate(i)))) Then DictAdd days, CStr(CLng(ef.TxDate(i))), True
+            End If
+        End If
+    Next i
+    nDays = DictCount(days)
+    If nDays < 4 Then Exit Sub
+    keys = DictKeys(days)
+    ReDim dayNums(0 To nDays - 1)
+    For i = 0 To nDays - 1
+        dayNums(i) = CLng(keys(i))
+    Next i
+    For i = 0 To nDays - 2
+        For j = i + 1 To nDays - 1
+            If dayNums(j) < dayNums(i) Then
+                tmp = dayNums(i)
+                dayNums(i) = dayNums(j)
+                dayNums(j) = tmp
+            End If
+        Next j
+    Next i
+    Set gapCount = CreateLookupDict()
+    For i = 1 To nDays - 1
+        gap = dayNums(i) - dayNums(i - 1)
+        total = total + 1
+        If gap <= 2 Then closeGaps = closeGaps + 1
+        AddToAmount gapCount, CStr(gap), 1
+        If CLng(DictGet(gapCount, CStr(gap))) > bestN Then
+            bestN = CLng(DictGet(gapCount, CStr(gap)))
+            bestGap = gap
+        End If
+    Next i
+    If closeGaps / total >= PQ_CLOSE_GAP_SHARE Then Exit Sub
+
+    ef.OnceFlags = ef.OnceFlags & "|consecutive|"
+    p = InStr(1, Mid$(t, lo), "consecutive", vbTextCompare)
+    If p > 0 Then
+        p = lo + p - 1
+        MarkToken doc, items, segStart + p - 1, Mid$(t, p, 11), "Consecutive-days wording", _
+                  ScopeText(useWin, wFrom, wTo, cpOpt, ""), PQV_EYE, _
+                  UsNumber(closeGaps) & " of " & UsNumber(total) & " gaps between transaction dates are 1-2 days; " & _
+                  "the most common gap is " & bestGap & " days (" & bestN & " times)"
+    End If
+End Sub
+
+' Dates of birth, incorporation dates and the like fall outside the review window
+' and are not transaction claims
+Private Function InReviewWindow(ByRef ctx As NarrCtx, ByVal tok As String) As Boolean
+    Dim d As Date, ok As Boolean, lo As Variant, hi As Variant
+    d = ParseDateValue(tok, ok)
+    If Not ok Then Exit Function
+    lo = ctx.NarrFrom
+    hi = ctx.NarrTo
+    If Not IsDate(lo) Then lo = ctx.NewMin
+    If Not IsDate(hi) Then hi = ctx.NewMax
+    If Not IsDate(lo) Or Not IsDate(hi) Then Exit Function
+    InReviewWindow = (d >= CDate(lo) - 31 And d <= CDate(hi) + 31)
+End Function
+
+Private Sub BindDateToken(ByVal doc As Object, ByRef ctx As NarrCtx, ByRef ef As EscFacts, ByVal items As Collection, _
+                          ByVal absPos As Long, ByVal tok As String, ByVal label As String)
+    Dim d As Date, ok As Boolean, lbl As String
+    d = ParseDateValue(tok, ok)
+    If ok Then
+        If DictExists(ef.DateSet, Format$(d, "yyyymmdd")) Then
+            lbl = "transaction date"
+        ElseIf SameDay(d, ctx.NarrFrom) Or SameDay(d, ctx.NarrTo) Then
+            lbl = "review period"
+        End If
+    End If
+    BindFactToken doc, items, absPos, tok, label, lbl, "no transaction on this date"
+End Sub
+
+Private Function SameDay(ByVal d As Date, ByVal v As Variant) As Boolean
+    If Not IsDate(v) Then Exit Function
+    SameDay = (Int(CDbl(d)) = Int(CDbl(CDate(v))))
+End Function
+
+Private Sub BindFactToken(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, ByVal tok As String, _
+                          ByVal label As String, ByVal factLabel As String, ByVal missNote As String)
+    If factLabel <> "" Then
+        MarkToken doc, items, absPos, tok, label, factLabel, PQV_OK, ""
+    Else
+        MarkToken doc, items, absPos, tok, label, "", PQV_EYE, missNote
+    End If
+End Sub
+
+Private Sub MarkToken(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, ByVal tok As String, _
+                      ByVal label As String, ByVal fileVal As String, ByVal verdict As String, ByVal note As String)
+    AddPQItem items, label, tok, fileVal, verdict, note
+    Select Case verdict
+        Case PQV_OK
+            ShadeAt doc, absPos, Len(tok), PQ_OK
+        Case PQV_BAD
+            ShadeAt doc, absPos, Len(tok), PQ_BAD
+        Case PQV_EYE
+            ShadeAt doc, absPos, Len(tok), PQ_EYE
+        Case Else
+            ShadeAt doc, absPos, Len(tok), PQ_NA
+    End Select
+End Sub
+
+' Whole-dollar figures (opening sentence, Total Suspicious Dollar Amount): the total rounded up
+Private Sub JudgeWhole(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, ByVal tok As String, _
+                       ByVal label As String, ByVal total As Double)
+    Dim v As Double, want As String
+    v = ValueToNumber(tok)
+    want = "$" & UsWholeAmount(total)
+    If SameMoney(v, -Int(-Abs(total))) Then
+        MarkToken doc, items, absPos, tok, label, want, PQV_OK, ""
+    ElseIf Abs(v - Abs(total)) < 1 Then
+        MarkToken doc, items, absPos, tok, label, want, PQV_EYE, "within $1 of the total; the rule is whole dollars rounded up"
+    Else
+        MarkToken doc, items, absPos, tok, label, want, PQV_BAD, "the file says " & want
+    End If
+End Sub
+
+' Dates governed by NARRATIVE_DATE_RANGE: the file period, or the first/last
+' transaction when the file name has no period
+Private Sub JudgeRuleDate(ByVal doc As Object, ByVal items As Collection, ByVal absPos As Long, ByVal tok As String, _
+                          ByVal label As String, ByVal want As Variant, ByRef ctx As NarrCtx)
+    Dim d As Date, ok As Boolean
+    If Not IsDate(want) Then
+        MarkToken doc, items, absPos, tok, label, "", PQV_NA, "the file has no date to compare"
+        Exit Sub
+    End If
+    d = ParseDateValue(tok, ok)
+    If ok And SameDay(d, want) Then
+        MarkToken doc, items, absPos, tok, label, UsDate(want), PQV_OK, ""
+    ElseIf ok And (SameDay(d, ctx.NewMin) Or SameDay(d, ctx.NewMax)) Then
+        MarkToken doc, items, absPos, tok, label, UsDate(want), PQV_EYE, _
+                  "matches the first/last transaction; the rule is the file period " & UsDate(ctx.NarrFrom) & _
+                  " to " & UsDate(ctx.NarrTo)
+    Else
+        MarkToken doc, items, absPos, tok, label, UsDate(want), PQV_BAD, "the file says " & UsDate(want)
+    End If
+End Sub
+
+' Transfers from the customer's own name that the narrative does not describe
+Private Sub EscCounterparties(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection)
+    Dim docText As String, keys As Variant, k As Variant
+    Dim ownAmt As Double, ownShare As Double, ownN As Long, i As Long
+    Dim own As Object
+
+    If DictCount(ef.CPs) = 0 Or ef.Total = 0 Then Exit Sub
+    docText = doc.Content.Text
+    Set own = CreateLookupDict()
+    keys = DictKeys(ef.CPs)
+
+    If ef.Holder <> "" Then
+        For Each k In keys
+            If SameParty(CStr(k), ef.Holder) Then
+                DictAdd own, CStr(k), True
+                If DictExists(ef.CPAmt, CStr(k)) Then ownAmt = ownAmt + CDbl(DictGet(ef.CPAmt, CStr(k)))
+            End If
+        Next k
+        ownShare = ownAmt / ef.Total
+        If ownShare >= PQ_CP_SHARE And ownShare < PQ_OWN_MAX_SHARE And Not MentionsOwnTransfers(docText) Then
+            For i = 1 To ef.TxN
+                If DictExists(own, ef.TxCP(i)) Then ownN = ownN + 1
+            Next i
+            AddPQItem items, "Own-name transfers", "", UsNumber(ownN) & " totaling $" & UsAmount(ownAmt) & _
+                      " (" & Format$(ownShare * 100, "0") & "%)", PQV_EYE, _
+                      "transfers from the customer's own name are not described"
+        End If
+    End If
+
+End Sub
+
+Private Function MentionsOwnTransfers(ByVal docText As String) As Boolean
+    Dim s As String
+    s = LCase$(docText)
+    MentionsOwnTransfers = (InStr(s, "self") > 0 Or InStr(s, "own account") > 0 Or _
+                            InStr(s, "between its accounts") > 0 Or InStr(s, "between their accounts") > 0 Or _
+                            InStr(s, "between his accounts") > 0 Or InStr(s, "between her accounts") > 0)
+End Function
+
+' Alerted transaction file: every alerted row must be in the lookback file, the lookback
+' flag should agree, and the narrative should describe the alerted activity
+Private Sub EscAlerted(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection)
+    Dim docText As String, mentioned As Boolean
+
+    If Not ef.HasAlertFile Then Exit Sub
+    If ef.AlertMissing > 0 Then
+        AddPQItem items, "Alerted transactions", ef.AlertFile, UsNumber(ef.AlertMissing) & " missing", PQV_BAD, _
+                  "alerted transactions that are not in the lookback file"
+    End If
+    If ef.LookbackAlerted <> ef.AlertN Then
+        AddPQItem items, "Lookback alerted flag", "", "lookback flags " & UsNumber(ef.LookbackAlerted) & _
+                  ", the alerted file has " & UsNumber(ef.AlertN), PQV_EYE, "data quality"
+    End If
+    docText = doc.Content.Text
+    If ef.AlertN > 0 Then
+        mentioned = (InStr(docText, UsAmount(ef.AlertTotal)) > 0 Or InStr(docText, UsWholeAmount(ef.AlertTotal)) > 0)
+        If Not mentioned And ef.AlertRule <> "" Then mentioned = (InStr(1, docText, ef.AlertRule, vbTextCompare) > 0)
+        If Not mentioned Then
+            AddPQItem items, "Alerted activity", "", UsNumber(ef.AlertN) & " totaling $" & UsAmount(ef.AlertTotal) & ", " & _
+                      DateText(ef.AlertMin) & " - " & DateText(ef.AlertMax) & IIf(ef.AlertRule <> "", ", " & ef.AlertRule, ""), _
+                      PQV_EYE, "the alerted activity is not described"
+        End If
+    End If
+End Sub
+
+' Words one or two letters away from the customer's name ("Midsagency" for Midagency)
+Private Sub EscNameCheck(ByVal doc As Object, ByRef ef As EscFacts, ByVal items As Collection, ByVal customer As String)
+    Dim target As String, src As Variant, d As Collection, w As Variant, maxD As Long
+    Dim docText As String, i As Long, j As Long, word As String, uw As String, dist As Long
+    Dim variants As Object, known As Object, keys As Variant, k As Variant, hits As Collection, h As Variant, shaded As Long
+
+    For Each src In Array(ef.Holder, NormCP(customer))
+        Set d = Distinctive(CStr(src))
+        For Each w In d
+            If Len(CStr(w)) >= 5 And Len(CStr(w)) > Len(target) Then target = CStr(w)
+        Next w
+        If target <> "" Then Exit For
+    Next src
+    If target = "" Then Exit Sub
+    If Len(target) <= 6 Then maxD = 1 Else maxD = 2
+
+    ' Words that belong to counterparties or banks are not misspellings of the customer
+    Set known = CreateLookupDict()
+    For Each src In Array(ef.CPs, ef.Banks)
+        If DictCount(src) > 0 Then
+            keys = DictKeys(src)
+            For Each k In keys
+                For Each w In Split(CStr(k), " ")
+                    If CStr(w) <> "" Then
+                        If Not DictExists(known, CStr(w)) Then DictAdd known, CStr(w), True
+                    End If
+                Next w
+            Next k
+        End If
+    Next src
+
+    Set variants = CreateLookupDict()
+    docText = doc.Content.Text
+    i = 1
+    Do While i <= Len(docText)
+        If Mid$(docText, i, 1) Like "[A-Za-z]" Then
+            j = i
+            Do While j <= Len(docText)
+                If Not (Mid$(docText, j, 1) Like "[A-Za-z]") Then Exit Do
+                j = j + 1
+            Loop
+            word = Mid$(docText, i, j - i)
+            If Len(word) >= 5 Then
+                uw = UCase$(word)
+                If uw <> target And Left$(uw, 1) = Left$(target, 1) And Not DictExists(known, uw) Then
+                    dist = Levenshtein(uw, target)
+                    If dist >= 1 And dist <= maxD Then AddToAmount variants, word, 1
+                End If
+            End If
+            i = j
+        Else
+            i = i + 1
+        End If
+    Loop
+
+    If DictCount(variants) = 0 Then Exit Sub
+    keys = DictKeys(variants)
+    For Each k In keys
+        AddPQItem items, "Name spelling", CStr(k), target, PQV_EYE, "used " & CLng(DictGet(variants, CStr(k))) & _
+                  " time(s); the account holder is " & IIf(ef.Holder <> "", ef.Holder, customer)
+        Set hits = WdFindIn(doc, doc.Content.Start, doc.Content.End, CStr(k), True)
+        shaded = 0
+        For Each h In hits
+            ShadeExact doc, CLng(h(0)), CLng(h(1)) - CLng(h(0)), PQ_EYE
+            shaded = shaded + 1
+            If shaded >= 60 Then Exit For
+        Next h
+    Next k
+End Sub
+
+' =========================================================================
+' [PQC] ESCALATION: COUNTERPARTY SELECTION
+' =========================================================================
+' The counterparties an escalation narrative is expected to cover:
+'   1. for each rule in the alerted transactions (largest first), the counterparty
+'      with the highest dollar value on that rule - each counterparty once
+'   2. then the counterparties with the highest dollar value in the lookback
+'      activity that runs in the same direction as the alerted transactions
+'      (credits for "many to one" and incoming rules, debits for outgoing and card rules)
+' up to PQ_ESC_CP_COUNT in total. The customer's own name, and addresses or IDs sitting
+' in the counterparty column, are not counterparties. Card descriptors of one merchant
+' ("THE HOME DEPOT 4402" / "THE HOME DEPOT 4413") and name variants sharing a first
+' word ("AMAZON.C1BWFDWAB" / "AMAZON MEXICO SERVICES INC") count as one counterparty.
+Private Sub EscSelection(ByVal doc As Object, ByRef ef As EscFacts, ByRef aef As EscFacts, ByVal items As Collection)
+    Dim stems As Object, eligible As Object, ruleAmt As Object, ruleUnitAmt As Object
+    Dim dirs As Object, poolAmt As Object, chosenSet As Object, ruleUsed As Object
+    Dim chosen As Collection
+    Dim useAlertFile As Boolean, i As Long, n As Long, u As String, bestRule As String, bestUnit As String
+    Dim amt As Double, bestAmt As Double, keys As Variant, k As Variant, prefix As String
+    Dim docKey As String, docWords As Object, entry As Variant, named As Boolean, display As String
+
+    Set stems = CPStems(ef, aef)
+    Set eligible = CreateLookupDict()
+    Set ruleAmt = CreateLookupDict()
+    Set ruleUnitAmt = CreateLookupDict()
+    Set dirs = CreateLookupDict()
+    Set poolAmt = CreateLookupDict()
+    Set chosenSet = CreateLookupDict()
+    Set ruleUsed = CreateLookupDict()
+    Set chosen = New Collection
+
+    ' 1. alerted transactions, by rule
+    useAlertFile = (aef.TxN > 0)
+    If useAlertFile Then n = aef.TxN Else n = ef.TxN
+    For i = 1 To n
+        If useAlertFile Then
+            AddAlertedRow ef, stems, eligible, ruleAmt, ruleUnitAmt, dirs, aef.TxCP(i), aef.TxAmt(i), aef.TxDir(i), aef.TxRule(i)
+        ElseIf ef.TxAl(i) Then
+            AddAlertedRow ef, stems, eligible, ruleAmt, ruleUnitAmt, dirs, ef.TxCP(i), ef.TxAmt(i), ef.TxDir(i), ef.TxRule(i)
+        End If
+    Next i
+
+    Do
+        bestRule = ""
+        bestAmt = -1
+        If DictCount(ruleAmt) > 0 Then
+            keys = DictKeys(ruleAmt)
+            For Each k In keys
+                If Not DictExists(ruleUsed, CStr(k)) Then
+                    If CDbl(DictGet(ruleAmt, CStr(k))) > bestAmt Then
+                        bestAmt = CDbl(DictGet(ruleAmt, CStr(k)))
+                        bestRule = CStr(k)
+                    End If
+                End If
+            Next k
+        End If
+        If bestRule = "" Then Exit Do
+        DictAdd ruleUsed, bestRule, True
+
+        bestUnit = ""
+        bestAmt = -1
+        prefix = bestRule & "|"
+        If DictCount(ruleUnitAmt) > 0 Then
+            keys = DictKeys(ruleUnitAmt)
+            For Each k In keys
+                If Left$(CStr(k), Len(prefix)) = prefix Then
+                    u = Mid$(CStr(k), Len(prefix) + 1)
+                    If Not DictExists(chosenSet, u) Then
+                        If CDbl(DictGet(ruleUnitAmt, CStr(k))) > bestAmt Then
+                            bestAmt = CDbl(DictGet(ruleUnitAmt, CStr(k)))
+                            bestUnit = u
+                        End If
+                    End If
+                End If
+            Next k
+        End If
+        If bestUnit <> "" Then
+            DictAdd chosenSet, bestUnit, True
+            chosen.Add Array(bestUnit, "top counterparty for rule '" & bestRule & "' in the alerted transactions ($" & _
+                             UsAmount(bestAmt) & ")")
+        End If
+        If chosen.Count >= PQ_ESC_CP_COUNT Then Exit Do
+    Loop
+
+    ' 2. lookback activity in the same direction as the alerted transactions
+    For i = 1 To ef.TxN
+        If DictCount(dirs) = 0 Or DictExists(dirs, ef.TxDir(i)) Then
+            u = SelectionUnit(ef, stems, eligible, ef.TxCP(i))
+            If u <> "" Then AddToAmount poolAmt, u, ef.TxAmt(i)
+        End If
+    Next i
+    Do While chosen.Count < PQ_ESC_CP_COUNT
+        bestUnit = ""
+        bestAmt = -1
+        If DictCount(poolAmt) > 0 Then
+            keys = DictKeys(poolAmt)
+            For Each k In keys
+                If Not DictExists(chosenSet, CStr(k)) Then
+                    amt = CDbl(DictGet(poolAmt, CStr(k)))
+                    If amt > bestAmt Then
+                        bestAmt = amt
+                        bestUnit = CStr(k)
+                    End If
+                End If
+            Next k
+        End If
+        If bestUnit = "" Then Exit Do
+        DictAdd chosenSet, bestUnit, True
+        chosen.Add Array(bestUnit, "next largest in the lookback " & DirectionText(dirs) & " ($" & UsAmount(bestAmt) & ")")
+    Loop
+
+    ' Is each one described in the narrative?
+    If chosen.Count = 0 Then Exit Sub
+    docKey = NormCP(doc.Content.Text)
+    Set docWords = WordSet(docKey)
+    i = 0
+    For Each entry In chosen
+        i = i + 1
+        u = CStr(entry(0))
+        named = UnitNamed(ef, aef, stems, u, docWords, docKey)
+        display = UnitDisplay(ef, aef, stems, u)
+        If named Then
+            AddPQItem items, "Selected counterparty " & i, display, CStr(entry(1)), PQV_OK, ""
+            ShadeFirst doc, UnitFindText(u), PQ_OK
+        Else
+            AddPQItem items, "Selected counterparty " & i, display, CStr(entry(1)), PQV_EYE, _
+                      "selected by the counterparty method but not described in the narrative"
+        End If
+    Next entry
+End Sub
+
+Private Sub AddAlertedRow(ByRef ef As EscFacts, ByVal stems As Object, ByVal eligible As Object, ByVal ruleAmt As Object, _
+                          ByVal ruleUnitAmt As Object, ByVal dirs As Object, ByVal cpKey As String, ByVal amt As Double, _
+                          ByVal dirKey As String, ByVal ruleText As String)
+    Dim rules As Collection, rl As Variant, u As String
+    Set rules = SplitRules(ruleText)
+    If rules.Count = 0 Then rules.Add "(no rule)"
+    If dirKey <> "" Then
+        If Not DictExists(dirs, dirKey) Then DictAdd dirs, dirKey, True
+    End If
+    u = SelectionUnit(ef, stems, eligible, cpKey)
+    For Each rl In rules
+        AddToAmount ruleAmt, CStr(rl), amt
+        If u <> "" Then AddToAmount ruleUnitAmt, CStr(rl) & "|" & u, amt
+    Next rl
+End Sub
+
+' "Rule A, Rule B" on one row: a comma followed by a capitalised word starts a new rule
+Private Function SplitRules(ByVal s As String) As Collection
+    Dim col As New Collection, i As Long, start As Long, part As String
+    Set SplitRules = col
+    s = Trim$(s)
+    If s = "" Then Exit Function
+    start = 1
+    For i = 1 To Len(s) - 2
+        If Mid$(s, i, 2) = ", " And Mid$(s, i + 2, 1) Like "[A-Z]" Then
+            part = Trim$(Mid$(s, start, i - start))
+            If part <> "" Then col.Add part
+            start = i + 2
+        End If
+    Next i
+    part = Trim$(Mid$(s, start))
+    If part <> "" Then col.Add part
+End Function
+
+' The counterparty a row counts towards, or "" for the customer's own name, addresses and IDs
+Private Function SelectionUnit(ByRef ef As EscFacts, ByVal stems As Object, ByVal eligible As Object, _
+                               ByVal cpKey As String) As String
+    Dim st As String, ok As Boolean
+    If cpKey = "" Then Exit Function
+    If DictExists(eligible, cpKey) Then
+        ok = CBool(DictGet(eligible, cpKey))
+    Else
+        ok = Not IsJunkCP(cpKey)
+        If ok And ef.Holder <> "" Then ok = Not SameParty(cpKey, ef.Holder)
+        DictAdd eligible, cpKey, ok
+    End If
+    If Not ok Then Exit Function
+    st = CPStem(cpKey)
+    If st <> "" Then
+        If DictExists(stems, st) Then
+            If CDbl(DictGet(stems, st)) >= 2 Then
+                SelectionUnit = "*" & st
+                Exit Function
+            End If
+        End If
+    End If
+    SelectionUnit = CPAlias(cpKey)
+End Function
+
+' Stem -> number of distinct counterparty names that share it, over both files
+Private Function CPStems(ByRef ef As EscFacts, ByRef aef As EscFacts) As Object
+    Dim seen As Object, stems As Object, keys As Variant, k As Variant, st As String, src As Variant
+    Set seen = CreateLookupDict()
+    Set stems = CreateLookupDict()
+    For Each src In Array(ef.CPs, aef.CPs)
+        If Not src Is Nothing Then
+            If DictCount(src) > 0 Then
+                keys = DictKeys(src)
+                For Each k In keys
+                    If Not DictExists(seen, CStr(k)) Then
+                        DictAdd seen, CStr(k), True
+                        st = CPStem(CStr(k))
+                        If st <> "" Then AddToAmount stems, st, 1
+                    End If
+                Next k
+            End If
+        End If
+    Next src
+    Set CPStems = stems
+End Function
+
+' Common card descriptors written the way narratives write them
+Private Function CPAlias(ByVal key As String) As String
+    Dim k As String
+    k = " " & key & " "
+    k = Replace(k, " FACEBK ", " FACEBOOK ")
+    k = Replace(k, " AMZN ", " AMAZON ")
+    k = Replace(k, " MSFT ", " MICROSOFT ")
+    k = Replace(k, " WAL MART ", " WALMART ")
+    k = Replace(k, " WM SUPERCENTER ", " WALMART SUPERCENTER ")
+    CPAlias = Trim$(k)
+End Function
+
+' First real word of a counterparty: store numbers, IDs and processor prefixes skipped
+' ("THE HOME DEPOT 4402" -> HOME, "AMAZON.C1BWFDWAB" -> AMAZON, "SQ *DOUGLAS LLC" -> DOUGLAS)
+Private Function CPStem(ByVal key As String) As String
+    Dim parts() As String, i As Long, w As String
+    parts = Split(CPAlias(key), " ")
+    For i = 0 To UBound(parts)
+        w = parts(i)
+        If w <> "" And Not (w Like "*#*") Then
+            Select Case w
+                Case "THE", "SQ", "TST", "PY", "SP", "PP", "PAYPAL", "POS", "ACH", "DD", "WWW", "CASH", "APP"
+                Case Else
+                    If Len(w) >= 4 Then CPStem = w
+                    Exit Function
+            End Select
+        End If
+    Next i
+End Function
+
+' Addresses ("102 S E DORIAN AVE") and IDs ("CB001ACE 846C 4D69 ...") in the counterparty column
+Private Function IsJunkCP(ByVal key As String) As Boolean
+    Dim parts() As String, i As Long
+    If Distinctive(key).Count = 0 Then
+        IsJunkCP = True
+        Exit Function
+    End If
+    parts = Split(key, " ")
+    If Not IsNumeric(parts(0)) Then Exit Function
+    For i = 1 To UBound(parts)
+        Select Case parts(i)
+            Case "AVE", "AVENUE", "ST", "STREET", "RD", "ROAD", "BLVD", "DR", "DRIVE", "LN", "LANE", "WAY", "CT", "HWY", "PKWY"
+                IsJunkCP = True
+                Exit Function
+        End Select
+    Next i
+End Function
+
+Private Function UnitNamed(ByRef ef As EscFacts, ByRef aef As EscFacts, ByVal stems As Object, ByVal u As String, _
+                           ByVal docWords As Object, ByVal docKey As String) As Boolean
+    Dim st As String, src As Variant, keys As Variant, k As Variant
+    If Left$(u, 1) <> "*" Then
+        UnitNamed = NamedIn(u, docWords, docKey)
+        Exit Function
+    End If
+    st = Mid$(u, 2)
+    If DictExists(docWords, st) Then
+        UnitNamed = True
+        Exit Function
+    End If
+    For Each src In Array(ef.CPs, aef.CPs)
+        If Not src Is Nothing Then
+            If DictCount(src) > 0 Then
+                keys = DictKeys(src)
+                For Each k In keys
+                    If CPStem(CStr(k)) = st Then
+                        If NamedIn(CPAlias(CStr(k)), docWords, docKey) Then
+                            UnitNamed = True
+                            Exit Function
+                        End If
+                    End If
+                Next k
+            End If
+        End If
+    Next src
+End Function
+
+Private Function UnitDisplay(ByRef ef As EscFacts, ByRef aef As EscFacts, ByVal stems As Object, ByVal u As String) As String
+    Dim st As String
+    If Left$(u, 1) = "*" Then
+        st = Mid$(u, 2)
+        UnitDisplay = st & " (" & CLng(DictGet(stems, st)) & " name variants)"
+    ElseIf DictExists(ef.CPs, u) Then
+        UnitDisplay = CStr(DictGet(ef.CPs, u))
+    ElseIf DictExists(aef.CPs, u) Then
+        UnitDisplay = CStr(DictGet(aef.CPs, u))
+    Else
+        UnitDisplay = u
+    End If
+End Function
+
+' Text to shade for a selected counterparty: the family word, or the name's first real word
+Private Function UnitFindText(ByVal u As String) As String
+    Dim d As Collection
+    If Left$(u, 1) = "*" Then
+        UnitFindText = Mid$(u, 2)
+    Else
+        Set d = Distinctive(u)
+        If d.Count > 0 Then UnitFindText = CStr(d(1)) Else UnitFindText = u
+    End If
+End Function
+
+Private Function DirectionText(ByVal dirs As Object) As String
+    Dim s As String
+    s = "activity"
+    If DictCount(dirs) = 1 Then
+        If DictExists(dirs, "C") Then
+            s = "credits"
+        ElseIf DictExists(dirs, "D") Then
+            s = "debits"
+        End If
+    End If
+    DirectionText = s
+End Function
+
+Private Sub WriteEscDash(ByVal ws As Worksheet, ByVal rowIdx As Long, ByRef ctx As NarrCtx, _
+                         ByVal ecmID As String, ByVal alertID As String, ByVal alertInfo As String, _
+                         ByVal nOK As Long, ByVal nBad As Long, ByVal nEye As Long, _
+                         ByVal docPath As String, ByVal outPath As String)
+    Dim status As String
+
+    If docPath = "" Then
+        status = "No narrative found"
+    ElseIf nBad > 0 Then
+        status = "Mismatch - review"
+    ElseIf nEye > 0 Then
+        status = "Check flagged items"
+    Else
+        status = "Clean"
+    End If
+
+    ws.Cells(rowIdx, 2).Value = ecmID
+    ws.Cells(rowIdx, 3).Value = alertID
+    ws.Cells(rowIdx, 4).Value = ctx.NewFile
+    ws.Cells(rowIdx, 5).Value = ctx.NewCount
+    ws.Cells(rowIdx, 6).Value = ctx.NewTotal
+    ws.Cells(rowIdx, 7).Value = DateText(ctx.NarrFrom) & " - " & DateText(ctx.NarrTo)
+    ws.Cells(rowIdx, 8).Value = alertInfo
+    ws.Cells(rowIdx, 9).Value = nOK
+    ws.Cells(rowIdx, 10).Value = nBad
+    ws.Cells(rowIdx, 11).Value = nEye
+    ws.Cells(rowIdx, 12).Value = status
+    ws.Cells(rowIdx, 13).Value = GetFileName(docPath)
+    ws.Cells(rowIdx, 14).Value = GetFileName(outPath)
+    ws.Cells(rowIdx, 6).NumberFormat = "$#,##0.00"
+
+    If nBad > 0 Then
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_ALERT_RED, COLOR_FILL_RED
+        HighlightCell ws.Cells(rowIdx, 10), COLOR_ALERT_RED, COLOR_FILL_RED
+    ElseIf nEye > 0 Or docPath = "" Then
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_AMBER, COLOR_FILL_AMBER
+    Else
+        HighlightCell ws.Cells(rowIdx, 12), COLOR_SUCCESS_GREEN, COLOR_FILL_GREEN
+    End If
+End Sub
+
+' =========================================================================
+' [PQC] SPELLING AND GRAMMAR (Word's own proofing tools)
+' =========================================================================
+' Runs on the reviewed copy after the figure checks. Word lists its spelling and
+' grammar errors to a macro and gives spelling suggestions, but it gives a macro no
+' correction for a grammar error. So:
+'   - a lowercase misspelling whose best suggestion is one clear typing slip away
+'     (recieved, identifed, transfered) is corrected and shaded yellow
+'   - a repeated word, a missing space after a full stop, extra spaces between words
+'     and a space before a comma are corrected
+'   - any other misspelling gets a wavy red underline, and each of Word's grammar
+'     flags a wavy blue underline; the reviewer rewords those
+' Every correction and flag is listed on the findings sheet with the verdict
+' "Proofing". Capitalised and all-capital words (names, companies, codes) and words
+' from the transaction file are never changed or flagged. The original narrative is
+' not touched.
+' =========================================================================
+Private Sub ProofReviewedCopy(ByVal doc As Object, ByVal knownText As String, ByVal items As Collection)
+    Dim opt As Object, saved As Variant, errDesc As String, nFlag As Long, known As Object
+    Dim redMarks As Collection, m As Variant
+
+    If Not PQ_PROOF Then Exit Sub
+    On Error GoTo Failed
+    Set opt = doc.Application.Options
+    saved = Array(opt.CheckSpellingAsYouType, opt.CheckGrammarAsYouType, opt.CheckGrammarWithSpelling, _
+                  opt.IgnoreUppercase, opt.IgnoreMixedDigits, opt.IgnoreInternetAndFileAddresses)
+    opt.CheckSpellingAsYouType = True
+    opt.CheckGrammarAsYouType = True
+    opt.CheckGrammarWithSpelling = True
+    opt.IgnoreUppercase = True
+    opt.IgnoreMixedDigits = True
+    opt.IgnoreInternetAndFileAddresses = True
+    doc.Content.NoProofing = False
+    doc.Content.LanguageID = 1033                    ' wdEnglishUS
+    doc.SpellingChecked = False
+    doc.GrammarChecked = False
+
+    Set known = KnownWords(knownText & " " & PQ_PROOF_WORDS)
+    If PQ_PROOF_FIX Then FixMechanical doc, items
+    Set redMarks = New Collection
+    ProofSpelling doc, known, items, nFlag, redMarks
+    ProofGrammar doc, items, nFlag
+    ' misspellings last, so a grammar flag over the whole sentence does not hide them
+    For Each m In redMarks
+        MarkProof doc.Range(CLng(m(0)), CLng(m(1))), WD_COLOR_RED
+    Next m
+    doc.ShowSpellingErrors = True
+    doc.ShowGrammaticalErrors = True
+    RestoreProofOptions opt, saved
+    Exit Sub
+
+Failed:
+    errDesc = Err.Description
+    On Error Resume Next
+    If IsArray(saved) Then RestoreProofOptions opt, saved
+    On Error GoTo 0
+    AddPQItem items, "Spelling / grammar", "", "", PQV_PROOF, "Word's proofing tools could not be used (" & errDesc & ")"
+End Sub
+
+' Word's options are the user's own settings: put them back as they were
+Private Sub RestoreProofOptions(ByVal opt As Object, ByVal saved As Variant)
+    On Error Resume Next
+    opt.CheckSpellingAsYouType = saved(0)
+    opt.CheckGrammarAsYouType = saved(1)
+    opt.CheckGrammarWithSpelling = saved(2)
+    opt.IgnoreUppercase = saved(3)
+    opt.IgnoreMixedDigits = saved(4)
+    opt.IgnoreInternetAndFileAddresses = saved(5)
+    On Error GoTo 0
+End Sub
+
+' Every word (letters only) in s, as a case-insensitive lookup
+Private Function KnownWords(ByVal s As String) As Object
+    Dim d As Object, i As Long, wStart As Long, w As String
+    Set d = CreateLookupDict()
+    s = s & " "
+    For i = 1 To Len(s)
+        If Mid$(s, i, 1) Like "[A-Za-z]" Then
+            If wStart = 0 Then wStart = i
+        ElseIf wStart > 0 Then
+            w = Mid$(s, wStart, i - wStart)
+            If Not DictExists(d, w) Then DictAdd d, w, True
+            wStart = 0
+        End If
+    Next i
+    Set KnownWords = d
+End Function
+
+' Keys, and text values, of a lookup dictionary as one string
+Private Function DictWords(ByVal d As Object) As String
+    Dim k As Variant, parts() As String, n As Long
+    If d Is Nothing Then Exit Function
+    If d.Count = 0 Then Exit Function
+    ReDim parts(0 To 2 * d.Count)
+    For Each k In d.Keys
+        parts(n) = CStr(k)
+        n = n + 1
+        If VarType(d.Item(k)) = vbString Then
+            parts(n) = d.Item(k)
+            n = n + 1
+        End If
+    Next k
+    DictWords = Join(parts, " ")
+End Function
+
+' ---- spelling ----------------------------------------------------------
+' Corrects the clear misspellings and returns the others' positions (after the corrections)
+' in redMarks, for the red underline
+Private Sub ProofSpelling(ByVal doc As Object, ByVal known As Object, ByVal items As Collection, _
+                          ByRef nFlag As Long, ByVal redMarks As Collection)
+    Dim errs As Object, rng As Object, n As Long, i As Long, shift As Long
+    Dim ss() As Long, se() As Long, words() As String, fixes() As String, sugText() As String
+    Dim flagged() As Boolean, applied() As Boolean, cand As Variant
+
+    Set errs = doc.SpellingErrors
+    n = errs.Count
+    If n = 0 Then Exit Sub
+    If n > 500 Then n = 500
+    ReDim ss(1 To n)
+    ReDim se(1 To n)
+    ReDim words(1 To n)
+    ReDim fixes(1 To n)
+    ReDim sugText(1 To n)
+    ReDim flagged(1 To n)
+    ReDim applied(1 To n)
+    For i = 1 To n
+        Set rng = errs(i)
+        ss(i) = rng.Start
+        se(i) = rng.End
+        words(i) = rng.Text
+    Next i
+
+    ' decide first (reading only), in document order
+    For i = 1 To n
+        If SpellCandidate(words(i), known) And Not RepeatedWord(doc, ss(i), words(i)) Then
+            cand = SpellingSuggestions(doc.Range(ss(i), se(i)))
+            If Not IsInflection(words(i), cand) Then
+                If PQ_PROOF_FIX Then fixes(i) = ClearSpellingFix(words(i), cand)
+                If fixes(i) = "" And nFlag < PQ_PROOF_MAX Then
+                    flagged(i) = True
+                    nFlag = nFlag + 1
+                    sugText(i) = SuggestionText(cand)
+                End If
+            End If
+        End If
+    Next i
+
+    ' report in document order, with the sentence as it reads before any change
+    For i = 1 To n
+        If fixes(i) <> "" Then
+            AddPQItem items, "Spelling corrected", words(i), fixes(i), PQV_PROOF, _
+                      "corrected in the reviewed copy (Word's suggestion); correct the narrative the same way: " & _
+                      ProofContext(doc, ss(i), se(i))
+        ElseIf flagged(i) Then
+            AddPQItem items, "Spelling", words(i), sugText(i), PQV_PROOF, _
+                      "possible misspelling, not changed (wavy red underline): " & ProofContext(doc, ss(i), se(i))
+        End If
+    Next i
+
+    ' change from the end, so earlier positions stay valid
+    For i = n To 1 Step -1
+        If fixes(i) <> "" Then
+            Set rng = doc.Range(ss(i), se(i))
+            If rng.Text = words(i) Then
+                rng.Text = fixes(i)
+                rng.Shading.BackgroundPatternColor = PQ_EYE
+                applied(i) = True
+            End If
+        End If
+    Next i
+    For i = 1 To n
+        If applied(i) Then
+            shift = shift + Len(fixes(i)) - Len(words(i))
+        ElseIf flagged(i) Then
+            redMarks.Add Array(ss(i) + shift, se(i) + shift)
+        End If
+    Next i
+End Sub
+
+' Only plain lowercase words are judged: capitalised words are names or companies, words
+' with digits or symbols are codes, and words from the transaction file are names
+Private Function SpellCandidate(ByVal w As String, ByVal known As Object) As Boolean
+    If Len(w) < 3 Then Exit Function
+    If w Like "*[!A-Za-z]*" Then Exit Function
+    If Left$(w, 1) <> LCase$(Left$(w, 1)) Then Exit Function
+    If DictExists(known, w) Then Exit Function
+    SpellCandidate = True
+End Function
+
+' Word reports the second of two equal words ("that that") as a spelling error; those the
+' mechanical pass left alone are intended
+Private Function RepeatedWord(ByVal doc As Object, ByVal s As Long, ByVal w As String) As Boolean
+    Dim a As Long
+    a = s - Len(w) - 1
+    If a < doc.Content.Start Then Exit Function
+    RepeatedWord = (StrComp(doc.Range(a, s).Text, w & " ", vbTextCompare) = 0)
+End Function
+
+' Word's suggestions for a range, at most five, as a 0-based array (empty array if none)
+Private Function SpellingSuggestions(ByVal rng As Object) As Variant
+    Dim sugs As Object, n As Long, i As Long, arr() As String
+    SpellingSuggestions = Array()
+    On Error Resume Next
+    Set sugs = rng.GetSpellingSuggestions
+    If sugs Is Nothing Then Exit Function
+    n = sugs.Count
+    If n > 5 Then n = 5
+    If n <= 0 Then Exit Function
+    ReDim arr(0 To n - 1)
+    For i = 1 To n
+        arr(i - 1) = sugs(i).Name
+    Next i
+    On Error GoTo 0
+    SpellingSuggestions = arr
+End Function
+
+Private Function SuggestionText(ByVal cand As Variant) As String
+    Dim i As Long, s As String
+    For i = LBound(cand) To UBound(cand)
+        If i - LBound(cand) >= 3 Then Exit For
+        If s <> "" Then s = s & " / "
+        s = s & CStr(cand(i))
+    Next i
+    If s = "" Then s = "(Word has no suggestion)"
+    SuggestionText = s
+End Function
+
+' A plural or other form of a word Word does know (homestays, prefunded): not an error
+Private Function IsInflection(ByVal w As String, ByVal cand As Variant) As Boolean
+    Dim i As Long, c As String, sfx As Variant
+    w = LCase$(w)
+    For i = LBound(cand) To UBound(cand)
+        c = LCase$(CStr(cand(i)))
+        For Each sfx In Array("s", "es", "d", "ed", "ing", "ly", "er", "ers")
+            If w = c & CStr(sfx) Then
+                IsInflection = True
+                Exit Function
+            End If
+        Next sfx
+    Next i
+End Function
+
+' The suggestion to apply, or "": a single lowercase word, one typing slip away
+' (a swapped pair or a doubled letter counts half), and strictly closer than every
+' other suggestion. "funremains" -> "fun remains" or "parfum" -> "perfume" are never applied.
+Private Function ClearSpellingFix(ByVal w As String, ByVal cand As Variant) As String
+    Dim i As Long, c As String, d As Long, best As Long, bestWord As String, tie As Boolean
+    If Len(w) < 4 Then Exit Function
+    best = 99
+    For i = LBound(cand) To UBound(cand)
+        c = CStr(cand(i))
+        If Len(c) >= 3 And Not (c Like "*[!a-z]*") Then
+            d = TypoDistance(w, c)
+            If d < best Then
+                best = d
+                bestWord = c
+                tie = False
+            ElseIf d = best Then
+                tie = True
+            End If
+        End If
+    Next i
+    If best <= 2 And Not tie Then ClearSpellingFix = bestWord
+End Function
+
+' Edit distance in half-steps: an adjacent swap, or adding/dropping a letter next to the
+' same letter, costs 1; any other insertion, deletion or substitution costs 2
+Private Function TypoDistance(ByVal a As String, ByVal b As String) As Long
+    Dim la As Long, lb As Long, i As Long, j As Long, c As Long, v As Long
+    Dim d() As Long
+    la = Len(a)
+    lb = Len(b)
+    ReDim d(0 To la, 0 To lb)
+    For i = 1 To la
+        d(i, 0) = d(i - 1, 0) + EditCost(a, i)
+    Next i
+    For j = 1 To lb
+        d(0, j) = d(0, j - 1) + EditCost(b, j)
+    Next j
+    For i = 1 To la
+        For j = 1 To lb
+            If Mid$(a, i, 1) = Mid$(b, j, 1) Then c = 0 Else c = 2
+            v = d(i - 1, j - 1) + c
+            If d(i - 1, j) + EditCost(a, i) < v Then v = d(i - 1, j) + EditCost(a, i)
+            If d(i, j - 1) + EditCost(b, j) < v Then v = d(i, j - 1) + EditCost(b, j)
+            If i > 1 And j > 1 Then
+                If Mid$(a, i, 1) = Mid$(b, j - 1, 1) And Mid$(a, i - 1, 1) = Mid$(b, j, 1) Then
+                    If d(i - 2, j - 2) + 1 < v Then v = d(i - 2, j - 2) + 1
+                End If
+            End If
+            d(i, j) = v
+        Next j
+    Next i
+    TypoDistance = d(la, lb)
+End Function
+
+' Cost of adding or dropping letter k of s: 1 when it doubles a neighbour, else 2
+Private Function EditCost(ByVal s As String, ByVal k As Long) As Long
+    EditCost = 2
+    If k > 1 Then
+        If Mid$(s, k - 1, 1) = Mid$(s, k, 1) Then EditCost = 1
+    End If
+    If k < Len(s) Then
+        If Mid$(s, k + 1, 1) = Mid$(s, k, 1) Then EditCost = 1
+    End If
+End Function
+
+' ---- grammar -----------------------------------------------------------
+Private Sub ProofGrammar(ByVal doc As Object, ByVal items As Collection, ByRef nFlag As Long)
+    Dim errs As Object, rng As Object, n As Long, i As Long, g As String
+
+    Set errs = doc.GrammaticalErrors
+    n = errs.Count
+    For i = 1 To n
+        If nFlag >= PQ_PROOF_MAX Then Exit For
+        Set rng = errs(i)
+        g = Trim$(Replace(Replace(rng.Text, vbCr, " "), Chr(11), " "))
+        If g <> "" Then
+            MarkProof rng, WD_COLOR_BLUE
+            AddPQItem items, "Grammar", Left$(g, 120), "", PQV_PROOF, _
+                      "Word flags this as a grammar issue and gives macros no correction; reword if needed " & _
+                      "(wavy blue underline): " & ProofContext(doc, rng.Start, rng.End)
+            nFlag = nFlag + 1
+        End If
+    Next i
+End Sub
+
+Private Sub MarkProof(ByVal rng As Object, ByVal colr As Long)
+    On Error Resume Next
+    rng.Font.Underline = WD_UNDERLINE_WAVY
+    rng.Font.UnderlineColor = colr
+    On Error GoTo 0
+End Sub
+
+' "...about 45 characters either side..." of a document range
+Private Function ProofContext(ByVal doc As Object, ByVal s As Long, ByVal e As Long) As String
+    Dim a As Long, b As Long, t As String
+    a = s - 45
+    If a < doc.Content.Start Then a = doc.Content.Start
+    b = e + 45
+    If b > doc.Content.End Then b = doc.Content.End
+    t = doc.Range(a, b).Text
+    t = Replace(Replace(Replace(t, vbCr, " / "), Chr(11), " "), Chr(7), " ")
+    ProofContext = "..." & Trim$(t) & "..."
+End Function
+
+' ---- mechanical slips --------------------------------------------------
+' A repeated word ("the the"), no space after a full stop ("behavior.The"), extra spaces
+' between words, a space before a comma. Word flags these but gives a macro no fix.
+' Paragraphs are handled from the last one up and each from its end, so earlier positions
+' stay valid; the corrections are reported in document order.
+Private Sub FixMechanical(ByVal doc As Object, ByVal items As Collection)
+    Dim i As Long, k As Long, nPar As Long, pr As Object
+    Dim perPara() As Collection, f As Variant
+
+    nPar = doc.Paragraphs.Count
+    If nPar = 0 Then Exit Sub
+    ReDim perPara(1 To nPar)
+    For i = nPar To 1 Step -1
+        Set pr = doc.Paragraphs(i).Range
+        Set perPara(i) = FixParagraph(doc, pr.Start, pr.Text)
+    Next i
+    For i = 1 To nPar
+        For k = 1 To perPara(i).Count
+            f = perPara(i)(k)
+            AddPQItem items, "Grammar corrected", CStr(f(0)), CStr(f(1)), PQV_PROOF, CStr(f(2))
+        Next k
+    Next i
+End Sub
+
+' Finds the slips in one paragraph's text, applies them from the end, and returns
+' Array(before, after, note) for each in paragraph order
+Private Function FixParagraph(ByVal doc As Object, ByVal pStart As Long, ByVal t As String) As Collection
+    Dim found As New Collection, done As New Collection
+    Dim p As Long, n As Long, q As Long, k As Long, isStart As Boolean
+    Dim w1 As String, w2 As String, gap As String, tok As String, ts As Long
+    Dim f As Variant
+
+    n = Len(t)
+    p = 1
+    Do While p <= n
+        ' a word: letters from p to q-1, not part of a code, address or longer token
+        isStart = False
+        If Mid$(t, p, 1) Like "[A-Za-z]" Then
+            If p = 1 Then
+                isStart = True
+            ElseIf Not (Mid$(t, p - 1, 1) Like "[A-Za-z0-9'.@/_-]") Then
+                isStart = True
+            End If
+        End If
+        If isStart Then
+            q = p
+            Do While q <= n
+                If Not (Mid$(t, q, 1) Like "[A-Za-z]") Then Exit Do
+                q = q + 1
+            Loop
+            w1 = Mid$(t, p, q - p)
+            ' spaces after the word, then the next word
+            k = q
+            Do While k <= n
+                If Mid$(t, k, 1) <> " " Then Exit Do
+                k = k + 1
+            Loop
+            gap = Mid$(t, q, k - q)
+            w2 = ""
+            If gap <> "" And k <= n Then
+                If Mid$(t, k, 1) Like "[A-Za-z]" Then w2 = NextWordAt(t, k)
+            End If
+            If w2 <> "" And w2 = w1 And w1 = LCase$(w1) And InStr(" had that is ", " " & w1 & " ") = 0 Then
+                ' "the the" -> "the"
+                If Not (Mid$(t, k + Len(w2), 1) Like "[A-Za-z0-9'-]") Then
+                    found.Add Array("R", p, w1 & gap & w2, Len(w1), Len(gap) + Len(w2), "", _
+                                    w1 & " " & w2, w1, "repeated word removed")
+                End If
+            ElseIf Len(gap) >= 2 And w2 <> "" Then
+                ' "Ripoll  does" -> "Ripoll does"
+                found.Add Array("S", p, w1 & gap & w2, Len(w1) + 1, Len(gap) - 1, "", _
+                                w1 & gap & TokenAt(t, k), w1 & " " & TokenAt(t, k), "extra spaces removed")
+            ElseIf gap = " " And Mid$(t, k, 1) = "," Then
+                ' "funds ," -> "funds,"
+                found.Add Array("S", p, w1 & " ,", Len(w1), 1, "", w1 & " ,", w1 & ",", "space before the comma removed")
+            ElseIf gap = "" And Mid$(t, q, 1) = "." And Len(w1) >= 3 And w1 = LCase$(w1) Then
+                ' "behavior.The" -> "behavior. The"
+                w2 = NextWordAt(t, q + 1)
+                If Len(w2) >= 2 Then
+                    If Left$(w2, 1) Like "[A-Z]" And Mid$(w2, 2, 1) Like "[a-z]" _
+                       And InStr(" com net org ai io co gov edu us uk ", " " & LCase$(w2) & " ") = 0 Then
+                        found.Add Array("I", p, w1 & "." & w2, Len(w1) + 1, 0, " ", _
+                                        w1 & "." & w2, w1 & ". " & w2, "space added after the full stop")
+                    End If
+                End If
+            End If
+            p = q
+        Else
+            p = p + 1
+        End If
+    Loop
+
+    ' apply from the end of the paragraph
+    For k = found.Count To 1 Step -1
+        f = found(k)
+        tok = CStr(f(2))
+        ts = TruePos(doc, pStart + CLng(f(1)) - 1, Len(tok))
+        If doc.Range(ts, ts + Len(tok)).Text = tok Then
+            If CStr(f(0)) = "I" Then
+                doc.Range(ts + CLng(f(3)), ts + CLng(f(3))).InsertAfter CStr(f(5))
+            Else
+                doc.Range(ts + CLng(f(3)), ts + CLng(f(3)) + CLng(f(4))).Delete
+            End If
+            If done.Count = 0 Then
+                done.Add Array(f(6), f(7), f(8))
+            Else
+                done.Add Array(f(6), f(7), f(8)), Before:=1
+            End If
+        End If
+    Next k
+    Set FixParagraph = done
+End Function
+
+' The text from position k up to the next space (for the findings sheet)
+Private Function TokenAt(ByVal t As String, ByVal k As Long) As String
+    Dim q As Long
+    q = InStr(k, t & " ", " ")
+    TokenAt = Left$(Mid$(t, k, q - k), 30)
+End Function
+
+' The run of letters starting at position k
+Private Function NextWordAt(ByVal t As String, ByVal k As Long) As String
+    Dim q As Long
+    q = k
+    Do While q <= Len(t)
+        If Not (Mid$(t, q, 1) Like "[A-Za-z]") Then Exit Do
+        q = q + 1
+    Loop
+    NextWordAt = Mid$(t, k, q - k)
+End Function
+
+' "2 corrected, 3 to review" for the dashboard
+Private Sub ProofCounts(ByVal items As Collection, ByRef nFix As Long, ByRef nRev As Long)
+    Dim it As Variant
+    nFix = 0
+    nRev = 0
+    For Each it In items
+        If CStr(it(3)) = PQV_PROOF Then
+            If Right$(CStr(it(0)), 9) = "corrected" Then nFix = nFix + 1 Else nRev = nRev + 1
+        End If
+    Next it
+End Sub
+
+Private Function ProofSummary(ByVal items As Collection) As String
+    Dim nFix As Long, nRev As Long
+    If Not PQ_PROOF Then Exit Function
+    ProofCounts items, nFix, nRev
+    ProofSummary = nFix & " corrected, " & nRev & " to review"
+End Function
