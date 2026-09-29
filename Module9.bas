@@ -1,6 +1,14 @@
 Attribute VB_Name = "Module9"
 Option Explicit
 
+' TidyDataSheet: sheets up to this many rows get the full column + wrapped
+' row fit; bigger ones fit columns to the first TIDY_SAMPLE_ROWS rows only.
+Private Const TIDY_FULL_FIT_ROWS As Long = 50000
+Private Const TIDY_SAMPLE_ROWS As Long = 2000
+' FilterRowsFast: added to a dropped row's sort key so every dropped row
+' sorts after every kept one (bigger than Excel's 1,048,576-row limit).
+Private Const DROP_KEY_OFFSET As Long = 2000000
+
 Sub Consolidated_AML_Workflow()
 
 ' ==========================================
@@ -194,10 +202,7 @@ If exportMode = "PIVOT" Then
     ' Raw Transactions/CP Selection/DeDupe, EN Network's 3 sheets,
     ' Lookback Transactions) - "Pivot Data" here was the one sheet still
     ' missing it.
-    With newWbPiv.Sheets("Pivot Data").Cells
-        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
-        .EntireRow.AutoFit: .VerticalAlignment = xlTop
-    End With
+    TidyDataSheet newWbPiv.Sheets("Pivot Data")
 
     Dim pivotFileName As String, pivotSavePath As String
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
@@ -292,19 +297,25 @@ Next objFile
 
 Application.CutCopyMode = False
 
-If WsMaster.UsedRange.Cells.count > 0 Then WsMaster.UsedRange.Value = WsMaster.UsedRange.Value
+FreezeValuesByColumn WsMaster
 
 ' ==========================================
 ' 2.5 SNAPSHOT RAW DATA (ROCK-SOLID RANGE CLONE)
 ' ==========================================
+' Legacy only. Legacy's Raw Transactions is the data BEFORE cleanup, so it
+' needs this snapshot. EN's Raw Transactions is the data AFTER cleanup and is
+' copied straight from WsMaster (see 4-AN), so for EN this would be a full
+' extra copy of every row for nothing - at 600,000 rows, a lot of memory.
 SafeDeleteSheet wsHome.Parent, "TempRawBackup"
-Set WsRawTemp = wsHome.Parent.Sheets.Add(After:=wsHome)
-WsRawTemp.Name = "TempRawBackup"
+If exportMode <> "EN" Then
+    Set WsRawTemp = wsHome.Parent.Sheets.Add(After:=wsHome)
+    WsRawTemp.Name = "TempRawBackup"
 
-If WsMaster.UsedRange.Cells.count > 0 Then
-    WsMaster.UsedRange.Copy Destination:=WsRawTemp.Range("A1")
+    If WsMaster.UsedRange.Cells.count > 0 Then
+        WsMaster.UsedRange.Copy Destination:=WsRawTemp.Range("A1")
+    End If
+    WsRawTemp.Visible = xlSheetVeryHidden
 End If
-WsRawTemp.Visible = xlSheetVeryHidden
 
 ' ==========================================
 ' 3. AGGRESSIVE DATA CLEANUP
@@ -439,10 +450,7 @@ If exportMode = "EN" Then
     End If
 
     FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
-    With wsLB.Cells
-        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
-        .EntireRow.AutoFit: .VerticalAlignment = xlTop
-    End With
+    TidyDataSheet wsLB
 
     BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
 
@@ -517,10 +525,14 @@ If exportMode = "EN" Then
     Set newWb = Workbooks.Add
     Set wsRawEN = newWb.Sheets(1)
     wsRawEN.Name = "Raw Transactions"
-    If WsRawTemp.UsedRange.Cells.count > 0 Then
-        WsRawTemp.UsedRange.Copy Destination:=wsRawEN.Range("A1")
+    ' Copied from WsMaster as it stands. This used to copy the pre-cleanup
+    ' snapshot and run CleanTransactionData on it here, which is the same
+    ' date, amount and Counterparty cleanup WsMaster has already had (the
+    ' date column is set to m/d/yyyy on this sheet below either way), so the
+    ' sheet comes out the same without holding a second copy of every row.
+    If WsMaster.UsedRange.Cells.count > 0 Then
+        WsMaster.UsedRange.Copy Destination:=wsRawEN.Range("A1")
     End If
-    CleanTransactionData wsRawEN
 
     Set wsAlertedEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
     wsAlertedEN.Name = "Alerted Transaction"
@@ -561,10 +573,7 @@ If exportMode = "EN" Then
 
     Dim dateColTidy As Long, lastRTidy As Long
     For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
-        With newWb.Sheets(CStr(wsTidy)).Cells
-            .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
-            .EntireRow.AutoFit: .VerticalAlignment = xlTop
-        End With
+        TidyDataSheet newWb.Sheets(CStr(wsTidy))
         On Error Resume Next
         dateColTidy = 0
         dateColTidy = newWb.Sheets(CStr(wsTidy)).Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
@@ -675,13 +684,7 @@ If TransCol > 0 Then wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol
 
 For Each ws In newWb.Sheets
     If ws.Name = "Raw Transactions" Or ws.Name = "CP Selection" Or ws.Name = "DeDupe" Then
-        With ws.Cells
-            .WrapText = False
-            .EntireColumn.AutoFit
-            .WrapText = True
-            .EntireRow.AutoFit
-            .VerticalAlignment = xlTop
-        End With
+        TidyDataSheet ws
     Else
         SafeDeleteSheet newWb, ws.Name
     End If
@@ -834,13 +837,7 @@ Application.DisplayAlerts = True
 wsRealCD.Cells.Clear
 newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
 
-With wsRealCD.Cells
-    .WrapText = False
-    .EntireColumn.AutoFit
-    .WrapText = True
-    .EntireRow.AutoFit
-    .VerticalAlignment = xlTop
-End With
+TidyDataSheet wsRealCD
 
 On Error Resume Next
 Module3.RefreshRuleNameTag
@@ -1045,30 +1042,48 @@ Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
     End With
     On Error GoTo 0
 
-    ' Build scratch copy for date-grouped pivots using Sheets.Add + UsedRange.Copy
-    On Error Resume Next
-    Set wsPvScratch = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
-    wsPvScratch.Visible = xlSheetVeryHidden
-    If wsData.UsedRange.Cells.count > 0 Then
-        wsData.UsedRange.Copy Destination:=wsPvScratch.Range("A1")
-    End If
-    On Error GoTo 0
-    If wsPvScratch Is Nothing Then GoTo SkipDateGroupedPivots
-
-    On Error Resume Next
+    ' The date-grouped pivots can't group a Transaction Date column that has
+    ' blanks in it, so blank-date rows are dropped from a hidden copy of the
+    ' data first. With no blanks - always the case for Lookback, where every
+    ' row was kept for its date - that copy would be identical to the data
+    ' sheet, so it is skipped and these pivots read the data sheet directly.
+    ' At 600,000 rows the copy is another full set of every row in memory.
+    Dim needScratch As Boolean, wsGrp As Worksheet
+    needScratch = False
     If dCol > 0 Then
+        ddLast = wsData.Cells(wsData.Rows.count, dCol).End(xlUp).row
+        If ddLast > 1 Then
+            needScratch = (Application.WorksheetFunction.CountBlank( _
+                wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol))) > 0)
+        End If
+    End If
+
+    If needScratch Then
+        On Error Resume Next
+        Set wsPvScratch = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
+        wsPvScratch.Visible = xlSheetVeryHidden
+        If wsData.UsedRange.Cells.count > 0 Then
+            wsData.UsedRange.Copy Destination:=wsPvScratch.Range("A1")
+        End If
+        On Error GoTo 0
+        If wsPvScratch Is Nothing Then GoTo SkipDateGroupedPivots
+
+        On Error Resume Next
         ddLast = wsPvScratch.Cells(wsPvScratch.Rows.count, dCol).End(xlUp).row
         If ddLast > 1 Then
             wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
             wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).NumberFormat = "m/d/yyyy"
         End If
+        On Error GoTo 0
+        Set wsGrp = wsPvScratch
+    Else
+        Set wsGrp = wsData
     End If
-    On Error GoTo 0
 
-    lastRow = wsPvScratch.Cells(wsPvScratch.Rows.count, "A").End(xlUp).row
-    lastCol = wsPvScratch.Cells(1, wsPvScratch.Columns.count).End(xlToLeft).Column
+    lastRow = wsGrp.Cells(wsGrp.Rows.count, "A").End(xlUp).row
+    lastCol = wsGrp.Cells(1, wsGrp.Columns.count).End(xlToLeft).Column
     If lastRow > 1 Then
-        Set rngTmp = wsPvScratch.Range(wsPvScratch.Cells(1, 1), wsPvScratch.Cells(lastRow, lastCol))
+        Set rngTmp = wsGrp.Range(wsGrp.Cells(1, 1), wsGrp.Cells(lastRow, lastCol))
         Set cacheTmp = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=rngTmp)
 
         ' PIVOT 2: TEMPORAL
@@ -1266,7 +1281,12 @@ Private Function LastDataRow(ByVal ws As Worksheet) As Long
     End If
 End Function
 
-Private Function ArrCell(ByVal v As Variant, ByVal idx As Long) As Variant
+' v is ByRef on purpose. A Variant holding an array that is passed ByVal is
+' copied in full on every call, so reading one row cost a copy of the whole
+' column. Harmless at a few hundred rows; at 600,000 rows every loop that
+' reads through a column made 600,000 copies of a 600,000-row array, which
+' never finishes - Excel goes "Not Responding" and has to be killed.
+Private Function ArrCell(ByRef v As Variant, ByVal idx As Long) As Variant
     If IsArray(v) Then
         ArrCell = v(idx, 1)
     Else
@@ -1275,7 +1295,16 @@ Private Function ArrCell(ByVal v As Variant, ByVal idx As Long) As Variant
 End Function
 
 ' ==========================================================
-' FilterRowsFast - high-performance bulk row deletion via AutoFilter
+' FilterRowsFast - keeps the rows that match, deletes the rest
+' ==========================================================
+' Rows are removed by sorting, not by filtering and deleting what's visible.
+' A filter leaves every run of unwanted rows as its own area, and deleting a
+' range made of thousands of areas is one of the slowest things Excel does -
+' with hundreds of thousands of rows it can run for an hour or run out of
+' memory. Instead each kept row gets its own row number as a sort key and
+' each dropped row gets DROP_KEY_OFFSET plus its row number, so one ascending
+' sort puts every kept row first, still in its original order, with the
+' dropped rows in a single block below them that is deleted in one go.
 ' ==========================================================
 Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
     ByVal wantVal As String, ByVal dateCol As Long, ByVal useWindow As Boolean, _
@@ -1283,9 +1312,8 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
 
     Dim lastRow As Long, lastCol As Long, helperCol As Long, r As Long
     Dim sVals As Variant, dVals As Variant, dv As Variant
-    Dim keep As Boolean, anyDelete As Boolean
-    Dim flags() As Variant
-    Dim delRange As Range
+    Dim keep As Boolean, keptCount As Long
+    Dim sortKeys() As Variant
 
     lastRow = LastDataRow(ws)
     If lastRow < 2 Then Exit Sub
@@ -1300,8 +1328,8 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
     If splitCol > 0 Then sVals = ws.Range(ws.Cells(2, splitCol), ws.Cells(lastRow, splitCol)).Value
     If dateCol > 0 Then dVals = ws.Range(ws.Cells(2, dateCol), ws.Cells(lastRow, dateCol)).Value
 
-    ReDim flags(1 To lastRow - 1, 1 To 1)
-    anyDelete = False
+    ReDim sortKeys(1 To lastRow - 1, 1 To 1)
+    keptCount = 0
     For r = 1 To lastRow - 1
         keep = True
         If splitCol > 0 And Len(wantVal) > 0 Then
@@ -1316,32 +1344,68 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
             End If
         End If
         If keep Then
-            flags(r, 1) = "K"
+            sortKeys(r, 1) = r
+            keptCount = keptCount + 1
         Else
-            flags(r, 1) = "D"
-            anyDelete = True
+            sortKeys(r, 1) = DROP_KEY_OFFSET + r
         End If
     Next r
 
-    If Not anyDelete Then Exit Sub
+    If keptCount = lastRow - 1 Then Exit Sub
 
     On Error Resume Next
     If ws.AutoFilterMode Then ws.AutoFilterMode = False
     On Error GoTo 0
 
     ws.Cells(1, helperCol).Value = "_flag"
-    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = flags
-    ws.Range(ws.Cells(1, helperCol), ws.Cells(lastRow, helperCol)).AutoFilter Field:=1, Criteria1:="D"
-
-    On Error Resume Next
-    Set delRange = ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).SpecialCells(xlCellTypeVisible)
-    On Error GoTo 0
-    If Not delRange Is Nothing Then delRange.EntireRow.Delete
-
-    On Error Resume Next
-    ws.AutoFilterMode = False
-    On Error GoTo 0
+    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = sortKeys
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, helperCol)).Sort _
+        Key1:=ws.Cells(1, helperCol), Order1:=xlAscending, Header:=xlYes
+    ws.Range(ws.Rows(keptCount + 2), ws.Rows(lastRow)).Delete
     ws.Columns(helperCol).Delete
+End Sub
+
+' ==========================================================
+' FreezeValuesByColumn - UsedRange.Value = UsedRange.Value, a column at a time
+' ==========================================================
+' Same result as rewriting the whole sheet in one go, but that holds the
+' entire sheet in memory as one array: 600,000 rows x 38 columns is 22
+' million values, several hundred MB before any text, which fails with "Out
+' of memory" or takes Excel down with it. One column is about 10 MB.
+' ==========================================================
+Private Sub FreezeValuesByColumn(ByVal ws As Worksheet)
+    Dim col As Range
+    For Each col In ws.UsedRange.Columns
+        col.Value = col.Value
+    Next col
+End Sub
+
+' ==========================================================
+' TidyDataSheet - the column/row fit every exported data sheet gets
+' ==========================================================
+' Up to TIDY_FULL_FIT_ROWS rows: exactly as before - fit the columns, wrap
+' text, fit every row to its wrapped text, align to the top.
+'
+' Above that, the fitting is what hangs Excel. Fitting a column measures
+' every cell in it and fitting a wrapped row measures every cell across it,
+' so at 600,000 rows x 38 columns each pass measures 22 million cells, on
+' every sheet it runs on. Big sheets fit their columns to the first
+' TIDY_SAMPLE_ROWS rows and stay unwrapped at standard row height.
+' ==========================================================
+Private Sub TidyDataSheet(ByVal ws As Worksheet)
+    If LastDataRow(ws) <= TIDY_FULL_FIT_ROWS Then
+        With ws.Cells
+            .WrapText = False
+            .EntireColumn.AutoFit
+            .WrapText = True
+            .EntireRow.AutoFit
+            .VerticalAlignment = xlTop
+        End With
+    Else
+        ws.Cells.WrapText = False
+        ws.Range(ws.Rows(1), ws.Rows(TIDY_SAMPLE_ROWS)).Columns.AutoFit
+        ws.Cells.VerticalAlignment = xlTop
+    End If
 End Sub
 
 ' ==========================================================
