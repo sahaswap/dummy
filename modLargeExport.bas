@@ -21,11 +21,12 @@ Option Explicit
 ' LEGACY reads each source file once, in Excel, and does everything in
 ' that one pass - see LegacyExport. Differences from Module9's Legacy:
 '   - Raw Transactions is left out (the files are in the Transaction
-'     Files folder); CP Selection and DeDupe carry on onto "(2)", "(3)"...
-'     sheets past RAW_ROWS_PER_SHEET rows.
-'   - The four pivots are built on two totals sheets (Scenario Totals,
-'     Daily Totals) added up in that pass; a pivot adds them back up, so
-'     every figure matches a pivot on the rows.
+'     Files folder). CP Selection and DeDupe are saved as files of their
+'     own - "<ECM>_<Alert>_DeDupe.xlsx", or "(part 1)", "(part 2)"... of
+'     up to RAW_ROWS_PER_SHEET rows each - beside the main file.
+'   - The main file holds the four pivots, built on two totals sheets
+'     (Scenario Totals, Daily Totals) added up in that pass; a pivot adds
+'     them back up, so every figure matches a pivot on the rows.
 '   - When DeDupe is too big for ConsolidatedData, ConsolidatedData gets
 '     only the rows that carry an alert, and Sheet7's narrative figures
 '     come from that pass over every transaction - see
@@ -70,9 +71,9 @@ Private m_unsaved As Collection
 ' a case too big for ConsolidatedData (B1 = that case's ECM ID).
 Private Const STATS_SHEET As String = "_LargeCaseStats"
 
-' LegacyExport: rows read from a source file, and written to an export
-' sheet, per go (WRITE_BLOCK_ROWS divides RAW_ROWS_PER_SHEET, so a block
-' never straddles two sheets).
+' LegacyExport: rows read from a source file, and written to a temporary
+' file, per go (WRITE_BLOCK_ROWS divides RAW_ROWS_PER_SHEET, so a block
+' never straddles two files).
 Private Const READ_BLOCK_ROWS As Long = 20000
 Private Const WRITE_BLOCK_ROWS As Long = 20000
 ' Dictionaries per duplicate check or total - see NewShards.
@@ -80,23 +81,30 @@ Private Const SHARDS As Long = 1024
 ' Raised after a message has already been shown, so CancelHandler stays quiet.
 Private Const ERR_REPORTED As Long = vbObjectError + 999
 
-' One export sheet (and its overflow sheets) being written - see WriterOpen.
-Private Type RowWriter
+' One list (CP Selection, DeDupe, alerted rows) being written to temporary
+' files - see TempOpen.
+Private Type TempWriter
     BaseName As String
-    Book As Workbook
-    Sheet As Worksheet
-    Buf() As Variant
+    FileNo As Integer
+    Paths As Collection
+    Lines() As String
     Fill As Long
-    NextRow As Long
-    Part As Long
+    PartRows As Long
     Total As Long
 End Type
 
-' LegacyExport's header row and column count, set from the first file's
-' header, and the Counterparty column it keeps as text (0 = none).
-Private m_outHeader() As Variant
+' LegacyExport's columns, set from the first file's header: how many, the
+' header line, the date column, the Counterparty column (0 = none) and
+' which columns import as text; m_fields is a reusable row buffer.
 Private m_outCols As Long
+Private m_headerLine As String
+Private m_dateCol As Long
 Private m_cpTextCol As Long
+Private m_textCol() As Boolean
+Private m_fields() As String
+
+' LegacyExport's scratch folder for its temporary files ("" = none).
+Private m_tempFolder As String
 
 Sub Consolidated_AML_Workflow_Large()
 
@@ -487,6 +495,8 @@ On Error Resume Next
 ' An export workbook that never got saved is closed unsaved - otherwise a
 ' failed run leaves hundreds of thousands of rows open in a "BookN" window.
 CloseUnsavedExports
+Close                       ' any temporary file LegacyExport had open
+RemoveTempFolder
 Application.Calculation = origCalc
 Application.EnableCancelKey = xlInterrupt
 Application.ScreenUpdating = True
@@ -1686,13 +1696,11 @@ Private Function StatRowForFormula(ByVal u As String) As Long
 End Function
 
 ' ==========================================================
-' LEGACY EXPORT - every file read once, straight from Excel
+' LEGACY EXPORT - every file read once; lists saved as separate files
 ' ==========================================================
-' No Power Query here. Power Query re-read every source file for each sheet
-' and total it built - eight or more passes over 30+ lakh rows - with Excel
-' frozen through each one. Instead each file is opened in Excel (much
-' faster than Power Query's own .xlsx reader), read in blocks of
-' READ_BLOCK_ROWS rows, and every row is dealt with in that one pass:
+' Pass 1 opens each source file in Excel in turn (much faster than Power
+' Query's .xlsx reader), reads it READ_BLOCK_ROWS rows at a time, and deals
+' with every row in that one pass:
 '   - cleaned as Module9 cleans it: text dates read month/day/year, text
 '     amounts made numbers, Counterparty = Beneficiary Name on DR rows and
 '     Originator Name otherwise;
@@ -1704,8 +1712,17 @@ End Function
 '   - added into the Scenario and Daily totals the pivots are built on, into
 '     Sheet7's narrative figures, and into the alerted rows ConsolidatedData
 '     gets when DeDupe is too big for it.
-' CP Selection and DeDupe are written in blocks onto sheets of
-' RAW_ROWS_PER_SHEET rows, carrying on onto "(2)", "(3)"...
+' The rows kept go to temporary text files on disk, not into Excel.
+'
+' Pass 2 turns each temporary file into its own .xlsx of up to
+' RAW_ROWS_PER_SHEET rows, saved and closed before the next is started.
+'
+' Why the lists are separate files: with 30+ lakh rows, CP Selection and
+' DeDupe come to 50-60 lakh rows. One workbook holding them, however many
+' sheets it's split over, keeps them all in memory at once, and on the VDI
+' Excel ran out of memory part-way through (it failed opening the second
+' source file, reporting it as damaged, though the file opens fine on its
+' own). This way Excel holds one source file, or one output file, at a time.
 '
 ' Later files are matched to the first file's header by column name;
 ' columns the first file doesn't have are left out and counted in the
@@ -1722,12 +1739,13 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
     Dim hRow As Long, hCol As Long, lastR As Long, lastC As Long, startR As Long, endR As Long
     Dim fileHdr() As String, master() As String, nMaster As Long, haveMaster As Boolean
     Dim colMap() As Long, blk As Variant, nBlk As Long, r As Long, j As Long, c As Long
-    Dim v As Variant, rowVals() As Variant, isBlank As Boolean, rowsRead As Double
+    Dim v As Variant, rowVals() As Variant, isBlank As Boolean, rowsRead As Double, rowText As String
     Dim iDate As Long, iAmt As Long, iDr As Long, iBen As Long, iOrig As Long
     Dim iTrans As Long, iAlert As Long, iAcct As Long
     Dim hasCp As Boolean, dedupeCP As Boolean, dedupeDD As Boolean, isDrRow As Boolean
     Dim cpSeen As Variant, ddSeen As Variant, scnIdx As Variant, dayIdx As Variant, acctSeen As Variant
-    Dim cpW As RowWriter, ddW As RowWriter, alW As RowWriter
+    Dim alertIds As Object
+    Dim cpW As TempWriter, ddW As TempWriter, alW As TempWriter
     Dim amt As Variant, dv As Variant, sideV As Variant, g As Long, prevN As Long, k As String
 
     ' Scenario totals (from CP Selection) and Daily totals (from DeDupe)
@@ -1743,10 +1761,12 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
 
     Dim wsScn As Worksheet, wsDay As Worksheet, wsPivot As Worksheet, outArr() As Variant
     Dim bigCase As Boolean, st(1 To 11) As Variant, unmatched As String, doneMsg As String
-    Dim dateName As String, amtName As String, shIdx As Long
+    Dim dateName As String, amtName As String, shIdx As Long, prefix As String
+    Dim cpFilesText As String, ddFilesText As String, cdFilled As Boolean
     Dim excelFileName As String, finalSavePath As String
 
     slash = Application.PathSeparator
+    prefix = saveFolderPath & slash & ecmID & "_" & AlertID & "_"
 
     ' Same file choice as Module9.
     Set FSO = CreateObject("Scripting.FileSystemObject")
@@ -1756,17 +1776,21 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
            (f.Name <> ThisWorkbook.Name) Then files.Add f.Path
     Next f
 
+    ' Scratch folder for the temporary files (local, not synced by OneDrive);
+    ' CancelHandler deletes it if the run fails.
+    m_tempFolder = Environ$("TEMP") & slash & "LargeExport_" & Format$(Now, "yyyymmdd_hhnnss")
+    MkDir m_tempFolder
+
     cpSeen = NewShards(): ddSeen = NewShards(): acctSeen = NewShards()
     scnIdx = NewShards(): dayIdx = NewShards()
+    Set alertIds = CreateObject("Scripting.Dictionary")
     scnCap = 4096: dayCap = 4096
     ReDim scnAlert(1 To scnCap): ReDim scnDr(1 To scnCap): ReDim scnCp(1 To scnCap)
     ReDim scnSum(1 To scnCap): ReDim scnCnt(1 To scnCap)
     ReDim dayDate(1 To dayCap): ReDim dayDr(1 To dayCap): ReDim daySum(1 To dayCap): ReDim dayCnt(1 To dayCap)
 
-    Set newWb = NewOutputWorkbook()
-
     ' ------------------------------------------
-    ' ONE PASS OVER THE FILES
+    ' PASS 1 - ONE READ OF EACH FILE
     ' ------------------------------------------
     For Each item In files
         fileNo = fileNo + 1
@@ -1814,20 +1838,23 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
 
                 m_outCols = nMaster
                 If hasCp Then m_outCols = nMaster + 1
-                ReDim m_outHeader(1 To 1, 1 To m_outCols)
+                ReDim m_fields(1 To m_outCols)
+                ReDim m_textCol(1 To m_outCols)
                 For j = 1 To nMaster
-                    m_outHeader(1, j) = master(j)
+                    m_fields(j) = CleanFieldText(master(j))
                 Next j
                 m_cpTextCol = 0
                 If hasCp Then
-                    m_outHeader(1, m_outCols) = "Counterparty"
+                    m_fields(m_outCols) = "Counterparty"
                     m_cpTextCol = m_outCols
                 End If
+                m_headerLine = Join(m_fields, vbTab)
+                m_dateCol = iDate
                 ReDim rowVals(1 To m_outCols)
 
-                WriterOpen cpW, newWb, "CP Selection", newWb.Sheets(newWb.Sheets.count)
-                WriterOpen ddW, newWb, "DeDupe", cpW.Sheet
-                WriterOpen alW, newWb, "_AlertRows", ddW.Sheet
+                TempOpen cpW, "CP Selection"
+                TempOpen ddW, "DeDupe"
+                TempOpen alW, "Alerted Rows"
                 haveMaster = True
             End If
 
@@ -1865,11 +1892,16 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
                     End If
                     If iAmt > 0 Then amt = rowVals(iAmt) Else amt = Empty
 
-                    ' ---- CP Selection: first row per Transaction ID + Alert Information
+                    ' ---- CP Selection: first row per Transaction ID + Alert Information.
+                    ' The alert text is swapped for a short number first, so the
+                    ' lakhs of keys held here stay small.
                     If dedupeCP Then
-                        If AlreadySeen(cpSeen, KeyText(rowVals(iAlert)) & vbTab & KeyText(rowVals(iTrans))) Then GoTo NextRow
+                        k = KeyText(rowVals(iAlert))
+                        If Not alertIds.Exists(k) Then alertIds.Add k, alertIds.count + 1
+                        If AlreadySeen(cpSeen, alertIds(k) & vbTab & KeyText(rowVals(iTrans))) Then GoTo NextRow
                     End If
-                    WriterAdd cpW, rowVals
+                    rowText = RowLine(rowVals)
+                    TempAdd cpW, rowText
 
                     ' Scenario totals: per Alert Information / Dr Cr / Counterparty
                     k = ""
@@ -1899,7 +1931,7 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
                     If iDate > 0 Then
                         If IsBlankValue(rowVals(iDate)) Then GoTo NextRow
                     End If
-                    WriterAdd ddW, rowVals
+                    TempAdd ddW, rowText
 
                     ' Daily totals: per day / Dr Cr
                     If iDate > 0 Then dv = rowVals(iDate) Else dv = Empty
@@ -1969,7 +2001,7 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
 
                     ' Rows that carry an alert, for ConsolidatedData if DeDupe won't fit
                     If iAlert > 0 Then
-                        If Not IsBlankValue(rowVals(iAlert)) Then WriterAdd alW, rowVals
+                        If Not IsBlankValue(rowVals(iAlert)) Then TempAdd alW, rowText
                     End If
 NextRow:
                 Next r
@@ -1992,19 +2024,71 @@ NextRow:
         Err.Raise ERR_REPORTED
     End If
 
-    WriterFlush cpW
-    WriterFlush ddW
-    WriterFlush alW
-    If scnN + 1 > newWb.Sheets(1).Rows.count Then
+    TempClose cpW
+    TempClose ddW
+    TempClose alW
+    ' The duplicate checks are done with; free their memory before pass 2.
+    cpSeen = Empty: ddSeen = Empty: acctSeen = Empty: scnIdx = Empty: dayIdx = Empty
+    Set alertIds = Nothing
+
+    ' ------------------------------------------
+    ' PASS 2 - ONE .XLSX PER TEMPORARY FILE
+    ' ------------------------------------------
+    ' DeDupe on one file: ConsolidatedData = DeDupe, as in Module9 (copied
+    ' while that file is open). Too big for one: see the big-case step below.
+    wsRealCD.Cells.Clear
+    cpFilesText = SaveTempPartsAsXlsx(cpW, prefix & "CP Selection", dateName, "dddd, mmmm d, yyyy", _
+        amtName, Nothing, cdFilled)
+    ddFilesText = SaveTempPartsAsXlsx(ddW, prefix & "DeDupe", dateName, "m/d/yyyy", _
+        amtName, wsRealCD, cdFilled)
+
+    ' ------------------------------------------
+    ' CONSOLIDATEDDATA + SHEET7
+    ' ------------------------------------------
+    ' Too big for one sheet: ConsolidatedData gets the rows that carry an
+    ' alert (every rule name Generate Narrative looks up is on those), and
+    ' Sheet7's figures from pass 1 over every transaction.
+    SetStage "updating ConsolidatedData"
+    bigCase = Not cdFilled
+    If bigCase Then
+        CopyTempPartToSheet alW, wsRealCD
+        st(1) = stCount: st(2) = stSum
+        If stHaveDate Then
+            st(3) = stFirst: st(4) = stLast
+        Else
+            st(3) = "01/00/1900": st(4) = "01/00/1900"   ' TEXT(0,"mm/dd/yyyy"), as MIN of nothing gives
+        End If
+        st(5) = acctText
+        If stHavePos Then
+            st(6) = stMinPos: st(7) = stMaxPos
+        Else
+            st(6) = 0: st(7) = 0
+        End If
+        st(8) = crSum: st(9) = drSum: st(10) = crCnt: st(11) = drCnt
+        WriteLargeCaseStats st, wsHome.Range("J9").Value
+        unmatched = PointSheet7AtLargeStats()
+    Else
+        ClearLargeCaseStats
+    End If
+    DeleteTempParts alW
+    FormatDataColumns wsRealCD, dateName, "m/d/yyyy", amtName
+    TidyDataSheet wsRealCD
+    RemoveTempFolder
+
+    On Error Resume Next
+    Module3.RefreshRuleNameTag
+    On Error GoTo 0
+
+    ' ------------------------------------------
+    ' MAIN FILE - TOTALS + PIVOTS
+    ' ------------------------------------------
+    SetStage "writing the pivot totals"
+    If scnN + 1 > wsRealCD.Rows.count Then
         Err.Raise vbObjectError + 1006, "modLargeExport", "There are too many alert / Dr Cr / counterparty " & _
             "combinations (" & Format$(scnN, "#,##0") & ") for the Scenario Totals sheet."
     End If
-
-    ' ------------------------------------------
-    ' TOTALS SHEETS (the pivots' source)
-    ' ------------------------------------------
-    SetStage "writing the pivot totals"
-    Set wsScn = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+    Set newWb = NewOutputWorkbook()
+    Set wsScn = newWb.Sheets(1)
     wsScn.Name = "Scenario Totals"
     wsScn.Columns(3).NumberFormat = "@"     ' Counterparty as text, as its formula gave it
     ReDim outArr(1 To scnN + 1, 1 To 5)
@@ -2027,73 +2111,23 @@ NextRow:
     Next g
     wsDay.Range("A1").Resize(dayN + 1, 4).Value = outArr
 
-    ' ------------------------------------------
-    ' CONSOLIDATEDDATA + SHEET7
-    ' ------------------------------------------
-    ' DeDupe on one sheet: ConsolidatedData = DeDupe, as in Module9. Too big
-    ' for one sheet: the rows that carry an alert (every rule name Generate
-    ' Narrative looks up is on those), and Sheet7's figures from this pass.
-    SetStage "updating ConsolidatedData"
-    bigCase = (ddW.Part > 1)
-    wsRealCD.Cells.Clear
-    If bigCase Then
-        newWb.Sheets("_AlertRows").UsedRange.Copy Destination:=wsRealCD.Range("A1")
-        st(1) = stCount: st(2) = stSum
-        If stHaveDate Then
-            st(3) = stFirst: st(4) = stLast
-        Else
-            st(3) = "01/00/1900": st(4) = "01/00/1900"   ' TEXT(0,"mm/dd/yyyy"), as MIN of nothing gives
-        End If
-        st(5) = acctText
-        If stHavePos Then
-            st(6) = stMinPos: st(7) = stMaxPos
-        Else
-            st(6) = 0: st(7) = 0
-        End If
-        st(8) = crSum: st(9) = drSum: st(10) = crCnt: st(11) = drCnt
-        WriteLargeCaseStats st, wsHome.Range("J9").Value
-        unmatched = PointSheet7AtLargeStats()
-    Else
-        ddW.Sheet.UsedRange.Copy Destination:=wsRealCD.Range("A1")
-        ClearLargeCaseStats
-    End If
-    FormatDataColumns wsRealCD, dateName, "m/d/yyyy", amtName
-    TidyDataSheet wsRealCD
-
-    ' ------------------------------------------
-    ' FORMAT, TIDY, DROP SCRATCH SHEETS (backwards - sheets go as it runs)
-    ' ------------------------------------------
-    SetStage "formatting the Legacy sheets"
+    ' Backwards, because the new workbook's other blank sheets go as it runs.
     For shIdx = newWb.Worksheets.count To 1 Step -1
         Set ws = newWb.Worksheets(shIdx)
-        If IsSheetPart(ws.Name, "CP Selection") Then
-            StyleHeaderRow ws
-            FormatDataColumns ws, dateName, "dddd, mmmm d, yyyy", amtName
-            TidyDataSheet ws
-        ElseIf IsSheetPart(ws.Name, "DeDupe") Then
-            StyleHeaderRow ws
-            FormatDataColumns ws, dateName, "m/d/yyyy", amtName
-            TidyDataSheet ws
-        ElseIf ws.Name = "Scenario Totals" Or ws.Name = "Daily Totals" Then
+        If ws.Name = "Scenario Totals" Or ws.Name = "Daily Totals" Then
             StyleHeaderRow ws
             FormatDataColumns ws, "Transaction Date", "m/d/yyyy", "Transaction Amount"
             TidyDataSheet ws
         Else
-            SafeDeleteSheet newWb, ws.Name      ' _AlertRows and the new workbook's blank sheet
+            SafeDeleteSheet newWb, ws.Name
         End If
     Next shIdx
 
-    ' ------------------------------------------
-    ' PIVOTS (from the totals sheets)
-    ' ------------------------------------------
     SetStage "building the Legacy pivots"
     Set wsPivot = newWb.Sheets.Add(Before:=newWb.Sheets(1))
     wsPivot.Name = "Pivot"
     BuildTotalsPivots newWb, wsPivot, wsScn, wsDay
 
-    ' ------------------------------------------
-    ' SAVE
-    ' ------------------------------------------
     excelFileName = ecmID & "_" & AlertID & "_Combined_Alerted_Transaction.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     SetStage "saving the Legacy file"
@@ -2105,18 +2139,15 @@ NextRow:
     MarkSaved newWb
     DiscardPreviousExport finalSavePath
 
-    On Error Resume Next
-    Module3.RefreshRuleNameTag
-    On Error GoTo 0
-
     newWb.Sheets("Pivot").Activate
     FinishRun origCalc
 
-    doneMsg = "Workflow Complete!" & vbCrLf & _
-        "Exported file inside the folder exactly to: " & vbCrLf & finalSavePath & vbCrLf & vbCrLf & _
-        Format$(rowsRead, "#,##0") & " rows read from " & filesRead & " file(s): " & _
-        Format$(cpW.Total, "#,##0") & " in CP Selection (" & cpW.Part & " sheet(s)), " & _
-        Format$(ddW.Total, "#,##0") & " in DeDupe (" & ddW.Part & " sheet(s))."
+    doneMsg = "Workflow Complete!" & vbCrLf & vbCrLf & _
+        "Pivots and totals:" & vbCrLf & "   " & excelFileName & vbCrLf & _
+        "CP Selection - " & Format$(cpW.Total, "#,##0") & " rows:" & vbCrLf & "   " & cpFilesText & vbCrLf & _
+        "DeDupe - " & Format$(ddW.Total, "#,##0") & " rows:" & vbCrLf & "   " & ddFilesText & vbCrLf & vbCrLf & _
+        "All in: " & saveFolderPath & vbCrLf & _
+        Format$(rowsRead, "#,##0") & " rows read from " & filesRead & " file(s)."
     If bigCase Then
         doneMsg = doneMsg & vbCrLf & vbCrLf & _
             "DeDupe is too big for ConsolidatedData, so it holds only the " & Format$(alW.Total, "#,##0") & _
@@ -2139,71 +2170,260 @@ NextRow:
 End Sub
 
 ' ==========================================================
-' Legacy pass helpers
+' Temporary files - LegacyExport's kept rows, on disk until pass 2
 ' ==========================================================
-
-' The export sheets are written through a RowWriter each: rows collect in
-' Buf and go onto the sheet WRITE_BLOCK_ROWS at a time; a full sheet
-' (RAW_ROWS_PER_SHEET rows) carries on onto "<BaseName> (n)" right after it.
-Private Sub WriterOpen(ByRef w As RowWriter, ByVal wb As Workbook, ByVal baseName As String, _
-    ByVal afterSheet As Object)
+' Each TempWriter writes tab-separated UTF-8 text, a header line then up to
+' RAW_ROWS_PER_SHEET rows per file, carrying on into a new file when one
+' fills. Lines collect in Lines and are written WRITE_BLOCK_ROWS at a time.
+' ==========================================================
+Private Sub TempOpen(ByRef w As TempWriter, ByVal baseName As String)
     w.BaseName = baseName
-    Set w.Book = wb
-    w.Part = 1
-    w.Total = 0
     w.Fill = 0
-    ReDim w.Buf(1 To WRITE_BLOCK_ROWS, 1 To m_outCols)
-    Set w.Sheet = NewWriterSheet(w, afterSheet)
+    w.Total = 0
+    w.FileNo = 0
+    Set w.Paths = New Collection
+    ReDim w.Lines(1 To WRITE_BLOCK_ROWS)
 End Sub
 
-Private Function NewWriterSheet(ByRef w As RowWriter, ByVal afterSheet As Object) As Worksheet
-    Dim ws As Worksheet
-    Set ws = w.Book.Sheets.Add(After:=afterSheet)
-    If w.Part = 1 Then ws.Name = w.BaseName Else ws.Name = w.BaseName & " (" & w.Part & ")"
-    ' Counterparty was a formula in Module9, so its names were never read as
-    ' numbers or dates ("12/25 LLC"); a text column keeps them as written.
-    If m_cpTextCol > 0 Then ws.Columns(m_cpTextCol).NumberFormat = "@"
-    ws.Range("A1").Resize(1, m_outCols).Value = m_outHeader
-    w.NextRow = 2
-    Set NewWriterSheet = ws
-End Function
+Private Sub TempStartFile(ByRef w As TempWriter)
+    Dim p As String, fn As Integer
+    p = m_tempFolder & Application.PathSeparator & w.BaseName & " " & (w.Paths.count + 1) & ".txt"
+    fn = FreeFile
+    Open p For Binary Access Write As #fn
+    w.FileNo = fn
+    w.Paths.Add p
+    w.PartRows = 0
+    PutUtf8 fn, m_headerLine & vbCrLf
+End Sub
 
-Private Sub WriterAdd(ByRef w As RowWriter, ByRef rowVals() As Variant)
-    Dim j As Long
+Private Sub TempAdd(ByRef w As TempWriter, ByVal rowText As String)
     w.Fill = w.Fill + 1
-    For j = 1 To m_outCols
-        w.Buf(w.Fill, j) = rowVals(j)
-    Next j
-    If w.Fill = WRITE_BLOCK_ROWS Then WriterFlush w
+    w.Lines(w.Fill) = rowText
+    If w.Fill = WRITE_BLOCK_ROWS Then TempFlush w
 End Sub
 
-Private Sub WriterFlush(ByRef w As RowWriter)
-    Dim done As Long, n As Long, room As Long, chunkArr() As Variant, r As Long, j As Long
+Private Sub TempFlush(ByRef w As TempWriter)
+    Dim done As Long, n As Long, room As Long, chunk() As String, i As Long, fn As Integer
     Do While done < w.Fill
-        room = RAW_ROWS_PER_SHEET - (w.NextRow - 2)
+        If w.FileNo = 0 Then TempStartFile w
+        room = RAW_ROWS_PER_SHEET - w.PartRows
         If room <= 0 Then
-            w.Part = w.Part + 1
-            Set w.Sheet = NewWriterSheet(w, w.Sheet)
+            fn = w.FileNo
+            Close #fn
+            TempStartFile w
             room = RAW_ROWS_PER_SHEET
         End If
         n = w.Fill - done
         If n > room Then n = room
         If done = 0 And n = WRITE_BLOCK_ROWS Then
-            w.Sheet.Cells(w.NextRow, 1).Resize(n, m_outCols).Value = w.Buf
+            PutUtf8 w.FileNo, Join(w.Lines, vbCrLf) & vbCrLf
         Else
-            ReDim chunkArr(1 To n, 1 To m_outCols)
-            For r = 1 To n
-                For j = 1 To m_outCols
-                    chunkArr(r, j) = w.Buf(done + r, j)
-                Next j
-            Next r
-            w.Sheet.Cells(w.NextRow, 1).Resize(n, m_outCols).Value = chunkArr
+            ReDim chunk(1 To n)
+            For i = 1 To n
+                chunk(i) = w.Lines(done + i)
+            Next i
+            PutUtf8 w.FileNo, Join(chunk, vbCrLf) & vbCrLf
         End If
-        w.NextRow = w.NextRow + n
+        w.PartRows = w.PartRows + n
         w.Total = w.Total + n
         done = done + n
     Loop
     w.Fill = 0
+End Sub
+
+Private Sub TempClose(ByRef w As TempWriter)
+    Dim fn As Integer
+    TempFlush w
+    If w.FileNo <> 0 Then
+        fn = w.FileNo
+        Close #fn
+        w.FileNo = 0
+    End If
+End Sub
+
+' Writes text to an open binary file as UTF-8 (so accented names survive),
+' without the byte-order mark ADODB puts at the start.
+Private Sub PutUtf8(ByVal fn As Integer, ByVal s As String)
+    Dim stm As Object, b() As Byte
+    If Len(s) = 0 Then Exit Sub
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 2                ' text
+    stm.Charset = "utf-8"
+    stm.Open
+    stm.WriteText s
+    stm.Position = 0
+    stm.Type = 1                ' binary
+    stm.Position = 3            ' past the BOM
+    b = stm.Read
+    stm.Close
+    Put #fn, , b
+End Sub
+
+' One export row as a line of a temporary file.
+Private Function RowLine(ByRef rowVals() As Variant) As String
+    Dim j As Long
+    For j = 1 To m_outCols
+        m_fields(j) = FieldText(rowVals(j), j)
+    Next j
+    RowLine = Join(m_fields, vbTab)
+End Function
+
+' A value written so Excel's text import reads it back as the same value:
+' dates as mm/dd/yyyy (the date column is imported month/day/year),
+' numbers with a "." decimal and no separators, text with any tab or line
+' break turned into a space (they would split the row). A text column of
+' digit strings longer than 15 is marked to import as text, because as a
+' number Excel keeps only 15 digits and the rest would be lost.
+Private Function FieldText(ByVal v As Variant, ByVal j As Long) As String
+    Select Case VarType(v)
+        Case vbEmpty, vbNull, vbError
+            ' left empty
+        Case vbString
+            FieldText = CleanFieldText(CStr(v))
+            If Len(FieldText) > 15 Then
+                If Not m_textCol(j) Then
+                    If Not (FieldText Like "*[!0-9]*") Then m_textCol(j) = True
+                End If
+            End If
+        Case vbDate
+            If v = Int(v) Then
+                FieldText = Format$(v, "mm\/dd\/yyyy")
+            Else
+                FieldText = Format$(v, "mm\/dd\/yyyy hh:nn:ss")
+            End If
+        Case vbBoolean
+            If v Then FieldText = "TRUE" Else FieldText = "FALSE"
+        Case Else
+            FieldText = Trim$(Str$(v))
+    End Select
+End Function
+
+Private Function CleanFieldText(ByVal s As String) As String
+    If InStr(s, vbTab) > 0 Or InStr(s, vbCr) > 0 Or InStr(s, vbLf) > 0 Then
+        s = Replace(Replace(Replace(Replace(s, vbCrLf, " "), vbCr, " "), vbLf, " "), vbTab, " ")
+    End If
+    CleanFieldText = s
+End Function
+
+' How Excel reads each column back: the date column month/day/year,
+' Counterparty and over-long digit columns as text, the rest as Excel
+' would read them typed in (as Module9's value rewrite left them).
+Private Function ImportFieldInfo() As Variant
+    Dim fi() As Variant, j As Long, t As Long
+    ReDim fi(0 To m_outCols - 1)
+    For j = 1 To m_outCols
+        t = xlGeneralFormat
+        If j = m_dateCol Then t = xlMDYFormat
+        If j = m_cpTextCol Or m_textCol(j) Then t = xlTextFormat
+        fi(j - 1) = Array(j, t)
+    Next j
+    ImportFieldInfo = fi
+End Function
+
+' Opens a temporary file in Excel as a workbook of its own.
+Private Function OpenTempPart(ByVal p As String) As Workbook
+    Workbooks.OpenText fileName:=p, Origin:=65001, StartRow:=1, DataType:=xlDelimited, _
+        TextQualifier:=xlTextQualifierNone, ConsecutiveDelimiter:=False, Tab:=True, _
+        Semicolon:=False, Comma:=False, Space:=False, Other:=False, _
+        FieldInfo:=ImportFieldInfo(), Local:=False
+    Set OpenTempPart = ActiveWorkbook
+    m_unsaved.Add OpenTempPart
+End Function
+
+' Pass 2 for one list: each temporary file becomes basePath.xlsx, or
+' basePath (part 1).xlsx, (part 2)... when there is more than one, each
+' saved and closed before the next is opened. Earlier runs' files under
+' basePath are removed first, so a smaller re-run leaves no stale parts.
+' copyTo: when the whole list fits in one file, it is also copied onto
+' this sheet (ConsolidatedData) and copied comes back True.
+' Returns the file names, for the completion message.
+Private Function SaveTempPartsAsXlsx(ByRef w As TempWriter, ByVal basePath As String, _
+    ByVal dateName As String, ByVal dateFormat As String, ByVal amtName As String, _
+    ByVal copyTo As Worksheet, ByRef copied As Boolean) As String
+    Dim p As Long, n As Long, wb As Workbook, ws As Worksheet, target As String, fileList As String
+    Dim baseName As String
+
+    baseName = Mid$(basePath, InStrRev(basePath, Application.PathSeparator) + 1)
+    RemoveOldExportFiles basePath
+    n = w.Paths.count
+    For p = 1 To n
+        SetStage "saving " & w.BaseName & IIf(n > 1, " (part " & p & " of " & n & ")", "")
+        DoEvents
+        Set wb = OpenTempPart(CStr(w.Paths(p)))
+        Set ws = wb.Worksheets(1)
+        ws.Name = w.BaseName
+        StyleHeaderRow ws
+        FormatDataColumns ws, dateName, dateFormat, amtName
+        TidyDataSheet ws
+
+        If n = 1 And Not copyTo Is Nothing Then
+            ws.UsedRange.Copy Destination:=copyTo.Range("A1")
+            copied = True
+        End If
+
+        If n = 1 Then target = basePath & ".xlsx" Else target = basePath & " (part " & p & ").xlsx"
+        SetSheetZoom85 wb, Array(ws.Name)
+        Application.DisplayAlerts = False
+        wb.SaveAs fileName:=target, FileFormat:=51
+        MarkSaved wb
+        wb.Close SaveChanges:=False
+
+        Kill CStr(w.Paths(p))
+        If Len(fileList) > 0 Then fileList = fileList & vbCrLf & "   "
+        fileList = fileList & Mid$(target, InStrRev(target, Application.PathSeparator) + 1)
+    Next p
+    If n = 0 Then fileList = "(none)"
+    SaveTempPartsAsXlsx = fileList
+End Function
+
+' The first temporary file of a list, onto a sheet (the alerted rows onto
+' ConsolidatedData).
+Private Sub CopyTempPartToSheet(ByRef w As TempWriter, ByVal target As Worksheet)
+    Dim wb As Workbook
+    If w.Paths.count = 0 Then Exit Sub
+    Set wb = OpenTempPart(CStr(w.Paths(1)))
+    wb.Worksheets(1).UsedRange.Copy Destination:=target.Range("A1")
+    MarkSaved wb
+    Application.DisplayAlerts = False
+    wb.Close SaveChanges:=False
+End Sub
+
+Private Sub DeleteTempParts(ByRef w As TempWriter)
+    Dim p As Variant
+    On Error Resume Next
+    For Each p In w.Paths
+        Kill CStr(p)
+    Next p
+    On Error GoTo 0
+End Sub
+
+' Deletes basePath.xlsx and basePath (part n).xlsx from an earlier run,
+' closing any of them that are open in Excel.
+Private Sub RemoveOldExportFiles(ByVal basePath As String)
+    Dim folder As String, f As String, found As Collection, item As Variant
+    folder = Left$(basePath, InStrRev(basePath, Application.PathSeparator))
+    Set found = New Collection
+    If Len(Dir(basePath & ".xlsx")) > 0 Then found.Add basePath & ".xlsx"
+    f = Dir(basePath & " (part *).xlsx")
+    Do While Len(f) > 0
+        found.Add folder & f
+        f = Dir()
+    Loop
+    For Each item In found
+        CloseIfAlreadyOpen CStr(item)
+        Kill CStr(item)
+    Next item
+End Sub
+
+' Removes the scratch folder and anything left in it (also called by
+' CancelHandler after a failed run, with every file closed first).
+Private Sub RemoveTempFolder()
+    On Error Resume Next
+    If Len(m_tempFolder) = 0 Then Exit Sub
+    Kill m_tempFolder & Application.PathSeparator & "*.*"
+    RmDir m_tempFolder
+    m_tempFolder = ""
+    On Error GoTo 0
 End Sub
 
 ' Bold white on blue, the header look the exports carried from the source.
