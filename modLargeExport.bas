@@ -2,75 +2,108 @@ Attribute VB_Name = "modLargeExport"
 Option Explicit
 
 ' ==========================================================
-' LARGE-FILE EXPORT - a separate copy of Module9's Export Trx File
+' LARGE-FILE EXPORT (POWER QUERY) - a separate copy of Export Trx File
 ' ==========================================================
-' For cases with hundreds of thousands of transaction rows (built for a
-' 6 lakh row case), which the normal Export Trx File in Module9 can't
-' finish. Same export modes, same output files, same names. Run it
-' from Developer > Macros > Consolidated_AML_Workflow_Large; the
-' Export Trx File button still runs the normal Module9 version.
+' For cases with hundreds of thousands of transaction rows, which the
+' normal Export Trx File in Module9 can't handle. Same three export modes,
+' same output files and names, same pivots. Run it from
+' Developer > Macros > Consolidated_AML_Workflow_Large; the Export Trx
+' File button still runs the normal Module9 version.
 '
-' What is different from Module9, and why:
-'   - ArrCell takes its array ByRef (ByVal copied the whole column on
-'     every row - at 6 lakh rows that never finishes).
-'   - Formulas are frozen to values a column at a time, not the whole
-'     sheet in one array.
-'   - Rows are dropped by one sort + one block delete, not a filtered
-'     multi-area delete.
-'   - Big sheets skip the wrapped row fit and fit columns to a sample.
-'   - EN skips the raw snapshot sheet; date pivots skip their copy of
-'     the data when no dates are blank.
-'   - Pivot caches are created from an address, not a Range object.
-'   - The status bar shows the current step, and an error says which
-'     step it happened in.
+' Module9 opens every source file in Excel, pastes it under the rows
+' already combined, then copies that sheet around and deletes the rows
+' each export doesn't want. At 6 lakh rows that is several full copies of
+' the data in memory, and the paste itself fails ("the Copy area and
+' paste area aren't the same size") when a file's used range runs far
+' below its data, or when the files add up to more rows than a sheet
+' holds.
+'
+' Here Power Query reads the files instead. It combines the folder, does
+' the date / amount / Counterparty cleanup and filters each output sheet,
+' and each sheet is loaded straight into its export workbook. The queries
+' are deleted again before saving, so the exports hold plain data as
+' Module9's do. VBA still does the export picker, the date windows, the
+' pivots, saving, ConsolidatedData and the tracker.
+'
+' Differences from Module9's output:
+'   - Counterparty is a value, not a formula.
+'   - Numbers a source file holds as text stay text (Module9's value
+'     rewrite turned them into numbers). Amounts are still converted.
+'   - Files are matched up by column NAME when combined; Module9 stacked
+'     them by column position.
+'   - A file's "Transaction ID" header must be in its first 100 rows.
+'   - The Pivot Analysis export, which is saved into the same \Pivot
+'     folder it reads from, is not read back in as data on the next run.
+'   - EN's Raw Transactions carries on onto "Raw Transactions (2)",
+'     "(3)"... when it has more rows than one sheet holds.
+'   - Legacy leaves out Raw Transactions (the files themselves are in the
+'     Transaction Files folder), and CP Selection and DeDupe carry on onto
+'     "(2)", "(3)"... sheets. Its four pivots are built on two totals
+'     sheets Power Query adds up (Scenario Totals, Daily Totals), so they
+'     work however many sheets the rows are spread over; the pivots add
+'     the totals back up, so every figure matches a pivot on the rows.
+'   - When Legacy's DeDupe is too big for ConsolidatedData, ConsolidatedData
+'     gets only the rows that carry an alert, and Sheet7's narrative
+'     figures are worked out by Power Query over every transaction - see
+'     PointSheet7AtLargeStats.
+'   - Any other sheet that would need more rows than Excel allows stops
+'     the export with a message instead of being cut short.
+'   - Legacy's duplicate check treats a Transaction ID held as a number in
+'     one file and as text in another as the same ID, and ignores case -
+'     as RemoveDuplicates did after Module9 turned both into numbers.
 ' ==========================================================
 
 ' TidyDataSheet: sheets up to this many rows get the full column + wrapped
 ' row fit; bigger ones fit columns to the first TIDY_SAMPLE_ROWS rows only.
 Private Const TIDY_FULL_FIT_ROWS As Long = 50000
 Private Const TIDY_SAMPLE_ROWS As Long = 2000
-' FilterRowsFast: added to a dropped row's sort key so every dropped row
-' sorts after every kept one (bigger than Excel's 1,048,576-row limit).
-Private Const DROP_KEY_OFFSET As Long = 2000000
+
+' Rows per Raw Transactions sheet when Raw has to be spread over several
+' (a sheet holds 1,048,575 below its header).
+Private Const RAW_ROWS_PER_SHEET As Long = 1000000
 
 ' The step the export is on - shown on the status bar while it runs and
 ' named in the error message if it fails.
 Private m_stage As String
 
+' Export workbooks created this run and not yet saved.
+Private m_unsaved As Collection
+
+' Very hidden sheet in this workbook holding Sheet7's narrative figures for
+' a case too big for ConsolidatedData (B1 = that case's ECM ID).
+Private Const STATS_SHEET As String = "_LargeCaseStats"
+
 Sub Consolidated_AML_Workflow_Large()
 
 ' ==========================================
-' THE "JACKPOT" CONSOLIDATION WORKFLOW
+' LARGE-FILE EXPORT (POWER QUERY)
 ' ==========================================
 Application.EnableCancelKey = xlErrorHandler
 On Error GoTo CancelHandler
 m_stage = "starting the export"
+Set m_unsaved = New Collection
 
 ' Safe default so CancelHandler can always restore Calculation even
 ' if an error fires before the real capture below ever runs.
 Dim origCalc As XlCalculation
 origCalc = xlCalculationAutomatic
 
-Dim WbSource As Workbook, WsMaster As Worksheet, wsSource As Worksheet, wsHome As Worksheet
-Dim wsRealCD As Worksheet
-Dim LastRowSource As Long, LastRowMaster As Long, lastCol As Long
-Dim HeaderCopied As Boolean
-
-Dim HeaderCell As Range, HeaderRow As Long, HeadCol As Long
-Dim DateHeader As Range, DateRange As Range, AmtHeader As Range, AmtRange As Range
-Dim drCrCell As Range, benNameCell As Range, origNameCell As Range
-Dim drCrCol As Long, benNameCol As Long, origNameCol As Long
-Dim WsRawTemp As Worksheet, newWb As Workbook, wsExport As Worksheet, ws As Worksheet
-Dim TransCol As Long, AlertCol As Long
-Dim desktopPath As String, excelFileName As String, saveFolderPath As String, folderPath As String
-Dim finalSavePath As String
+Dim wsHome As Worksheet, wsRealCD As Worksheet, ws As Worksheet
+Dim newWb As Workbook, lbWb As Workbook
+Dim desktopPath As String, saveFolderPath As String, folderPath As String, slash As String
+Dim excelFileName As String, finalSavePath As String
 Dim ecmID As String, AlertID As String
-Dim wsPivot As Worksheet, ptCache As PivotCache, pt As PivotTable, ptRange As Range
-Dim lastRowCP As Long, lastColCP As Long
-Dim slash As String
-
 Dim FSO As Object, objFolder As Object, objFile As Object
 Dim fileFound As Boolean
+Dim wsPivot As Worksheet, ptCache As PivotCache, pt As PivotTable, ptRange As Range
+Dim lastRowCP As Long, lastColCP As Long
+Dim wsExport As Worksheet, wsDeDupe As Worksheet
+
+' Power Query state: the combine query every export workbook starts from,
+' the cleanup query built on it, and the real header names they use.
+Dim excluded As Collection, baseM As String, cleanM As String, hdr As Variant
+Dim colDate As String, colAmt As String, colDrCr As String, colBen As String
+Dim colOrig As String, colFlag As String, colTrans As String, colAlert As String, colCp As String
 
 ' --- THE ULTIMATE PATH FIX ---
 slash = Application.PathSeparator
@@ -85,16 +118,17 @@ End If
 On Error GoTo CancelHandler
 
 ' ==========================================
-' 1. SETUP & THE PROVEN FOLDER CONNECTION
+' 1. SETUP (same checks as Module9)
 ' ==========================================
-
 ThisWorkbook.Unprotect Password:="p7ss"
 On Error Resume Next
 ThisWorkbook.Sheets("Sheet1").Unprotect Password:="p7ss"
 ThisWorkbook.Sheets("ConsolidatedData").Unprotect Password:="p7ss"
 On Error GoTo CancelHandler
 
-Set wsHome = ActiveWorkbook.Sheets("Sheet1")
+' ThisWorkbook rather than Module9's ActiveWorkbook: this is run from the
+' Macros dialog, where the active workbook may well be the last export.
+Set wsHome = ThisWorkbook.Sheets("Sheet1")
 ecmID = Trim(wsHome.Range("J9").Value)
 AlertID = Trim(wsHome.Range("J10").Value)
 If AlertID = "" Then AlertID = "ALERT"
@@ -152,73 +186,52 @@ If Not fileFound Then
     Exit Sub
 End If
 
+' Files Power Query must not read as transaction data: this workbook, and
+' in Pivot mode the Pivot Analysis export, which is saved into the same
+' \Pivot folder it reads from and would otherwise come back in as extra
+' rows on the next run.
+Dim pivotFileName As String
+pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
+Set excluded = New Collection
+excluded.Add ThisWorkbook.Name
+If exportMode = "PIVOT" Then
+    excluded.Add pivotFileName
+    excluded.Add PreviousExportPath(pivotFileName)
+End If
+baseM = BuildBaseM(folderPath & slash, excluded)
+
+origCalc = Application.Calculation
+Application.Calculation = xlCalculationManual
+Application.EnableEvents = False
+Application.ScreenUpdating = False
+Application.DisplayAlerts = False
+
 ' ==========================================
 ' 1c. PIVOT ANALYSIS EXPORT (own source folder: \Pivot)
 ' ==========================================
 If exportMode = "PIVOT" Then
-    Application.ScreenUpdating = False
-    Application.DisplayAlerts = False
-    origCalc = Application.Calculation
-    Application.Calculation = xlCalculationManual
-    Application.EnableEvents = False
+    Dim newWbPiv As Workbook, pSh As Long, pivotSavePath As String
 
-    Dim wsPivScratch As Worksheet
-    Dim pFile As Object, pWb As Workbook, pWs As Worksheet
-    Dim pHeaderCell As Range, pHeaderRow As Long, pHeadCol As Long
-    Dim pLastRowSource As Long, pLastRowMaster As Long, pHeaderCopied As Boolean
-
-    SafeDeleteSheet ThisWorkbook, "TempPivotScratch"
-    Set wsPivScratch = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
-    wsPivScratch.Name = "TempPivotScratch"
-
-    pHeaderCopied = False
-    For Each pFile In objFolder.Files
-        If (InStr(1, pFile.Name, ".xls", vbTextCompare) > 0) And (Left(pFile.Name, 2) <> "~$") And (pFile.Name <> ThisWorkbook.Name) Then
-            SetStage "reading " & pFile.Name
-            Set pWb = Workbooks.Open(pFile.path, ReadOnly:=True, UpdateLinks:=False)
-            On Error Resume Next
-            Set pWs = pWb.Sheets(1)
-            On Error GoTo CancelHandler
-            If Not pWs Is Nothing Then
-                With pWs
-                    Set pHeaderCell = .Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole)
-                    If Not pHeaderCell Is Nothing Then
-                        pHeaderRow = pHeaderCell.row
-                        pHeadCol = pHeaderCell.Column
-                        pLastRowSource = .Cells(.Rows.count, pHeadCol).End(xlUp).row
-                        If pLastRowSource >= pHeaderRow Then
-                            If Not pHeaderCopied Then
-                                .Range(.Cells(pHeaderRow, pHeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=wsPivScratch.Range("A1")
-                                pHeaderCopied = True
-                            Else
-                                If pLastRowSource > pHeaderRow Then
-                                    pLastRowMaster = wsPivScratch.Cells(wsPivScratch.Rows.count, "A").End(xlUp).row + 1
-                                    .Range(.Cells(pHeaderRow + 1, pHeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=wsPivScratch.Range("A" & pLastRowMaster)
-                                End If
-                            End If
-                        End If
-                    End If
-                End With
-            End If
-            Application.CutCopyMode = False
-            pWb.Close SaveChanges:=False
-        End If
-    Next pFile
-
-    SetStage "cleaning the Pivot data"
-    CleanTransactionData wsPivScratch
-
-    Dim newWbPiv As Workbook
-    Set newWbPiv = Workbooks.Add
+    SetStage "reading the column headers"
+    Set newWbPiv = NewOutputWorkbook()
     newWbPiv.Sheets(1).Name = "Pivot Data"
-    If wsPivScratch.UsedRange.Cells.count > 0 Then
-        wsPivScratch.UsedRange.Copy Destination:=newWbPiv.Sheets("Pivot Data").Range("A1")
+    newWbPiv.Queries.Add Name:="TrxBase", Formula:=baseM
+    hdr = ReadHeaderNames(newWbPiv)
+    If IsEmpty(hdr) Then
+        MsgBox NoHeaderMessage(folderPath), vbCritical, "No Transaction Data"
+        GoTo CancelHandler
     End If
+    ResolveColumns hdr, colDate, colAmt, colDrCr, colBen, colOrig, colFlag, colTrans, colAlert, colCp
+    newWbPiv.Queries.Add Name:="TrxClean", Formula:=BuildCleanM(colDate, colAmt, colDrCr, colBen, colOrig, colCp)
+
+    SetStage "loading the Pivot data"
+    LoadQueryToSheet newWbPiv.Sheets("Pivot Data"), "TrxClean"
+    RemoveAllQueries newWbPiv
+    FormatDataColumns newWbPiv.Sheets("Pivot Data"), colDate, "m/d/yyyy", colAmt
 
     SetStage "building the Pivot Analysis pivots"
     BuildEnPivots newWbPiv, "Pivot Data", "Pivot", "Pivot Data"
 
-    Dim pSh As Long
     For pSh = newWbPiv.Sheets.count To 1 Step -1
         Select Case newWbPiv.Sheets(pSh).Name
             Case "Pivot Data", "Pivot"
@@ -228,39 +241,22 @@ If exportMode = "PIVOT" Then
         End Select
     Next pSh
 
-    SafeDeleteSheet ThisWorkbook, "TempPivotScratch"
-
-    ' Same tidy pass every other mode's data sheets already get (Legacy's
-    ' Raw Transactions/CP Selection/DeDupe, EN Network's 3 sheets,
-    ' Lookback Transactions) - "Pivot Data" here was the one sheet still
-    ' missing it.
+    SetStage "formatting the Pivot Data sheet"
     TidyDataSheet newWbPiv.Sheets("Pivot Data")
 
-    Dim pivotFileName As String, pivotSavePath As String
-    pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
     SetStage "saving the Pivot Analysis file"
     CloseIfAlreadyOpen pivotSavePath
     MoveExistingExportAside pivotSavePath
     SetSheetZoom85 newWbPiv, Array("Pivot Data", "Pivot")
+    Application.DisplayAlerts = False
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
+    MarkSaved newWbPiv
     DiscardPreviousExport pivotSavePath
 
     newWbPiv.Sheets("Pivot Data").Activate
+    FinishRun origCalc
 
-    Application.EnableCancelKey = xlInterrupt
-    Application.Calculation = origCalc
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
-    On Error Resume Next
-    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
-    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
-    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
-    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
-    On Error GoTo 0
-
-    Application.StatusBar = False
     MsgBox "Pivot Analysis export complete!" & vbCrLf & _
         "ConsolidatedData was not touched." & vbCrLf & _
         "Saved to:" & vbCrLf & pivotSavePath, vbInformation, "Success"
@@ -269,240 +265,104 @@ End If
 
 ' Initialize the REAL ConsolidatedData sheet
 On Error Resume Next
-Set wsRealCD = wsHome.Parent.Sheets("ConsolidatedData")
+Set wsRealCD = ThisWorkbook.Sheets("ConsolidatedData")
 On Error GoTo CancelHandler
 
 If wsRealCD Is Nothing Then
-    Set wsRealCD = wsHome.Parent.Sheets.Add(After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count))
+    Set wsRealCD = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
     wsRealCD.Name = "ConsolidatedData"
 End If
 
-' Disposable SCRATCH copy
-wsHome.Parent.Unprotect Password:="p7ss"
-SafeDeleteSheet wsHome.Parent, "TempConsolidatedScratch"
-Set WsMaster = wsHome.Parent.Sheets.Add(After:=wsHome.Parent.Sheets(wsHome.Parent.Sheets.count))
-WsMaster.Name = "TempConsolidatedScratch"
-WsMaster.Visible = xlSheetVeryHidden
-
-origCalc = Application.Calculation
-Application.Calculation = xlCalculationManual
-Application.EnableEvents = False
-
-Application.ScreenUpdating = False
-Application.DisplayAlerts = False
-HeaderCopied = False
-
 ' ==========================================
-' 2. COMBINE FILES
+' 2-3. COMBINE + CLEANUP (Power Query)
 ' ==========================================
-For Each objFile In objFolder.Files
-    If (InStr(1, objFile.Name, ".xls", vbTextCompare) > 0) And (Left(objFile.Name, 2) <> "~$") And (objFile.Name <> ThisWorkbook.Name) Then
-        SetStage "reading " & objFile.Name
-        Set WbSource = Workbooks.Open(objFile.path, ReadOnly:=True, UpdateLinks:=False)
-        On Error Resume Next
-        Set wsSource = WbSource.Sheets(1)
-        On Error GoTo CancelHandler
-
-        If Not wsSource Is Nothing Then
-            With wsSource
-                Set HeaderCell = .Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole)
-                If Not HeaderCell Is Nothing Then
-                    HeaderRow = HeaderCell.row
-                    HeadCol = HeaderCell.Column
-                    LastRowSource = .Cells(.Rows.count, HeadCol).End(xlUp).row
-
-                    If LastRowSource >= HeaderRow Then
-                        If Not HeaderCopied Then
-                            .Range(.Cells(HeaderRow, HeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=WsMaster.Range("A1")
-                            HeaderCopied = True
-                        Else
-                            If LastRowSource > HeaderRow Then
-                                LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, "A").End(xlUp).row + 1
-                                .Range(.Cells(HeaderRow + 1, HeadCol), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy Destination:=WsMaster.Range("A" & LastRowMaster)
-                            End If
-                        End If
-                    End If
-                End If
-            End With
-        End If
-        Application.CutCopyMode = False
-        WbSource.Close SaveChanges:=False
-    End If
-Next objFile
-
-Application.CutCopyMode = False
-
-SetStage "converting formulas to values"
-FreezeValuesByColumn WsMaster
-
-' ==========================================
-' 2.5 SNAPSHOT RAW DATA (ROCK-SOLID RANGE CLONE)
-' ==========================================
-' Legacy only. Legacy's Raw Transactions is the data BEFORE cleanup, so it
-' needs this snapshot. EN's Raw Transactions is the data AFTER cleanup and is
-' copied straight from WsMaster (see 4-AN), so for EN this would be a full
-' extra copy of every row for nothing - at 600,000 rows, a lot of memory.
-SafeDeleteSheet wsHome.Parent, "TempRawBackup"
-If exportMode <> "EN" Then
-    Set WsRawTemp = wsHome.Parent.Sheets.Add(After:=wsHome)
-    WsRawTemp.Name = "TempRawBackup"
-
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=WsRawTemp.Range("A1")
-    End If
-    WsRawTemp.Visible = xlSheetVeryHidden
+' The queries live in the export workbook they fill, and are deleted
+' again before it is saved. Reading the header row first means missing
+' columns get Module9's own messages, and the cleanup and filters can be
+' written against the real column names.
+SetStage "reading the column headers"
+Set newWb = NewOutputWorkbook()
+newWb.Queries.Add Name:="TrxBase", Formula:=baseM
+hdr = ReadHeaderNames(newWb)
+If IsEmpty(hdr) Then
+    MsgBox NoHeaderMessage(folderPath), vbCritical, "No Transaction Data"
+    GoTo CancelHandler
 End If
-
-' ==========================================
-' 3. AGGRESSIVE DATA CLEANUP
-' ==========================================
-SetStage "cleaning dates, amounts and Counterparty"
-Set DateHeader = WsMaster.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
-If Not DateHeader Is Nothing Then
-    LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, DateHeader.Column).End(xlUp).row
-    If LastRowMaster > 1 Then
-        Set DateRange = WsMaster.Range(WsMaster.Cells(2, DateHeader.Column), WsMaster.Cells(LastRowMaster, DateHeader.Column))
-        DateRange.TextToColumns Destination:=DateRange.Cells(1, 1), DataType:=xlDelimited, FieldInfo:=Array(Array(1, 3))
-        DateRange.NumberFormat = "dddd, mmmm d, yyyy"
-    End If
-End If
-
-Set AmtHeader = WsMaster.Rows(1).Find(What:="Transaction Amount", LookIn:=xlValues, LookAt:=xlPart)
-If Not AmtHeader Is Nothing Then
-    LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, AmtHeader.Column).End(xlUp).row
-    If LastRowMaster > 1 Then
-        Set AmtRange = WsMaster.Range(WsMaster.Cells(2, AmtHeader.Column), WsMaster.Cells(LastRowMaster, AmtHeader.Column))
-        AmtRange.Value = AmtRange.Value
-        AmtRange.NumberFormat = "$#,##0.00"
-    End If
-End If
-
-Set drCrCell = WsMaster.Rows(1).Find(What:="Dr Cr", LookAt:=xlPart)
-Set benNameCell = WsMaster.Rows(1).Find(What:="Beneficiary Name", LookAt:=xlPart)
-Set origNameCell = WsMaster.Rows(1).Find(What:="Originator Name", LookAt:=xlPart)
-
-If Not drCrCell Is Nothing And Not benNameCell Is Nothing And Not origNameCell Is Nothing Then
-    drCrCol = drCrCell.Column
-    benNameCol = benNameCell.Column
-    origNameCol = origNameCell.Column
-
-    LastRowMaster = WsMaster.Cells(WsMaster.Rows.count, "A").End(xlUp).row
-    lastCol = WsMaster.Cells(1, WsMaster.Columns.count).End(xlToLeft).Column + 1
-
-    If LastRowMaster > 1 Then
-        WsMaster.Cells(1, lastCol).Value = "Counterparty"
-        WsMaster.Range(WsMaster.Cells(2, lastCol), WsMaster.Cells(LastRowMaster, lastCol)).FormulaR1C1 = _
-        "=IF(RC" & drCrCol & "=""DR"", IF(RC" & benNameCol & "="""","""",RC" & benNameCol & "), IF(RC" & origNameCol & "="""","""",RC" & origNameCol & "))"
-
-        WsMaster.Cells(1, lastCol - 1).Copy
-        WsMaster.Cells(1, lastCol).PasteSpecial Paste:=xlPasteFormats
-        WsMaster.Range(WsMaster.Cells(2, lastCol - 1), WsMaster.Cells(LastRowMaster, lastCol - 1)).Copy
-        WsMaster.Range(WsMaster.Cells(2, lastCol), WsMaster.Cells(LastRowMaster, lastCol)).PasteSpecial Paste:=xlPasteFormats
-        Application.CutCopyMode = False
-    End If
-End If
+ResolveColumns hdr, colDate, colAmt, colDrCr, colBen, colOrig, colFlag, colTrans, colAlert, colCp
+cleanM = BuildCleanM(colDate, colAmt, colDrCr, colBen, colOrig, colCp)
+newWb.Queries.Add Name:="TrxClean", Formula:=cleanM
 
 ' ==========================================
 ' 4-EN. EN NETWORK EXPORT
 ' ==========================================
 If exportMode = "EN" Then
-    Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
-    Dim cvLB As Variant
-    Dim firstAlertedLB As Date, lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
-    Dim wsLB As Worksheet
-    Dim lbSavedPath As String
+    Dim wsLB As Worksheet, wsRawEN As Worksheet, wsAlertedEN As Worksheet, wsNonEN As Worksheet
+    Dim firstAlerted As Date, lastAlerted As Date
+    Dim lbStart As Date, lbEnd As Date, winStartEN As Date, winEndEN As Date
+    Dim lbSavedPath As String, nonCount As Long, rEN As Long
 
-    aColLB = 0: aDateColLB = 0
-    On Error Resume Next
-    aColLB = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
-    aDateColLB = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-    On Error GoTo CancelHandler
-    If aColLB = 0 Then
+    If Len(colFlag) = 0 Then
         MsgBox "EN Network export needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found in the data.", vbCritical, "Column Not Found"
         GoTo CancelHandler
     End If
 
-    SetStage "finding the alerted date range"
-    Dim sArrLB As Variant, dArrLB As Variant
-    scanLastLB = LastDataRow(WsMaster)
-    haveAlertedLB = False
-    If scanLastLB > 1 Then
-        sArrLB = WsMaster.Range(WsMaster.Cells(2, aColLB), WsMaster.Cells(scanLastLB, aColLB)).Value
-        If aDateColLB > 0 Then _
-            dArrLB = WsMaster.Range(WsMaster.Cells(2, aDateColLB), WsMaster.Cells(scanLastLB, aDateColLB)).Value
-        For rLB = 1 To scanLastLB - 1
-            If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
-                cvLB = ArrCell(dArrLB, rLB)
-                If IsDate(cvLB) Then
-                    ' Track BOTH ends of the alerted period: the earliest alert
-                    ' sets where the lookback STARTS, the latest sets where it
-                    ' ENDS. Only the latest was tracked before, so the start was
-                    ' measured back from the last alert instead of the first.
-                    If Not haveAlertedLB Then
-                        firstAlertedLB = CDate(cvLB)
-                        lastAlertedLB = CDate(cvLB)
-                        haveAlertedLB = True
-                    Else
-                        If CDate(cvLB) < firstAlertedLB Then firstAlertedLB = CDate(cvLB)
-                        If CDate(cvLB) > lastAlertedLB Then lastAlertedLB = CDate(cvLB)
-                    End If
-                End If
-            End If
-        Next rLB
-    End If
-    If Not haveAlertedLB Then
+    Set wsRawEN = newWb.Sheets(1)
+    wsRawEN.Name = "Raw Transactions"
+    Set wsAlertedEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+    wsAlertedEN.Name = "Alerted Transaction"
+    Set wsNonEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+    wsNonEN.Name = "Non Alerted Transaction"
+
+    ' The alerted rows are loaded first: their dates set both windows below.
+    SetStage "loading the alerted transactions"
+    newWb.Queries.Add Name:="TrxAlerted", Formula:=BuildFilterM("TrxClean", colFlag, "Yes", "", False, 0, 0)
+    LoadQueryToSheet wsAlertedEN, "TrxAlerted"
+    ' Date format first: a date only reads back as a Date once its cell is
+    ' formatted as one.
+    FormatDataColumns wsAlertedEN, colDate, "m/d/yyyy", colAmt
+
+    If Not AlertedDateSpan(wsAlertedEN, colDate, firstAlerted, lastAlerted) Then
         MsgBox "No dated 'Yes' alerted transactions were found, so the EN Network export can't be built.", vbCritical, "No Alerted Rows"
         GoTo CancelHandler
     End If
-    ' START: the first day of the FIRST alerted transaction's month, one
-    ' year back. First alert 18 Aug 2025 -> lookback starts 01 Aug 2024.
-    '
-    ' This was measured back from the LATEST alert, which gave a window of
-    ' 12 months before the last alert rather than 12 months before the
-    ' first. With alerts spread across several months that is wrong in two
-    ' ways: the history before the first alert is cut short by however far
-    ' apart the alerts are, and if the alerts span more than a year the
-    ' earliest alerted transaction falls outside its own lookback entirely.
-    ' Anchoring the start on the first alert guarantees a full year of
-    ' history before any alerted activity, and every alert in the window.
-    lbStart = DateSerial(Year(firstAlertedLB) - 1, Month(firstAlertedLB), 1)
 
-    ' End of the MONTH the last alerted transaction falls in, not the
-    ' alerted date itself. Last alerted 09/10 -> window ends 09/30.
-    '
-    ' Day 0 of the following month is the last day of this one, and
-    ' DateSerial rolls a month of 13 over into January of the next year,
-    ' so a December alert correctly gives 12/31 rather than erroring.
-    ' This is the same idiom the Non Alerted window already uses below.
-    '
-    ' Previously this was the alerted date itself, which meant a
-    ' non-alerted transaction later in the same month fell outside the
-    ' lookback even though the Non Alerted export included it.
-    lbEnd = DateSerial(Year(lastAlertedLB), Month(lastAlertedLB) + 1, 0)
+    ' Same windows as Module9 (its comments explain both):
+    ' Lookback - first day of the first alerted month one year back, to the
+    ' last day of the last alerted month.
+    lbStart = DateSerial(Year(firstAlerted) - 1, Month(firstAlerted), 1)
+    lbEnd = DateSerial(Year(lastAlerted), Month(lastAlerted) + 1, 0)
+    ' Non Alerted - the alerted month(s) only.
+    winStartEN = DateSerial(Year(firstAlerted), Month(firstAlerted), 1)
+    winEndEN = DateSerial(Year(lastAlerted), Month(lastAlerted) + 1, 0)
 
-    SetStage "building the Lookback sheet"
-    Set newWb = Workbooks.Add
-    Set wsLB = newWb.Sheets(1)
+    ' ---------------------------------------------------------------
+    ' Lookback Transactions file
+    ' ---------------------------------------------------------------
+    SetStage "loading the Lookback transactions"
+    Set lbWb = NewOutputWorkbook()
+    Set wsLB = lbWb.Sheets(1)
     wsLB.Name = "Lookback Transactions"
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=wsLB.Range("A1")
-    End If
+    lbWb.Queries.Add Name:="TrxBase", Formula:=baseM
+    lbWb.Queries.Add Name:="TrxClean", Formula:=cleanM
+    lbWb.Queries.Add Name:="TrxLookback", Formula:=BuildFilterM("TrxClean", "", "", colDate, True, lbStart, lbEnd)
+    LoadQueryToSheet wsLB, "TrxLookback"
+    RemoveAllQueries lbWb
+    FormatDataColumns wsLB, colDate, "dddd, mmmm d, yyyy", colAmt
 
-    FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
     SetStage "formatting the Lookback sheet"
     TidyDataSheet wsLB
 
     SetStage "building the Lookback pivots"
-    BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
+    BuildEnPivots lbWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
 
-    For rLB = newWb.Sheets.count To 1 Step -1
-        Select Case newWb.Sheets(rLB).Name
+    For rEN = lbWb.Sheets.count To 1 Step -1
+        Select Case lbWb.Sheets(rEN).Name
             Case "Lookback Transactions", "Pivot"
                 ' keep
             Case Else
-                SafeDeleteSheet newWb, newWb.Sheets(rLB).Name
+                SafeDeleteSheet lbWb, lbWb.Sheets(rEN).Name
         End Select
-    Next rLB
+    Next rEN
 
     excelFileName = ecmID & "_" & AlertID & "_Lookback Transactions (" & _
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
@@ -510,128 +370,37 @@ If exportMode = "EN" Then
     SetStage "saving the Lookback file"
     CloseIfAlreadyOpen finalSavePath
     MoveExistingExportAside finalSavePath
-    SetSheetZoom85 newWb, Array("Lookback Transactions", "Pivot")
+    SetSheetZoom85 lbWb, Array("Lookback Transactions", "Pivot")
     Application.DisplayAlerts = False
-    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    lbWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    MarkSaved lbWb
     DiscardPreviousExport finalSavePath
-    Application.DisplayAlerts = True
     lbSavedPath = finalSavePath
 
     ' ---------------------------------------------------------------
-    ' 4-AN. Alerted / Non-Alerted Trx File
+    ' Alerted / Non-Alerted Trx File
     ' ---------------------------------------------------------------
-    Dim wsAlertedEN As Worksheet, wsNonEN As Worksheet, wsRawEN As Worksheet
-    Dim aColEN As Long, aDateColEN As Long
-    Dim rEN As Long, scanLastEN As Long, wsTidy As Variant, cvEN As Variant
-    Dim minAlerted As Date, maxAlerted As Date, haveAlerted As Boolean
-    Dim winStartEN As Date, winEndEN As Date
+    SetStage "loading the Raw Transactions"
+    LoadQueryAcrossSheets newWb, wsRawEN, "TrxClean"
 
-    aColEN = 0: aDateColEN = 0
-    On Error Resume Next
-    aColEN = WsMaster.Rows(1).Find(What:="Is Alerted Transaction?", LookAt:=xlWhole).Column
-    aDateColEN = WsMaster.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-    On Error GoTo CancelHandler
-    If aColEN = 0 Then
-        MsgBox "EN Network export needs an 'Is Alerted Transaction?' column (exact name), but it wasn't found in the data.", vbCritical, "Column Not Found"
-        GoTo CancelHandler
-    End If
+    SetStage "loading the non-alerted transactions"
+    newWb.Queries.Add Name:="TrxNonAlerted", Formula:=BuildFilterM("TrxClean", colFlag, "No", colDate, True, winStartEN, winEndEN)
+    nonCount = LoadQueryToSheet(wsNonEN, "TrxNonAlerted")
+    RemoveAllQueries newWb
 
-    Dim sArrEN As Variant, dArrEN As Variant
-    scanLastEN = LastDataRow(WsMaster)
-    haveAlerted = False
-    If scanLastEN > 1 Then
-        sArrEN = WsMaster.Range(WsMaster.Cells(2, aColEN), WsMaster.Cells(scanLastEN, aColEN)).Value
-        If aDateColEN > 0 Then _
-            dArrEN = WsMaster.Range(WsMaster.Cells(2, aDateColEN), WsMaster.Cells(scanLastEN, aDateColEN)).Value
-        For rEN = 1 To scanLastEN - 1
-            If Trim(CStr(ArrCell(sArrEN, rEN))) = "Yes" Then
-                cvEN = ArrCell(dArrEN, rEN)
-                If IsDate(cvEN) Then
-                    If Not haveAlerted Then
-                        minAlerted = CDate(cvEN): maxAlerted = CDate(cvEN): haveAlerted = True
-                    Else
-                        If CDate(cvEN) < minAlerted Then minAlerted = CDate(cvEN)
-                        If CDate(cvEN) > maxAlerted Then maxAlerted = CDate(cvEN)
-                    End If
-                End If
-            End If
-        Next rEN
-    End If
-    If haveAlerted Then
-        winStartEN = DateSerial(Year(minAlerted), Month(minAlerted), 1)
-        winEndEN = DateSerial(Year(maxAlerted), Month(maxAlerted) + 1, 0)
-    Else
-        MsgBox "No 'Yes' alerted transactions were found, so the Non Alerted window can't be built. The Non Alerted sheet will be empty.", vbExclamation, "No Alerted Rows"
-    End If
-
-    SetStage "building the Raw Transactions sheet"
-    Set newWb = Workbooks.Add
-    Set wsRawEN = newWb.Sheets(1)
-    wsRawEN.Name = "Raw Transactions"
-    ' Copied from WsMaster as it stands. This used to copy the pre-cleanup
-    ' snapshot and run CleanTransactionData on it here, which is the same
-    ' date, amount and Counterparty cleanup WsMaster has already had (the
-    ' date column is set to m/d/yyyy on this sheet below either way), so the
-    ' sheet comes out the same without holding a second copy of every row.
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=wsRawEN.Range("A1")
-    End If
-
-    SetStage "building the Alerted Transaction sheet"
-    Set wsAlertedEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
-    wsAlertedEN.Name = "Alerted Transaction"
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=wsAlertedEN.Range("A1")
-    End If
-    FilterRowsFast wsAlertedEN, aColEN, "Yes", 0, False, 0, 0
-
-    Dim hasNoInWin As Boolean
-    hasNoInWin = False
-    If haveAlerted And scanLastEN > 1 Then
-        For rEN = 1 To scanLastEN - 1
-            If Trim(CStr(ArrCell(sArrEN, rEN))) = "No" Then
-                cvEN = ArrCell(dArrEN, rEN)
-                If IsDate(cvEN) Then
-                    If CDate(cvEN) >= winStartEN And CDate(cvEN) <= winEndEN Then hasNoInWin = True: Exit For
-                End If
-            End If
-        Next rEN
-    End If
-
-    SetStage "building the Non Alerted Transaction sheet"
-    Set wsNonEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
-    wsNonEN.Name = "Non Alerted Transaction"
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=wsNonEN.Range("A1")
-    End If
-
-    If Not haveAlerted Then
-        wsNonEN.Cells.Clear
-        wsNonEN.Range("A1").Value = "No alerted transactions were found, so the Non Alerted window could not be determined."
-    ElseIf Not hasNoInWin Then
+    If nonCount = 0 Then
         wsNonEN.Cells.Clear
         wsNonEN.Range("A1").Value = "There were 0 non-alerted transactions during the alerted month(s) " & _
             Format$(winStartEN, "mm/dd/yyyy") & " to " & Format$(winEndEN, "mm/dd/yyyy") & "."
-    Else
-        FilterRowsFast wsNonEN, aColEN, "No", aDateColEN, True, winStartEN, winEndEN
     End If
 
-    Dim dateColTidy As Long, lastRTidy As Long
     SetStage "formatting the Combined sheets"
-    For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
-        TidyDataSheet newWb.Sheets(CStr(wsTidy))
-        On Error Resume Next
-        dateColTidy = 0
-        dateColTidy = newWb.Sheets(CStr(wsTidy)).Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-        If dateColTidy > 0 Then
-            lastRTidy = newWb.Sheets(CStr(wsTidy)).Cells(newWb.Sheets(CStr(wsTidy)).Rows.count, dateColTidy).End(xlUp).row
-            If lastRTidy > 1 Then
-                newWb.Sheets(CStr(wsTidy)).Range(newWb.Sheets(CStr(wsTidy)).Cells(2, dateColTidy), _
-                    newWb.Sheets(CStr(wsTidy)).Cells(lastRTidy, dateColTidy)).NumberFormat = "m/d/yyyy"
-            End If
+    For Each ws In newWb.Worksheets
+        If IsSheetPart(ws.Name, "Raw Transactions") Or ws.Name = "Alerted Transaction" Or ws.Name = "Non Alerted Transaction" Then
+            FormatDataColumns ws, colDate, "m/d/yyyy", colAmt
+            TidyDataSheet ws
         End If
-        On Error GoTo CancelHandler
-    Next wsTidy
+    Next ws
 
     SetStage "building the Alerted pivots"
     BuildEnPivots newWb, "Alerted Transaction", "Alerted Transaction Pivot", "Alerted Transaction"
@@ -641,49 +410,34 @@ If exportMode = "EN" Then
             Case "Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction"
                 ' keep
             Case Else
-                SafeDeleteSheet newWb, newWb.Sheets(rEN).Name
+                If Not IsSheetPart(newWb.Sheets(rEN).Name, "Raw Transactions") Then SafeDeleteSheet newWb, newWb.Sheets(rEN).Name
         End Select
     Next rEN
 
     newWb.Sheets("Non Alerted Transaction").Move After:=newWb.Sheets(newWb.Sheets.count)
-
-    SafeDeleteSheet wsHome.Parent, "TempRawBackup"
 
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     SetStage "saving the Combined file"
     CloseIfAlreadyOpen finalSavePath
     MoveExistingExportAside finalSavePath
-    SetSheetZoom85 newWb, Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction")
+    ZoomAllSheets newWb
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    MarkSaved newWb
     DiscardPreviousExport finalSavePath
-    Application.DisplayAlerts = True
 
     SetStage "updating ConsolidatedData"
     wsRealCD.Cells.Clear
     newWb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=wsRealCD.Range("A1")
-
+    ClearLargeCaseStats
     On Error Resume Next
     Module3.RefreshRuleNameTag
     On Error GoTo CancelHandler
 
-    SafeDeleteSheet wsHome.Parent, "TempConsolidatedScratch"
-
     newWb.Sheets("Raw Transactions").Activate
+    FinishRun origCalc
 
-    Application.EnableCancelKey = xlInterrupt
-    Application.Calculation = origCalc
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True
-    On Error Resume Next
-    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
-    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
-    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
-    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
-    On Error GoTo 0
-
-    Application.StatusBar = False
     MsgBox "EN Network export complete! Both files were generated:" & vbCrLf & vbCrLf & _
         "Lookback Transactions:" & vbCrLf & lbSavedPath & vbCrLf & vbCrLf & _
         "Alerted / Non-Alerted Transactions:" & vbCrLf & finalSavePath, vbInformation, "Success"
@@ -693,183 +447,127 @@ End If
 ' ==========================================
 ' 4. TWO-LAYER EXPORT & DEDUPE (LEGACY)
 ' ==========================================
-SetStage "building the Legacy file"
-Set newWb = Workbooks.Add
+' CP Selection is the cleaned data less duplicate Transaction ID + Alert
+' Information pairs, and DeDupe that less duplicate Transaction IDs and
+' rows with no date - Module9's two RemoveDuplicates passes. Each carries
+' on onto "(2)", "(3)"... sheets past RAW_ROWS_PER_SHEET rows.
+'
+' Raw Transactions (every row of every file, duplicates included) is left
+' out: the files themselves are in the Transaction Files folder, and with
+' several overlapping files it would be the biggest part of the export.
+'
+' The four pivots are built on two small totals sheets Power Query adds up
+' - Scenario Totals (per alert / Dr Cr / counterparty, from CP Selection)
+' and Daily Totals (per day / Dr Cr, from DeDupe) - not on the data sheets,
+' which can be spread over several sheets. A pivot adds the totals back
+' up, so every figure is the one a pivot on the rows would show.
+Dim colAcct As String, cpRows As Long, ddRows As Long, alertRows As Long, shIdx As Long
+Dim wsScnTot As Worksheet, wsDayTot As Worksheet, wsAlertTmp As Worksheet
+Dim bigCase As Boolean, stats As Variant, unmatched As String, doneMsg As String
 
-Set ws = newWb.Sheets(1)
-ws.Name = "Raw Transactions"
-If WsRawTemp.UsedRange.Cells.count > 0 Then
-    WsRawTemp.UsedRange.Copy Destination:=ws.Range("A1")
+colAcct = FindHeaderName(hdr, "Account No", False)
+
+If Len(colTrans) > 0 And Len(colAlert) > 0 Then
+    newWb.Queries.Add Name:="TrxCP", Formula:=BuildDedupeM("TrxClean", Array(colTrans, colAlert), "")
+Else
+    newWb.Queries.Add Name:="TrxCP", Formula:=BuildDedupeM("TrxClean", Empty, "")
 End If
+If Len(colTrans) > 0 Then
+    newWb.Queries.Add Name:="TrxDeDupe", Formula:=BuildDedupeM("TrxCP", Array(colTrans), colDate)
+Else
+    newWb.Queries.Add Name:="TrxDeDupe", Formula:=BuildDedupeM("TrxCP", Empty, colDate)
+End If
+newWb.Queries.Add Name:="TrxScenarioTotals", Formula:=BuildTotalsM("TrxCP", _
+    Array(colAlert, colDrCr, colCp), Array("Alert Information", "Dr Cr", "Counterparty"), colAmt, "")
+newWb.Queries.Add Name:="TrxDailyTotals", Formula:=BuildTotalsM("TrxDeDupe", _
+    Array(colDate, colDrCr), Array("Transaction Date", "Dr Cr"), colAmt, colDate)
 
-Set wsExport = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+Set wsExport = newWb.Sheets(1)
 wsExport.Name = "CP Selection"
-If WsMaster.UsedRange.Cells.count > 0 Then
-    WsMaster.UsedRange.Copy Destination:=wsExport.Range("A1")
-End If
-
-TransCol = 0: AlertCol = 0
-On Error Resume Next
-TransCol = wsExport.Rows(1).Find(What:="Transaction ID", LookAt:=xlPart).Column
-AlertCol = wsExport.Rows(1).Find(What:="Alert Information", LookAt:=xlPart).Column
-On Error GoTo CancelHandler
-
-If TransCol > 0 And AlertCol > 0 Then
-    wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol, AlertCol), Header:=xlYes
-End If
-
-Dim wsDeDupe As Worksheet
-Set wsDeDupe = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+Set wsDeDupe = newWb.Sheets.Add(After:=wsExport)
 wsDeDupe.Name = "DeDupe"
-If wsExport.UsedRange.Cells.count > 0 Then
-    wsExport.UsedRange.Copy Destination:=wsDeDupe.Range("A1")
+
+SetStage "loading the CP Selection rows"
+cpRows = LoadQueryAcrossSheets(newWb, wsExport, "TrxCP")
+SetStage "loading the DeDupe rows"
+ddRows = LoadQueryAcrossSheets(newWb, wsDeDupe, "TrxDeDupe")
+
+SetStage "adding up the pivot totals"
+Set wsScnTot = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+wsScnTot.Name = "Scenario Totals"
+LoadQueryToSheet wsScnTot, "TrxScenarioTotals"
+Set wsDayTot = newWb.Sheets.Add(After:=wsScnTot)
+wsDayTot.Name = "Daily Totals"
+LoadQueryToSheet wsDayTot, "TrxDailyTotals"
+
+' Too many transactions for one sheet means too many for ConsolidatedData.
+' It gets the rows that carry an alert instead - every rule name Generate
+' Narrative looks up is on those - and Sheet7's figures are worked out
+' here over all of them.
+bigCase = (ddRows > RAW_ROWS_PER_SHEET)
+If bigCase Then
+    SetStage "working out the narrative figures"
+    newWb.Queries.Add Name:="TrxStats", Formula:=BuildStatsM(colAmt, colDate, colDrCr, colAcct)
+    stats = ReadQueryRow(newWb, "TrxStats")
+    If Not IsArray(stats) Then
+        Err.Raise vbObjectError + 1005, "modLargeExport", "The narrative figures query returned nothing."
+    End If
+    If Len(colAlert) > 0 Then
+        SetStage "loading the alerted rows for ConsolidatedData"
+        newWb.Queries.Add Name:="TrxAlertRows", Formula:=BuildDedupeM("TrxDeDupe", Empty, colAlert)
+        Set wsAlertTmp = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+        wsAlertTmp.Name = "_AlertRows"
+        alertRows = LoadQueryToSheet(wsAlertTmp, "TrxAlertRows")
+    End If
 End If
+RemoveAllQueries newWb
 
-Set wsExport = wsDeDupe
-TransCol = 0
-On Error Resume Next
-TransCol = wsExport.Rows(1).Find(What:="Transaction ID", LookAt:=xlPart).Column
-On Error GoTo CancelHandler
-
-If TransCol > 0 Then wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol), Header:=xlYes
-
-For Each ws In newWb.Sheets
-    If ws.Name = "Raw Transactions" Or ws.Name = "CP Selection" Or ws.Name = "DeDupe" Then
+' Backwards, because sheets are deleted along the way.
+SetStage "formatting the Legacy sheets"
+For shIdx = newWb.Worksheets.count To 1 Step -1
+    Set ws = newWb.Worksheets(shIdx)
+    If IsSheetPart(ws.Name, "CP Selection") Then
+        FormatDataColumns ws, colDate, "dddd, mmmm d, yyyy", colAmt
+        TidyDataSheet ws
+    ElseIf IsSheetPart(ws.Name, "DeDupe") Then
+        FormatDataColumns ws, colDate, "m/d/yyyy", colAmt
+        TidyDataSheet ws
+    ElseIf ws.Name = "_AlertRows" Then
+        FormatDataColumns ws, colDate, "m/d/yyyy", colAmt
+    ElseIf ws.Name = "Scenario Totals" Or ws.Name = "Daily Totals" Then
+        FormatDataColumns ws, "Transaction Date", "m/d/yyyy", "Transaction Amount"
         TidyDataSheet ws
     Else
         SafeDeleteSheet newWb, ws.Name
     End If
-Next ws
+Next shIdx
 
 ' ==========================================
-' 4.5 PIVOT TABLES (MULTI-SOURCE)
+' 4.5 PIVOT TABLES (from the totals sheets)
 ' ==========================================
 SetStage "building the Legacy pivots"
-Set wsExport = newWb.Sheets("CP Selection")
-lastRowCP = wsExport.Cells(wsExport.Rows.count, "A").End(xlUp).row
-lastColCP = wsExport.Cells(1, wsExport.Columns.count).End(xlToLeft).Column
+Set wsPivot = newWb.Sheets.Add(Before:=newWb.Sheets(1))
+wsPivot.Name = "Pivot"
+BuildTotalsPivots newWb, wsPivot, wsScnTot, wsDayTot
 
-If lastRowCP > 1 Then
-    Set ptRange = wsExport.Range(wsExport.Cells(1, 1), wsExport.Cells(lastRowCP, lastColCP))
-    Set wsPivot = newWb.Sheets.Add(After:=newWb.Sheets("Raw Transactions"))
-    wsPivot.Name = "Pivot"
-
-    Set ptCache = newWb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=PivotSourceAddress(ptRange))
-
-    ' ------------------------------------------
-    ' PIVOT 1: SCENARIO PIVOT
-    ' ------------------------------------------
-    Set pt = ptCache.CreatePivotTable(TableDestination:=wsPivot.Range("A3"), TableName:="ScenarioPivot")
-    On Error Resume Next
-    With pt
-        .TableStyle2 = "PivotStyleLight16"
-        With .PivotFields("Alert Information"): .Orientation = xlRowField: .Position = 1: End With
-        With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 2: End With
-        With .PivotFields("Counterparty"): .Orientation = xlRowField: .Position = 3: End With
-        .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount", xlSum
-        .PivotFields("Sum of Transaction Amount").NumberFormat = "$#,#00.00"
-        .AddDataField .PivotFields("Transaction Amount"), "Count of Transaction Amount", xlCount
-        .RowAxisLayout xlCompactRow
-        .PivotFields("Count of Transaction Amount").NumberFormat = "0"
-        .PivotFields("Alert Information").AutoSort xlDescending, "Sum of Transaction Amount"
-        .PivotFields("Counterparty").AutoSort xlDescending, "Sum of Transaction Amount"
-    End With
-    On Error GoTo CancelHandler
-
-    ' ------------------------------------------
-    ' SETUP SOURCE 2: "DeDupe"
-    ' ------------------------------------------
-    Dim lastRowDD As Long, lastColDD As Long, dtColDD As Long
-    Dim ptRangeDeDupe As Range, ptCacheDeDupe As PivotCache
-
-    Set wsDeDupe = newWb.Sheets("DeDupe")
-
-    On Error Resume Next
-    dtColDD = wsDeDupe.Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
-    lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.count, dtColDD).End(xlUp).row
-    If lastRowDD > 1 And dtColDD > 0 Then
-        wsDeDupe.Range(wsDeDupe.Cells(2, dtColDD), wsDeDupe.Cells(lastRowDD, dtColDD)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
-        wsDeDupe.Range(wsDeDupe.Cells(2, dtColDD), wsDeDupe.Cells(lastRowDD, dtColDD)).NumberFormat = "m/d/yyyy"
+' A big case's ConsolidatedData comes from the temporary alerted-rows
+' sheet, which must not be saved into the export, so it is filled here,
+' before the save.
+If bigCase Then
+    SetStage "updating ConsolidatedData"
+    wsRealCD.Cells.Clear
+    If Not wsAlertTmp Is Nothing Then
+        wsAlertTmp.UsedRange.Copy Destination:=wsRealCD.Range("A1")
+        Application.DisplayAlerts = False
+        wsAlertTmp.Delete
     End If
-    On Error GoTo CancelHandler
-
-    lastRowDD = wsDeDupe.Cells(wsDeDupe.Rows.count, "A").End(xlUp).row
-    lastColDD = wsDeDupe.Cells(1, wsDeDupe.Columns.count).End(xlToLeft).Column
-
-    If lastRowDD > 1 Then
-        Set ptRangeDeDupe = wsDeDupe.Range(wsDeDupe.Cells(1, 1), wsDeDupe.Cells(lastRowDD, lastColDD))
-        Set ptCacheDeDupe = newWb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=PivotSourceAddress(ptRangeDeDupe))
-
-        ' PIVOT 2: TEMPORAL PIVOT
-        Set pt = ptCacheDeDupe.CreatePivotTable(TableDestination:=wsPivot.Range("F3"), TableName:="TemporalPivot")
-        On Error Resume Next
-        With pt
-            .TableStyle2 = "PivotStyleLight16"
-            With .PivotFields("Transaction Date"): .Orientation = xlRowField: .Position = 1: End With
-            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount ", xlSum
-            .PivotFields("Sum of Transaction Amount ").NumberFormat = "$#,#00.00"
-            .AddDataField .PivotFields("Transaction Amount"), "Count of Transaction Amount ", xlCount
-            .PivotFields("Count of Transaction Amount ").NumberFormat = "0"
-        End With
-        wsPivot.Range("F4").Group Start:=True, End:=True, Periods:=Array(False, False, False, True, True, False, True)
-
-        On Error Resume Next
-        pt.PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
-        On Error GoTo CancelHandler
-
-        ' PIVOT 3: ENHANCED TEMPORAL PIVOT
-        pt.TableRange2.Copy Destination:=wsPivot.Range("K3")
-        Dim pt3 As PivotTable
-        Set pt3 = wsPivot.Range("K3").PivotTable
-        pt3.Name = "TemporalPivot_Enhanced"
-
-        On Error Resume Next
-        With pt3
-            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
-            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
-            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 4: End With
-            .AddDataField .PivotFields("Transaction Amount"), "No of Trx  ", xlCount
-            .PivotFields("No of Trx  ").NumberFormat = "0"
-            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount  ", xlSum
-            .PivotFields("Sum of Transaction Amount  ").NumberFormat = "$#,#00.00"
-            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
-        End With
-        On Error GoTo CancelHandler
-
-        ' PIVOT 4: DR/CR INVERTED PIVOT
-        pt.TableRange2.Copy Destination:=wsPivot.Range("Q3")
-        Dim pt4 As PivotTable
-        Set pt4 = wsPivot.Range("Q3").PivotTable
-        pt4.Name = "DrCrTemporalPivot"
-
-        On Error Resume Next
-        With pt4
-            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
-            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
-            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 1: End With
-            .AddDataField .PivotFields("Transaction Amount"), "No of Trx   ", xlCount
-            .PivotFields("No of Trx   ").NumberFormat = "0"
-            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount   ", xlSum
-            .PivotFields("Sum of Transaction Amount   ").NumberFormat = "$#,#00.00"
-            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
-        End With
-        On Error GoTo CancelHandler
-
-        On Error Resume Next
-        BulletproofDateFormat wsPivot
-        HighlightDrCrRows pt3, wsPivot
-        HighlightDrCrRows pt4, wsPivot
-        On Error GoTo CancelHandler
-    End If
-
-    wsPivot.Columns("A:W").AutoFit
+    WriteLargeCaseStats stats, wsHome.Range("J9").Value
+    unmatched = PointSheet7AtLargeStats()
 End If
 
 ' ==========================================
 ' 5. FINALIZE MASTER TAB & SAVE
 ' ==========================================
-SafeDeleteSheet wsHome.Parent, "TempRawBackup"
-
 Dim fileTag As String
 fileTag = "Alerted"
 excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.xlsx"
@@ -878,69 +576,61 @@ finalSavePath = saveFolderPath & slash & excelFileName
 SetStage "saving the Legacy file"
 CloseIfAlreadyOpen finalSavePath
 MoveExistingExportAside finalSavePath
-' "Pivot" only exists if lastRowCP > 1 above - SetSheetZoom85's own error
-' handling silently skips it otherwise, same as any other missing name.
-SetSheetZoom85 newWb, Array("Raw Transactions", "CP Selection", "DeDupe", "Pivot")
+ZoomAllSheets newWb
 
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+MarkSaved newWb
 DiscardPreviousExport finalSavePath
-Application.DisplayAlerts = True
 
-SetStage "updating ConsolidatedData"
-wsRealCD.Cells.Clear
-newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
-
+If Not bigCase Then
+    SetStage "updating ConsolidatedData"
+    wsRealCD.Cells.Clear
+    newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
+    ClearLargeCaseStats
+End If
 TidyDataSheet wsRealCD
 
 On Error Resume Next
 Module3.RefreshRuleNameTag
 On Error GoTo CancelHandler
 
-SafeDeleteSheet wsHome.Parent, "TempConsolidatedScratch"
+newWb.Sheets("Pivot").Activate
+FinishRun origCalc
 
-newWb.Sheets("Raw Transactions").Activate
-
-Application.EnableCancelKey = xlInterrupt
-Application.Calculation = origCalc
-Application.EnableEvents = True
-Application.ScreenUpdating = True
-
-On Error Resume Next
-ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
-ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
-ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
-On Error GoTo 0
-
-' ==========================================
-' 6. UPDATE SHARED MASTER TRACKER (SHEET2) - DEFERRED
-' ==========================================
-On Error Resume Next
-Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
-On Error GoTo 0
-
-Application.StatusBar = False
-MsgBox "Workflow Complete!" & vbCrLf & _
-"Exported file inside the folder exactly to: " & vbCrLf & finalSavePath, vbInformation, "Success"
+doneMsg = "Workflow Complete!" & vbCrLf & _
+    "Exported file inside the folder exactly to: " & vbCrLf & finalSavePath
+If bigCase Then
+    doneMsg = doneMsg & vbCrLf & vbCrLf & _
+        "There are " & Format$(ddRows, "#,##0") & " de-duplicated transactions - more than one sheet " & _
+        "holds - so DeDupe and CP Selection carry on onto further sheets." & vbCrLf & vbCrLf & _
+        "ConsolidatedData holds only the " & Format$(alertRows, "#,##0") & " rows that carry an alert. " & _
+        "Sheet7's narrative figures (count, totals, date range, CR/DR, account numbers) were worked out " & _
+        "from all " & Format$(ddRows, "#,##0") & " transactions, and apply while Sheet1 has this ECM ID."
+    If Len(unmatched) > 0 Then
+        doneMsg = doneMsg & vbCrLf & vbCrLf & "Check Sheet7 " & unmatched & ": these read ConsolidatedData " & _
+            "but weren't recognised, so they only see the alerted rows."
+    End If
+End If
+MsgBox doneMsg, vbInformation, "Success"
 Exit Sub
 
 CancelHandler:
 Dim savedErrNum As Long, savedErrDesc As String
 savedErrNum = Err.Number
 savedErrDesc = Err.Description
+' Leave error-handling mode, so the cleanup below can trap its own errors.
+On Error GoTo -1
 
+On Error Resume Next
+' An export workbook that never got saved is closed unsaved - otherwise a
+' failed run leaves hundreds of thousands of rows open in a "BookN" window.
+CloseUnsavedExports
 Application.Calculation = origCalc
 Application.EnableCancelKey = xlInterrupt
 Application.ScreenUpdating = True
 Application.DisplayAlerts = True
-
-On Error Resume Next
 Application.StatusBar = False
-If Not wsHome Is Nothing Then
-    SafeDeleteSheet wsHome.Parent, "TempConsolidatedScratch"
-    SafeDeleteSheet wsHome.Parent, "TempRawBackup"
-    SafeDeleteSheet wsHome.Parent, "TempPivotScratch"
-End If
 
 ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
 ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
@@ -1358,105 +1048,6 @@ Private Function LastDataRow(ByVal ws As Worksheet) As Long
     End If
 End Function
 
-' v is ByRef on purpose. A Variant holding an array that is passed ByVal is
-' copied in full on every call, so reading one row cost a copy of the whole
-' column. Harmless at a few hundred rows; at 600,000 rows every loop that
-' reads through a column made 600,000 copies of a 600,000-row array, which
-' never finishes - Excel goes "Not Responding" and has to be killed.
-Private Function ArrCell(ByRef v As Variant, ByVal idx As Long) As Variant
-    If IsArray(v) Then
-        ArrCell = v(idx, 1)
-    Else
-        ArrCell = v
-    End If
-End Function
-
-' ==========================================================
-' FilterRowsFast - keeps the rows that match, deletes the rest
-' ==========================================================
-' Rows are removed by sorting, not by filtering and deleting what's visible.
-' A filter leaves every run of unwanted rows as its own area, and deleting a
-' range made of thousands of areas is one of the slowest things Excel does -
-' with hundreds of thousands of rows it can run for an hour or run out of
-' memory. Instead each kept row gets its own row number as a sort key and
-' each dropped row gets DROP_KEY_OFFSET plus its row number, so one ascending
-' sort puts every kept row first, still in its original order, with the
-' dropped rows in a single block below them that is deleted in one go.
-' ==========================================================
-Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
-    ByVal wantVal As String, ByVal dateCol As Long, ByVal useWindow As Boolean, _
-    ByVal winStart As Date, ByVal winEnd As Date)
-
-    Dim lastRow As Long, lastCol As Long, helperCol As Long, r As Long
-    Dim sVals As Variant, dVals As Variant, dv As Variant
-    Dim keep As Boolean, keptCount As Long
-    Dim sortKeys() As Variant
-
-    lastRow = LastDataRow(ws)
-    If lastRow < 2 Then Exit Sub
-
-    lastCol = 1
-    On Error Resume Next
-    lastCol = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
-        LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious).Column
-    On Error GoTo 0
-    helperCol = lastCol + 1
-
-    If splitCol > 0 Then sVals = ws.Range(ws.Cells(2, splitCol), ws.Cells(lastRow, splitCol)).Value
-    If dateCol > 0 Then dVals = ws.Range(ws.Cells(2, dateCol), ws.Cells(lastRow, dateCol)).Value
-
-    ReDim sortKeys(1 To lastRow - 1, 1 To 1)
-    keptCount = 0
-    For r = 1 To lastRow - 1
-        keep = True
-        If splitCol > 0 And Len(wantVal) > 0 Then
-            If Trim(CStr(ArrCell(sVals, r))) <> wantVal Then keep = False
-        End If
-        If keep And useWindow Then
-            dv = ArrCell(dVals, r)
-            If IsDate(dv) Then
-                If CDate(dv) < winStart Or CDate(dv) > winEnd Then keep = False
-            Else
-                keep = False
-            End If
-        End If
-        If keep Then
-            sortKeys(r, 1) = r
-            keptCount = keptCount + 1
-        Else
-            sortKeys(r, 1) = DROP_KEY_OFFSET + r
-        End If
-    Next r
-
-    If keptCount = lastRow - 1 Then Exit Sub
-
-    On Error Resume Next
-    If ws.AutoFilterMode Then ws.AutoFilterMode = False
-    On Error GoTo 0
-
-    ws.Cells(1, helperCol).Value = "_flag"
-    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = sortKeys
-    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, helperCol)).Sort _
-        Key1:=ws.Cells(1, helperCol), Order1:=xlAscending, Header:=xlYes
-    ws.Range(ws.Rows(keptCount + 2), ws.Rows(lastRow)).Delete
-    ws.Columns(helperCol).Delete
-End Sub
-
-' ==========================================================
-' FreezeValuesByColumn - UsedRange.Value = UsedRange.Value, a column at a time
-' ==========================================================
-' Same result as rewriting the whole sheet in one go, but that holds the
-' entire sheet in memory as one array: 600,000 rows x 38 columns is 22
-' million values, several hundred MB before any text, which fails with "Out
-' of memory" or takes Excel down with it. One column is about 10 MB.
-' ==========================================================
-Private Sub FreezeValuesByColumn(ByVal ws As Worksheet)
-    Dim col As Range
-    For Each col In ws.UsedRange.Columns
-        col.Value = col.Value
-    Next col
-End Sub
-
 ' ==========================================================
 ' TidyDataSheet - the column/row fit every exported data sheet gets
 ' ==========================================================
@@ -1486,55 +1077,930 @@ Private Sub TidyDataSheet(ByVal ws As Worksheet)
 End Sub
 
 ' ==========================================================
-' CleanTransactionData - applies standardized cleaning and Counterparty formula
+' Export workbooks - tracked until saved, closed unsaved if the run fails
 ' ==========================================================
-Private Sub CleanTransactionData(ByVal ws As Worksheet)
-    Dim dH As Range, dLast As Long, dRng As Range
-    Dim aH As Range, aLast As Long, aRng As Range
-    Dim drC As Range, benC As Range, orgC As Range
-    Dim drCol As Long, benCol As Long, orgCol As Long
-    Dim lastR As Long, lastC As Long
+Private Function NewOutputWorkbook() As Workbook
+    Dim wb As Workbook
+    Set wb = Workbooks.Add
+    m_unsaved.Add wb
+    Set NewOutputWorkbook = wb
+End Function
 
+Private Sub MarkSaved(ByVal wb As Workbook)
+    Dim i As Long
+    For i = m_unsaved.count To 1 Step -1
+        If m_unsaved(i) Is wb Then m_unsaved.Remove i
+    Next i
+End Sub
+
+Private Sub CloseUnsavedExports()
+    Dim wb As Variant
     On Error Resume Next
-
-    Set dH = ws.Rows(1).Find(What:="Transaction Date", LookIn:=xlValues, LookAt:=xlPart)
-    If Not dH Is Nothing Then
-        dLast = ws.Cells(ws.Rows.count, dH.Column).End(xlUp).row
-        If dLast > 1 Then
-            Set dRng = ws.Range(ws.Cells(2, dH.Column), ws.Cells(dLast, dH.Column))
-            dRng.TextToColumns Destination:=dRng.Cells(1, 1), DataType:=xlDelimited, FieldInfo:=Array(Array(1, 3))
-            dRng.NumberFormat = "m/d/yyyy"
-        End If
-    End If
-
-    Set aH = ws.Rows(1).Find(What:="Transaction Amount", LookIn:=xlValues, LookAt:=xlPart)
-    If Not aH Is Nothing Then
-        aLast = ws.Cells(ws.Rows.count, aH.Column).End(xlUp).row
-        If aLast > 1 Then
-            Set aRng = ws.Range(ws.Cells(2, aH.Column), ws.Cells(aLast, aH.Column))
-            aRng.Value = aRng.Value
-            aRng.NumberFormat = "$#,##0.00"
-        End If
-    End If
-
-    Set drC = ws.Rows(1).Find(What:="Dr Cr", LookAt:=xlPart)
-    Set benC = ws.Rows(1).Find(What:="Beneficiary Name", LookAt:=xlPart)
-    Set orgC = ws.Rows(1).Find(What:="Originator Name", LookAt:=xlPart)
-    If Not drC Is Nothing And Not benC Is Nothing And Not orgC Is Nothing Then
-        drCol = drC.Column: benCol = benC.Column: orgCol = orgC.Column
-        lastR = ws.Cells(ws.Rows.count, "A").End(xlUp).row
-        lastC = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column + 1
-        If lastR > 1 Then
-            ws.Cells(1, lastC).Value = "Counterparty"
-            ws.Range(ws.Cells(2, lastC), ws.Cells(lastR, lastC)).FormulaR1C1 = _
-                "=IF(RC" & drCol & "=""DR"", IF(RC" & benCol & "="""","""",RC" & benCol & "), IF(RC" & orgCol & "="""","""",RC" & orgCol & "))"
-            ws.Cells(1, lastC - 1).Copy
-            ws.Cells(1, lastC).PasteSpecial Paste:=xlPasteFormats
-            ws.Range(ws.Cells(2, lastC - 1), ws.Cells(lastR, lastC - 1)).Copy
-            ws.Range(ws.Cells(2, lastC), ws.Cells(lastR, lastC)).PasteSpecial Paste:=xlPasteFormats
-            Application.CutCopyMode = False
-        End If
-    End If
-
+    If m_unsaved Is Nothing Then Exit Sub
+    For Each wb In m_unsaved
+        wb.Close SaveChanges:=False
+    Next wb
+    Set m_unsaved = New Collection
     On Error GoTo 0
 End Sub
+
+' ==========================================================
+' FinishRun - hands Excel back after a successful export
+' ==========================================================
+Private Sub FinishRun(ByVal origCalc As XlCalculation)
+    Application.EnableCancelKey = xlInterrupt
+    Application.Calculation = origCalc
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.StatusBar = False
+    On Error Resume Next
+    ThisWorkbook.Sheets("ConsolidatedData").Protect Password:="p7ss"
+    ThisWorkbook.Sheets("Sheet1").Protect Password:="p7ss"
+    ThisWorkbook.Protect Password:="p7ss", Structure:=True, Windows:=False
+    Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
+    On Error GoTo 0
+End Sub
+
+' ==========================================================
+' LoadQueryToSheet - runs a query into A1 of a sheet and leaves its rows
+' there as a plain range: no table, no query link. Returns the row count.
+' ==========================================================
+Private Function LoadQueryToSheet(ByVal ws As Worksheet, ByVal queryName As String) As Long
+    Dim lo As ListObject, n As Long
+
+    ' SafeDeleteSheet turns alerts back on; a load must not stop on a dialog.
+    Application.DisplayAlerts = False
+
+    Set lo = ws.ListObjects.Add(SourceType:=0, Source:= _
+        "OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location=" & queryName & _
+        ";Extended Properties=""""", Destination:=ws.Range("A1"))
+    With lo.QueryTable
+        .CommandType = xlCmdSql
+        .CommandText = Array("SELECT * FROM [" & queryName & "]")
+        .RowNumbers = False
+        .FillAdjacentFormulas = False
+        .PreserveFormatting = True
+        .RefreshOnFileOpen = False
+        .BackgroundQuery = False
+        .RefreshStyle = xlInsertDeleteCells
+        .SavePassword = False
+        .SaveData = True
+        .AdjustColumnWidth = False
+        .PreserveColumnInfo = False
+        .Refresh BackgroundQuery:=False
+    End With
+    n = lo.ListRows.count
+
+    ' A sheet holds 1,048,576 rows. A query with more than that is cut off
+    ' at the bottom of the sheet with nothing more than a warning, which
+    ' would drop transactions without anyone noticing - so a full sheet is
+    ' treated as an error, never as a result.
+    If n >= ws.Rows.count - 1 Then
+        Err.Raise vbObjectError + 1004, "modLargeExport", _
+            "The " & ws.Name & " sheet needs more rows than one Excel sheet holds (" & _
+            Format$(ws.Rows.count - 1, "#,##0") & "), so it would have been cut short. " & _
+            "Split the source files into smaller date ranges and export each range separately."
+    End If
+
+    ' Table Style Medium 2 is the banded blue look the source files carry into
+    ' Module9's exports. Unlinking and converting to a range keeps that
+    ' formatting but drops the query link, so the export holds plain data.
+    lo.TableStyle = "TableStyleMedium2"
+    On Error Resume Next
+    lo.QueryTable.Delete
+    If Err.Number <> 0 Then Err.Clear: lo.Unlink
+    On Error GoTo 0
+    lo.Unlist
+
+    LoadQueryToSheet = n
+End Function
+
+' ==========================================================
+' LoadQueryAcrossSheets - LoadQueryToSheet for a sheet that can outgrow
+' Excel's row limit (Raw Transactions, CP Selection, DeDupe).
+' RAW_ROWS_PER_SHEET rows go on firstSheet, the next lot on "<name> (2)"
+' right after it, and so on. Returns the total number of rows loaded.
+' ==========================================================
+Private Function LoadQueryAcrossSheets(ByVal wb As Workbook, ByVal firstSheet As Worksheet, _
+    ByVal queryName As String) As Long
+    Dim part As Long, n As Long, total As Long, ws As Worksheet, partQuery As String
+
+    Set ws = firstSheet
+    Do
+        part = part + 1
+        partQuery = queryName & "_Part" & part
+        wb.Queries.Add Name:=partQuery, _
+            Formula:=BuildRowRangeM(queryName, (part - 1) * RAW_ROWS_PER_SHEET, RAW_ROWS_PER_SHEET)
+        n = LoadQueryToSheet(ws, partQuery)
+        total = total + n
+
+        ' Row count an exact multiple of the sheet size: the last sheet came
+        ' back empty, so it goes.
+        If n = 0 And part > 1 Then
+            Application.DisplayAlerts = False
+            ws.Delete
+            Exit Do
+        End If
+        If n < RAW_ROWS_PER_SHEET Then Exit Do
+
+        SetStage "loading " & firstSheet.Name & " (part " & (part + 1) & ")"
+        Set ws = wb.Sheets.Add(After:=ws)
+        ws.Name = firstSheet.Name & " (" & (part + 1) & ")"
+    Loop
+
+    LoadQueryAcrossSheets = total
+End Function
+
+' baseName itself, or one of its overflow sheets "baseName (2)", "(3)"...
+Private Function IsSheetPart(ByVal nm As String, ByVal baseName As String) As Boolean
+    IsSheetPart = (nm = baseName) Or (nm Like baseName & " (#)") Or (nm Like baseName & " (##)")
+End Function
+
+' Module9 sets 85% zoom on each named export sheet; with overflow sheets
+' the names aren't fixed, so here it is every sheet.
+Private Sub ZoomAllSheets(ByVal wb As Workbook)
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        SetSheetZoom85 wb, Array(ws.Name)
+    Next ws
+End Sub
+
+' ==========================================================
+' RemoveAllQueries - strips every query and connection from an export
+' workbook before it is saved (the data already loaded stays).
+' ==========================================================
+Private Sub RemoveAllQueries(ByVal wb As Workbook)
+    Dim i As Long, pass As Long, sh As Worksheet
+    On Error Resume Next
+    ' Any query table LoadQueryToSheet couldn't unlink (the data stays).
+    For Each sh In wb.Worksheets
+        For i = sh.QueryTables.count To 1 Step -1
+            sh.QueryTables(i).Delete
+        Next i
+    Next sh
+    For i = wb.Connections.count To 1 Step -1
+        wb.Connections(i).Delete
+    Next i
+    ' A query that another one refers to may refuse to go first, so a few
+    ' passes, newest first.
+    For pass = 1 To 5
+        For i = wb.Queries.count To 1 Step -1
+            wb.Queries(i).Delete
+        Next i
+        If wb.Queries.count = 0 Then Exit For
+    Next pass
+    On Error GoTo 0
+End Sub
+
+' ==========================================================
+' ReadHeaderNames - the combined data's column names, in order
+' ==========================================================
+' Loads a one-column list of TrxBase's headers onto a scratch sheet, reads
+' it and throws the sheet away. Returns Empty when no file had a
+' "Transaction ID" header row.
+' ==========================================================
+Private Function ReadHeaderNames(ByVal wb As Workbook) As Variant
+    Dim wsTmp As Worksheet, n As Long, v As Variant, names() As String, i As Long
+
+    wb.Queries.Add Name:="TrxHeaders", Formula:=BuildHeadersM()
+    Set wsTmp = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
+    n = LoadQueryToSheet(wsTmp, "TrxHeaders")
+    If n > 0 Then
+        v = wsTmp.Range("A2").Resize(n, 1).Value
+        ReDim names(1 To n)
+        If n = 1 Then
+            names(1) = CStr(v)
+        Else
+            For i = 1 To n
+                names(i) = CStr(v(i, 1))
+            Next i
+        End If
+        ReadHeaderNames = names
+    End If
+
+    Application.DisplayAlerts = False
+    wsTmp.Delete
+    On Error Resume Next
+    wb.Queries("TrxHeaders").Delete
+    On Error GoTo 0
+End Function
+
+' ==========================================================
+' ResolveColumns / FindHeaderName - Module9's header lookups, on the names
+' ==========================================================
+' Module9 finds each column with Rows(1).Find: case-insensitive, "contains"
+' except for the alerted flag, which must match whole. Find starts AFTER
+' A1 and wraps round to it last, so FindHeaderName checks the names in
+' that same order and picks the same column when more than one matches.
+' ==========================================================
+Private Sub ResolveColumns(ByRef hdr As Variant, ByRef colDate As String, ByRef colAmt As String, _
+    ByRef colDrCr As String, ByRef colBen As String, ByRef colOrig As String, _
+    ByRef colFlag As String, ByRef colTrans As String, ByRef colAlert As String, ByRef colCp As String)
+
+    colDate = FindHeaderName(hdr, "Transaction Date", False)
+    colAmt = FindHeaderName(hdr, "Transaction Amount", False)
+    colDrCr = FindHeaderName(hdr, "Dr Cr", False)
+    colBen = FindHeaderName(hdr, "Beneficiary Name", False)
+    colOrig = FindHeaderName(hdr, "Originator Name", False)
+    colFlag = FindHeaderName(hdr, "Is Alerted Transaction?", True)
+    colTrans = FindHeaderName(hdr, "Transaction ID", False)
+    colAlert = FindHeaderName(hdr, "Alert Information", False)
+
+    ' Power Query can't add a column under a name that's already taken.
+    colCp = "Counterparty"
+    If Len(FindHeaderName(hdr, colCp, True)) > 0 Then colCp = "Counterparty (calculated)"
+End Sub
+
+Private Function FindHeaderName(ByRef names As Variant, ByVal what As String, ByVal wholeMatch As Boolean) As String
+    Dim n As Long, k As Long, i As Long, nm As String
+    n = UBound(names) - LBound(names) + 1
+    For k = 1 To n
+        i = LBound(names) + (k Mod n)     ' 2nd, 3rd, ... last, then 1st
+        nm = CStr(names(i))
+        If wholeMatch Then
+            If StrComp(nm, what, vbTextCompare) = 0 Then FindHeaderName = nm: Exit Function
+        Else
+            If InStr(1, nm, what, vbTextCompare) > 0 Then FindHeaderName = nm: Exit Function
+        End If
+    Next k
+End Function
+
+Private Function NoHeaderMessage(ByVal folderPath As String) As String
+    NoHeaderMessage = "None of the Excel files in:" & vbCrLf & folderPath & vbCrLf & vbCrLf & _
+        "has a 'Transaction ID' header in its first 100 rows, so there is nothing to export."
+End Function
+
+' ==========================================================
+' Sheet helpers for the loaded data
+' ==========================================================
+' Column number of a header in row 1 (exact name, any case), or 0.
+Private Function HeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+    Dim lastC As Long, c As Long
+    If Len(headerName) = 0 Then Exit Function
+    lastC = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column
+    For c = 1 To lastC
+        If StrComp(CStr(ws.Cells(1, c).Value), headerName, vbTextCompare) = 0 Then
+            HeaderColumn = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' Sets the date and amount number formats on a loaded sheet. An empty
+' format or name skips that column.
+Private Sub FormatDataColumns(ByVal ws As Worksheet, ByVal dateName As String, _
+    ByVal dateFormat As String, ByVal amtName As String)
+    Dim lastR As Long, c As Long
+    lastR = LastDataRow(ws)
+    If lastR < 2 Then Exit Sub
+    If Len(dateFormat) > 0 Then
+        c = HeaderColumn(ws, dateName)
+        If c > 0 Then ws.Range(ws.Cells(2, c), ws.Cells(lastR, c)).NumberFormat = dateFormat
+    End If
+    c = HeaderColumn(ws, amtName)
+    If c > 0 Then ws.Range(ws.Cells(2, c), ws.Cells(lastR, c)).NumberFormat = "$#,##0.00"
+End Sub
+
+' Earliest and latest date on the loaded Alerted sheet. False when it has
+' no dated rows (or no date column) - Module9's "No dated 'Yes' alerted
+' transactions" case.
+Private Function AlertedDateSpan(ByVal ws As Worksheet, ByVal dateName As String, _
+    ByRef firstD As Date, ByRef lastD As Date) As Boolean
+    Dim dc As Long, lastR As Long, v As Variant, r As Long, have As Boolean, d As Date
+    dc = HeaderColumn(ws, dateName)
+    If dc = 0 Then Exit Function
+    lastR = LastDataRow(ws)
+    If lastR < 2 Then Exit Function
+
+    v = ws.Range(ws.Cells(2, dc), ws.Cells(lastR, dc)).Value
+    If Not IsArray(v) Then
+        Dim one(1 To 1, 1 To 1) As Variant
+        one(1, 1) = v
+        v = one
+    End If
+
+    For r = 1 To UBound(v, 1)
+        If VarType(v(r, 1)) = vbDate Then
+            d = v(r, 1)
+            If Not have Then
+                firstD = d: lastD = d: have = True
+            Else
+                If d < firstD Then firstD = d
+                If d > lastD Then lastD = d
+            End If
+        End If
+    Next r
+    AlertedDateSpan = have
+End Function
+
+' ==========================================================
+' Power Query (M) text
+' ==========================================================
+' M is written here with ` in place of " so the VBA stays readable, and
+' MTpl turns them back. Anything that comes from the data or the file
+' system - folder, file and column names - goes in through MText, which
+' quotes it properly, never through MTpl.
+' ==========================================================
+Private Sub AddLine(ByRef m As String, ByVal s As String)
+    m = m & s & vbLf
+End Sub
+
+Private Function MTpl(ByVal s As String) As String
+    MTpl = Replace(s, "`", """")
+End Function
+
+Private Function MText(ByVal s As String) As String
+    MText = """" & Replace(s, """", """""") & """"
+End Function
+
+Private Function MDate(ByVal d As Date) As String
+    MDate = "#date(" & Year(d) & ", " & Month(d) & ", " & Day(d) & ")"
+End Function
+
+' TrxBase - every Excel file directly in the folder, combined.
+' Each file: its first sheet, from the row and column of its "Transaction
+' ID" header (whole cell, any case - Module9's Find) across and down. Files
+' without that header are skipped, as in Module9; a file that can't be read
+' at all stops the export with its name. Files are taken in name order and
+' matched up by column name. Rows with nothing in them are dropped.
+Private Function BuildBaseM(ByVal folderWithSlash As String, ByVal excluded As Collection) As String
+    Dim m As String, ex As String, item As Variant
+    For Each item In excluded
+        If Len(ex) > 0 Then ex = ex & ", "
+        ex = ex & MText(LCase$(CStr(item)))
+    Next item
+
+    AddLine m, "let"
+    AddLine m, "    FolderPath = " & MText(folderWithSlash) & ","
+    AddLine m, "    Excluded = {" & ex & "},"
+    AddLine m, MTpl("    IsHeaderCell = (v as any) as logical => v is text and Text.Lower(v) = `transaction id`,")
+    AddLine m, "    HeaderPos = (raw as table) as nullable record =>"
+    AddLine m, "        let"
+    AddLine m, "            Top = Table.ToRows(Table.FirstN(raw, 100)),"
+    AddLine m, "            Hits = List.Select(List.Positions(Top), (i) => List.AnyTrue(List.Transform(Top{i}, IsHeaderCell))),"
+    AddLine m, "            R = if List.IsEmpty(Hits) then null else Hits{0}"
+    AddLine m, "        in"
+    AddLine m, "            if R = null then null else [Row = R, Col = List.PositionOf(List.Transform(Top{R}, IsHeaderCell), true)],"
+    AddLine m, "    LoadFile = (content as binary) as nullable table =>"
+    AddLine m, "        let"
+    AddLine m, "            Book = Excel.Workbook(content, null, true),"
+    AddLine m, MTpl("            Sheets = Table.SelectRows(Book, each [Kind] = `Sheet`),")
+    AddLine m, "            Raw = if Table.IsEmpty(Sheets) then null else Sheets{0}[Data],"
+    AddLine m, "            Pos = if Raw = null then null else HeaderPos(Raw),"
+    AddLine m, "            Body = if Pos = null then null else Table.PromoteHeaders(Table.Skip(Raw, Pos[Row]), [PromoteAllScalars = true])"
+    AddLine m, "        in"
+    AddLine m, "            if Body = null then null else Table.RemoveColumns(Body, List.FirstN(Table.ColumnNames(Body), Pos[Col])),"
+    AddLine m, "    ReadFile = (content as binary, name as text) as nullable table =>"
+    AddLine m, MTpl("        try LoadFile(content) otherwise error Error.Record(`DataFormat.Error`, `Could not read ` & name & ` as an Excel workbook.`),")
+    AddLine m, MTpl("    IsBlankRow = (r as record) as logical => List.AllTrue(List.Transform(Record.FieldValues(r), each _ = null or _ = ``)),")
+    AddLine m, "    Files = Folder.Files(FolderPath),"
+    AddLine m, MTpl("    Picked = Table.SelectRows(Files, each Text.Lower(Text.TrimEnd([Folder Path], `\`)) = Text.Lower(Text.TrimEnd(FolderPath, `\`))")
+    AddLine m, MTpl("        and Text.Contains(Text.Lower([Name]), `.xls`)")
+    AddLine m, MTpl("        and not Text.StartsWith([Name], `~$`)")
+    AddLine m, "        and not List.Contains(Excluded, Text.Lower([Name]))),"
+    AddLine m, MTpl("    Keyed = Table.AddColumn(Picked, `SortKey`, each Text.Upper([Name])),")
+    AddLine m, MTpl("    Ordered = Table.Sort(Keyed, {{`SortKey`, Order.Ascending}}),")
+    AddLine m, "    Tables = List.Transform(Table.ToRecords(Ordered), each ReadFile([Content], [Name])),"
+    AddLine m, "    Combined = Table.Combine(List.RemoveNulls(Tables)),"
+    AddLine m, "    Result = Table.SelectRows(Combined, each not IsBlankRow(_))"
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildBaseM = m
+End Function
+
+' Rows offset+1 .. offset+count of sourceQuery (fewer, or none, at the end).
+Private Function BuildRowRangeM(ByVal sourceQuery As String, ByVal offset As Long, ByVal count As Long) As String
+    Dim m As String
+    AddLine m, "let"
+    AddLine m, "    Source = " & sourceQuery & ","
+    AddLine m, "    Result = Table.FirstN(Table.Skip(Source, " & offset & "), " & count & ")"
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildRowRangeM = m
+End Function
+
+' TrxHeaders - TrxBase's column names as a one-column table.
+Private Function BuildHeadersM() As String
+    Dim m As String
+    AddLine m, "let"
+    AddLine m, "    Source = TrxBase,"
+    AddLine m, MTpl("    Result = Table.FromColumns({Table.ColumnNames(Source)}, {`Header`})")
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildHeadersM = m
+End Function
+
+' TrxClean - Module9's step 3 cleanup on TrxBase:
+'   - Transaction Date: text dates read as month/day/year (Module9's
+'     TextToColumns MDY); midnight date-times become plain dates.
+'     Anything that isn't a date is left as it was.
+'   - Transaction Amount: numbers held as text become numbers.
+'   - Counterparty: Beneficiary Name on DR rows, Originator Name
+'     otherwise, blank when that name is blank - Module9's formula, as a
+'     value. Only added when all three columns exist, as in Module9.
+Private Function BuildCleanM(ByVal colDate As String, ByVal colAmt As String, ByVal colDrCr As String, _
+    ByVal colBen As String, ByVal colOrig As String, ByVal colCp As String) As String
+    Dim m As String, prevStep As String
+
+    AddLine m, "let"
+    AddLine m, "    Source = TrxBase,"
+    prevStep = "Source"
+
+    If Len(colDate) > 0 Then
+        AddLine m, "    AsDate = (v as any) as any =>"
+        AddLine m, MTpl("        if v = null or v = `` then null")
+        AddLine m, "        else if v is date then v"
+        AddLine m, "        else if v is datetime then (if DateTime.Time(v) = #time(0, 0, 0) then DateTime.Date(v) else v)"
+        AddLine m, "        else if v is number then (try (if v = Number.RoundDown(v) then Date.From(v) else DateTime.From(v)) otherwise v)"
+        AddLine m, "        else if v is text then ("
+        AddLine m, "            let"
+        AddLine m, "                t = Text.Trim(v),"
+        AddLine m, MTpl("                p = if t = `` then null else (try DateTime.From(t, `en-US`) otherwise null)")
+        AddLine m, "            in"
+        AddLine m, "                if p = null then v"
+        AddLine m, "                else if DateTime.Time(p) = #time(0, 0, 0) then DateTime.Date(p)"
+        AddLine m, "                else p)"
+        AddLine m, "        else v,"
+        AddLine m, "    Dated = Table.TransformColumns(" & prevStep & ", {{" & MText(colDate) & ", AsDate}}),"
+        prevStep = "Dated"
+    End If
+
+    If Len(colAmt) > 0 Then
+        AddLine m, "    AsAmount = (v as any) as any =>"
+        AddLine m, MTpl("        if v = `` then null")
+        AddLine m, "        else if v is text then ("
+        AddLine m, "            let"
+        AddLine m, "                t = Text.Trim(v),"
+        AddLine m, MTpl("                p = if t = `` then null else (try Number.From(t, `en-US`) otherwise (try Number.From(Text.Remove(t, {`$`, `,`}), `en-US`) otherwise null))")
+        AddLine m, "            in"
+        AddLine m, "                if p = null then v else p)"
+        AddLine m, "        else v,"
+        AddLine m, "    Amounts = Table.TransformColumns(" & prevStep & ", {{" & MText(colAmt) & ", AsAmount}}),"
+        prevStep = "Amounts"
+    End If
+
+    If Len(colDrCr) > 0 And Len(colBen) > 0 And Len(colOrig) > 0 Then
+        AddLine m, "    WithCounterparty = Table.AddColumn(" & prevStep & ", " & MText(colCp) & ", each"
+        AddLine m, "        let"
+        AddLine m, "            dr = Record.Field(_, " & MText(colDrCr) & "),"
+        AddLine m, "            ben = Record.Field(_, " & MText(colBen) & "),"
+        AddLine m, "            org = Record.Field(_, " & MText(colOrig) & ")"
+        AddLine m, "        in"
+        AddLine m, MTpl("            if dr is text and Text.Upper(dr) = `DR` then (if ben = null or ben = `` then `` else ben)")
+        AddLine m, MTpl("            else (if org = null or org = `` then `` else org)),")
+        prevStep = "WithCounterparty"
+    End If
+
+    AddLine m, "    Result = " & prevStep
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildCleanM = m
+End Function
+
+' Rows of sourceQuery whose flag column (spaces trimmed, exact case, as
+' Module9's Trim(CStr(...)) = "Yes") equals flagWant, and/or whose date
+' falls inside winStart..winEnd. A date-time counts by its date, so a
+' transaction at 3 pm on the last day of the window is inside it.
+Private Function BuildFilterM(ByVal sourceQuery As String, ByVal flagCol As String, ByVal flagWant As String, _
+    ByVal dateCol As String, ByVal useWindow As Boolean, ByVal winStart As Date, ByVal winEnd As Date) As String
+    Dim m As String, cond As String
+
+    AddLine m, "let"
+    AddLine m, "    Source = " & sourceQuery & ","
+    AddLine m, MTpl("    IsFlag = (v as any, want as text) as logical => v is text and Text.Trim(v, ` `) = want,")
+    AddLine m, "    AsDay = (v as any) as nullable date => if v is date then v else if v is datetime then DateTime.Date(v) else null,"
+    AddLine m, "    WinStart = " & MDate(winStart) & ","
+    AddLine m, "    WinEnd = " & MDate(winEnd) & ","
+    AddLine m, "    InWindow = (v as any) as logical => (let d = AsDay(v) in d <> null and d >= WinStart and d <= WinEnd),"
+
+    If Len(flagCol) > 0 Then cond = "IsFlag(Record.Field(_, " & MText(flagCol) & "), " & MText(flagWant) & ")"
+    If useWindow Then
+        If Len(cond) > 0 Then cond = cond & " and "
+        cond = cond & "InWindow(Record.Field(_, " & MText(dateCol) & "))"
+    End If
+
+    AddLine m, "    Result = Table.SelectRows(Source, each " & cond & ")"
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildFilterM = m
+End Function
+
+' sourceQuery less duplicate rows on keyCols (the first one kept, as
+' RemoveDuplicates does), then less rows with no value in blankDateCol.
+' keyCols = Empty and/or blankDateCol = "" skip that step.
+'
+' Duplicates are matched on each key as upper-case text, so 1877576904 and
+' "1877576904" - the same ID from two files, one holding it as a number
+' and one as text - are one transaction, and case doesn't matter. That is
+' how Module9's RemoveDuplicates saw them, after its value rewrite had
+' turned both into the same number.
+Private Function BuildDedupeM(ByVal sourceQuery As String, ByVal keyCols As Variant, _
+    ByVal blankDateCol As String) As String
+    Dim m As String, prevStep As String, keys As String, k As Variant, i As Long
+
+    AddLine m, "let"
+    AddLine m, "    Source = " & sourceQuery & ","
+    AddLine m, MTpl("    IsBlankValue = (v as any) as logical => v = null or v = ``,")
+    AddLine m, "    KeyText = (v as any) as nullable text => if v = null then null else Text.Upper(Text.From(v)),"
+    prevStep = "Source"
+
+    If IsArray(keyCols) Then
+        For Each k In keyCols
+            i = i + 1
+            AddLine m, "    Keyed" & i & " = Table.AddColumn(" & prevStep & ", " & MText("__DupKey" & i) & _
+                ", each KeyText(Record.Field(_, " & MText(CStr(k)) & "))),"
+            prevStep = "Keyed" & i
+            If Len(keys) > 0 Then keys = keys & ", "
+            keys = keys & MText("__DupKey" & i)
+        Next k
+        AddLine m, "    Distinct = Table.RemoveColumns(Table.Distinct(" & prevStep & ", {" & keys & "}), {" & keys & "}),"
+        prevStep = "Distinct"
+    End If
+
+    If Len(blankDateCol) > 0 Then
+        AddLine m, "    Dated = Table.SelectRows(" & prevStep & ", each not IsBlankValue(Record.Field(_, " & MText(blankDateCol) & "))),"
+        prevStep = "Dated"
+    End If
+
+    AddLine m, "    Result = " & prevStep
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildDedupeM = m
+End Function
+
+' ==========================================================
+' ReadQueryRow - the first row of a query's result, as an array (1 To
+' columns), via a scratch sheet. Empty if the query returned no rows.
+' ==========================================================
+Private Function ReadQueryRow(ByVal wb As Workbook, ByVal queryName As String) As Variant
+    Dim wsTmp As Worksheet, lastC As Long, out() As Variant, c As Long
+    Set wsTmp = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
+    If LoadQueryToSheet(wsTmp, queryName) > 0 Then
+        lastC = wsTmp.Cells(1, wsTmp.Columns.count).End(xlToLeft).Column
+        ReDim out(1 To lastC)
+        For c = 1 To lastC
+            out(c) = wsTmp.Cells(2, c).Value
+        Next c
+        ReadQueryRow = out
+    End If
+    Application.DisplayAlerts = False
+    wsTmp.Delete
+End Function
+
+' ==========================================================
+' BuildTotalsPivots - Legacy's four pivots, on the totals sheets
+' ==========================================================
+' Same positions, names, styles and number formats as Module9's Legacy
+' pivots. Each source row is already a total (Transaction Amount = the sum,
+' Transaction Count = how many), so every value field sums: the "Count of"
+' fields sum Transaction Count, which is what counting the rows gave.
+' ==========================================================
+Private Sub BuildTotalsPivots(ByVal wb As Workbook, ByVal wsPv As Worksheet, _
+    ByVal wsScn As Worksheet, ByVal wsDay As Worksheet)
+    Dim lastR As Long, lastC As Long, cache As PivotCache
+    Dim ptx As PivotTable, ptE As PivotTable, ptD As PivotTable
+
+    ' PIVOT 1: SCENARIO
+    lastR = LastDataRow(wsScn)
+    lastC = wsScn.Cells(1, wsScn.Columns.count).End(xlToLeft).Column
+    If lastR > 1 Then
+        Set cache = wb.PivotCaches.Create(SourceType:=xlDatabase, _
+            SourceData:=PivotSourceAddress(wsScn.Range(wsScn.Cells(1, 1), wsScn.Cells(lastR, lastC))))
+        Set ptx = cache.CreatePivotTable(TableDestination:=wsPv.Range("A3"), TableName:="ScenarioPivot")
+        On Error Resume Next
+        With ptx
+            .TableStyle2 = "PivotStyleLight16"
+            With .PivotFields("Alert Information"): .Orientation = xlRowField: .Position = 1: End With
+            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 2: End With
+            With .PivotFields("Counterparty"): .Orientation = xlRowField: .Position = 3: End With
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount", xlSum
+            .PivotFields("Sum of Transaction Amount").NumberFormat = "$#,#00.00"
+            .AddDataField .PivotFields("Transaction Count"), "Count of Transaction Amount", xlSum
+            .RowAxisLayout xlCompactRow
+            .PivotFields("Count of Transaction Amount").NumberFormat = "0"
+            .PivotFields("Alert Information").AutoSort xlDescending, "Sum of Transaction Amount"
+            .PivotFields("Counterparty").AutoSort xlDescending, "Sum of Transaction Amount"
+        End With
+        On Error GoTo 0
+    End If
+
+    ' PIVOTS 2-4: BY DATE
+    lastR = LastDataRow(wsDay)
+    lastC = wsDay.Cells(1, wsDay.Columns.count).End(xlToLeft).Column
+    If lastR > 1 Then
+        Set cache = wb.PivotCaches.Create(SourceType:=xlDatabase, _
+            SourceData:=PivotSourceAddress(wsDay.Range(wsDay.Cells(1, 1), wsDay.Cells(lastR, lastC))))
+
+        ' PIVOT 2: TEMPORAL
+        Set ptx = cache.CreatePivotTable(TableDestination:=wsPv.Range("F3"), TableName:="TemporalPivot")
+        On Error Resume Next
+        With ptx
+            .TableStyle2 = "PivotStyleLight16"
+            With .PivotFields("Transaction Date"): .Orientation = xlRowField: .Position = 1: End With
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount ", xlSum
+            .PivotFields("Sum of Transaction Amount ").NumberFormat = "$#,#00.00"
+            .AddDataField .PivotFields("Transaction Count"), "Count of Transaction Amount ", xlSum
+            .PivotFields("Count of Transaction Amount ").NumberFormat = "0"
+        End With
+        wsPv.Range("F4").Group Start:=True, End:=True, Periods:=Array(False, False, False, True, True, False, True)
+        ptx.PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        On Error GoTo 0
+
+        ' PIVOT 3: ENHANCED TEMPORAL
+        ptx.TableRange2.Copy Destination:=wsPv.Range("K3")
+        Set ptE = wsPv.Range("K3").PivotTable
+        ptE.Name = "TemporalPivot_Enhanced"
+        On Error Resume Next
+        With ptE
+            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
+            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
+            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 4: End With
+            .AddDataField .PivotFields("Transaction Count"), "No of Trx  ", xlSum
+            .PivotFields("No of Trx  ").NumberFormat = "0"
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount  ", xlSum
+            .PivotFields("Sum of Transaction Amount  ").NumberFormat = "$#,#00.00"
+            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        End With
+        On Error GoTo 0
+
+        ' PIVOT 4: DR/CR INVERTED
+        ptx.TableRange2.Copy Destination:=wsPv.Range("Q3")
+        Set ptD = wsPv.Range("Q3").PivotTable
+        ptD.Name = "DrCrTemporalPivot"
+        On Error Resume Next
+        With ptD
+            .PivotFields("Sum of Transaction Amount ").Orientation = xlHidden
+            .PivotFields("Count of Transaction Amount ").Orientation = xlHidden
+            With .PivotFields("Dr Cr"): .Orientation = xlRowField: .Position = 1: End With
+            .AddDataField .PivotFields("Transaction Count"), "No of Trx   ", xlSum
+            .PivotFields("No of Trx   ").NumberFormat = "0"
+            .AddDataField .PivotFields("Transaction Amount"), "Sum of Transaction Amount   ", xlSum
+            .PivotFields("Sum of Transaction Amount   ").NumberFormat = "$#,#00.00"
+            .PivotFields("Transaction Date").NumberFormat = "mm/dd/yyyy"
+        End With
+
+        BulletproofDateFormat wsPv
+        HighlightDrCrRows ptE, wsPv
+        HighlightDrCrRows ptD, wsPv
+        On Error GoTo 0
+    End If
+
+    wsPv.Columns("A:W").AutoFit
+End Sub
+
+' ==========================================================
+' Sheet7's narrative figures for a case too big for ConsolidatedData
+' ==========================================================
+' Sheet7 works its figures out from ConsolidatedData with whole-column
+' formulas (COUNT, SUM, MIN/MAX date, account list, MINIFS/MAXIFS,
+' CR/DR SUMPRODUCT and COUNTIF). A case too big for ConsolidatedData gets
+' those figures from Power Query instead (BuildStatsM), stored on the very
+' hidden _LargeCaseStats sheet with that case's ECM ID in B1.
+'
+' Each such Sheet7 formula is wrapped, once, as
+'     =IF(AND(<B1> <> "", <B1> = Sheet1!J9), <stored figure>, <original>)
+' so the stored figure is used only while Sheet1 holds that ECM ID. Any
+' other case - including the next one, or this one once Reset clears J9 -
+' gets the original formula. A normal-size export clears B1 as well.
+' ==========================================================
+Private Function StatsSheet(ByVal createIfMissing As Boolean) As Worksheet
+    On Error Resume Next
+    Set StatsSheet = ThisWorkbook.Worksheets(STATS_SHEET)
+    On Error GoTo 0
+    If StatsSheet Is Nothing And createIfMissing Then
+        Set StatsSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+        StatsSheet.Name = STATS_SHEET
+        StatsSheet.Visible = xlSheetVeryHidden
+    End If
+End Function
+
+Private Sub ClearLargeCaseStats()
+    Dim sh As Worksheet
+    Set sh = StatsSheet(False)
+    If Not sh Is Nothing Then sh.Range("B1").ClearContents
+End Sub
+
+' stats = ReadQueryRow of BuildStatsM: count, sum, first date, last date,
+' accounts, smallest and largest amount over 0, CR sum, DR sum, CR count,
+' DR count. Stored exactly as each Sheet7 formula shows it (its TEXT()
+' format where it has one), with a leading ' so Excel keeps text as text.
+Private Sub WriteLargeCaseStats(ByVal stats As Variant, ByVal ecmValue As Variant)
+    Dim sh As Worksheet
+    Set sh = StatsSheet(True)
+    sh.Cells.Clear
+
+    sh.Range("A1").Value = "ECM ID"
+    ' Same type as Sheet1!J9, or the = in Sheet7 never matches.
+    If VarType(ecmValue) = vbString Then
+        sh.Range("B1").Value = "'" & ecmValue
+    Else
+        sh.Range("B1").Value = ecmValue
+    End If
+
+    sh.Range("A2").Value = "Transaction count":        sh.Range("B2").Value = NumOr0(stats(1))
+    sh.Range("A3").Value = "Total amount":             sh.Range("B3").Value = "'" & Format$(NumOr0(stats(2)), "#,##0.00")
+    sh.Range("A4").Value = "First date":               sh.Range("B4").Value = "'" & DateTextOf(stats(3))
+    sh.Range("A5").Value = "Last date":                sh.Range("B5").Value = "'" & DateTextOf(stats(4))
+    sh.Range("A6").Value = "Account numbers":          sh.Range("B6").Value = "'" & CStr(stats(5))
+    sh.Range("A7").Value = "Smallest amount over 0":   sh.Range("B7").Value = "'" & Format$(NumOr0(stats(6)), "$#,##0.00")
+    sh.Range("A8").Value = "Largest amount over 0":    sh.Range("B8").Value = "'" & Format$(NumOr0(stats(7)), "$#,##0.00")
+    sh.Range("A9").Value = "CR total":                 sh.Range("B9").Value = "'" & Format$(NumOr0(stats(8)), "#,##0.00")
+    sh.Range("A10").Value = "DR total":                sh.Range("B10").Value = "'" & Format$(NumOr0(stats(9)), "#,##0.00")
+    sh.Range("A11").Value = "CR count":                sh.Range("B11").Value = NumOr0(stats(10))
+    sh.Range("A12").Value = "DR count":                sh.Range("B12").Value = NumOr0(stats(11))
+End Sub
+
+Private Function NumOr0(ByVal v As Variant) As Double
+    If IsNumeric(v) Then NumOr0 = CDbl(v)
+End Function
+
+Private Function DateTextOf(ByVal v As Variant) As String
+    If VarType(v) = vbDate Then
+        DateTextOf = Format$(v, "mm/dd/yyyy")
+    Else
+        DateTextOf = CStr(v)
+    End If
+End Function
+
+' Wraps each Sheet7 formula that reads ConsolidatedData (see above).
+' Already-wrapped formulas are left alone. Returns the addresses of any it
+' didn't recognise, or couldn't change, for the completion message.
+Private Function PointSheet7AtLargeStats() As String
+    Dim ws7 As Worksheet, c As Range, f As String, statRow As Long, unmatched As String, cond As String
+
+    Set ws7 = ThisWorkbook.Worksheets("Sheet7")
+    On Error Resume Next
+    ws7.Unprotect Password:="p7ss"
+    On Error GoTo 0
+
+    cond = "AND('" & STATS_SHEET & "'!$B$1<>"""",'" & STATS_SHEET & "'!$B$1=Sheet1!$J$9)"
+    For Each c In ws7.UsedRange
+        If c.HasFormula Then
+            f = c.Formula2
+            If InStr(1, f, "ConsolidatedData", vbTextCompare) > 0 And _
+               InStr(1, f, STATS_SHEET, vbTextCompare) = 0 Then
+                statRow = StatRowForFormula(UCase$(f))
+                If statRow > 0 Then
+                    On Error Resume Next
+                    c.Formula2 = "=IF(" & cond & ",'" & STATS_SHEET & "'!$B$" & statRow & "," & Mid$(f, 2) & ")"
+                    If Err.Number <> 0 Then statRow = 0
+                    On Error GoTo 0
+                End If
+                If statRow = 0 Then
+                    If Len(unmatched) > 0 Then unmatched = unmatched & ", "
+                    unmatched = unmatched & c.Address(False, False)
+                End If
+            End If
+        End If
+    Next c
+    PointSheet7AtLargeStats = unmatched
+End Function
+
+' Which _LargeCaseStats row stands in for a Sheet7 formula (upper-cased).
+' COUNTIF / SUMPRODUCT / MINIFS / MAXIFS are checked before COUNT( / SUM(
+' / MIN( / MAX( so each formula lands on the right one.
+Private Function StatRowForFormula(ByVal u As String) As Long
+    If InStr(u, "TEXTJOIN") > 0 Then
+        StatRowForFormula = 6
+    ElseIf InStr(u, "MINIFS") > 0 Then
+        StatRowForFormula = 7
+    ElseIf InStr(u, "MAXIFS") > 0 Then
+        StatRowForFormula = 8
+    ElseIf InStr(u, "SUMPRODUCT") > 0 And InStr(u, """CR""") > 0 Then
+        StatRowForFormula = 9
+    ElseIf InStr(u, "SUMPRODUCT") > 0 And InStr(u, """DR""") > 0 Then
+        StatRowForFormula = 10
+    ElseIf InStr(u, "COUNTIF") > 0 And InStr(u, """CR""") > 0 Then
+        StatRowForFormula = 11
+    ElseIf InStr(u, "COUNTIF") > 0 And InStr(u, """DR""") > 0 Then
+        StatRowForFormula = 12
+    ElseIf InStr(u, "COUNT(") > 0 And InStr(u, "K:K") > 0 Then
+        StatRowForFormula = 2
+    ElseIf InStr(u, "SUM(") > 0 And InStr(u, "K:K") > 0 Then
+        StatRowForFormula = 3
+    ElseIf InStr(u, "MIN(") > 0 And InStr(u, "L:L") > 0 Then
+        StatRowForFormula = 4
+    ElseIf InStr(u, "MAX(") > 0 And InStr(u, "L:L") > 0 Then
+        StatRowForFormula = 5
+    End If
+End Function
+
+' Totals of sourceQuery for each combination of keyCols (named outNames in
+' the result): Transaction Amount = sum of the numeric amounts, Transaction
+' Count = rows with an amount (what a pivot's Count of Transaction Amount
+' counts). dayCol, if given, is cut to its date first so totals are per
+' day. Key columns that don't exist are left out.
+Private Function BuildTotalsM(ByVal sourceQuery As String, ByVal keyCols As Variant, ByVal outNames As Variant, _
+    ByVal amtCol As String, ByVal dayCol As String) As String
+    Dim m As String, prevStep As String, i As Long
+    Dim picks As String, renames As String, groupKeys As String
+
+    For i = LBound(keyCols) To UBound(keyCols)
+        If Len(keyCols(i)) > 0 Then
+            If Len(picks) > 0 Then picks = picks & ", ": groupKeys = groupKeys & ", "
+            picks = picks & MText(CStr(keyCols(i)))
+            groupKeys = groupKeys & MText(CStr(outNames(i)))
+            If CStr(keyCols(i)) <> CStr(outNames(i)) Then
+                If Len(renames) > 0 Then renames = renames & ", "
+                renames = renames & "{" & MText(CStr(keyCols(i))) & ", " & MText(CStr(outNames(i))) & "}"
+            End If
+        End If
+    Next i
+    If Len(amtCol) > 0 Then
+        If Len(picks) > 0 Then picks = picks & ", "
+        picks = picks & MText(amtCol)
+        If Len(renames) > 0 Then renames = renames & ", "
+        renames = renames & "{" & MText(amtCol) & ", " & MText("__Amount") & "}"
+    End If
+
+    AddLine m, "let"
+    AddLine m, "    Source = " & sourceQuery & ","
+    AddLine m, "    Picked = Table.SelectColumns(Source, {" & picks & "}),"
+    prevStep = "Picked"
+    If Len(dayCol) > 0 Then
+        AddLine m, "    Dayed = Table.TransformColumns(" & prevStep & ", {{" & MText(dayCol) & _
+            ", each if _ is datetime then DateTime.Date(_) else _}}),"
+        prevStep = "Dayed"
+    End If
+    If Len(renames) > 0 Then
+        AddLine m, "    Renamed = Table.RenameColumns(" & prevStep & ", {" & renames & "}),"
+        prevStep = "Renamed"
+    End If
+    If Len(amtCol) > 0 Then
+        AddLine m, "    Result = Table.Group(" & prevStep & ", {" & groupKeys & "}, {"
+        AddLine m, MTpl("        {`Transaction Amount`, each List.Sum(List.Select([__Amount], each _ is number)), type nullable number},")
+        AddLine m, MTpl("        {`Transaction Count`, each List.Count(List.Select([__Amount], each _ <> null and _ <> ``)), Int64.Type}})")
+    Else
+        AddLine m, "    Result = Table.Group(" & prevStep & ", {" & groupKeys & "}, {{" & MText("Transaction Count") & _
+            ", each Table.RowCount(_), Int64.Type}})"
+    End If
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildTotalsM = m
+End Function
+
+' Sheet7's figures over every row of TrxDeDupe, as one row:
+' TxnCount, TxnSum, FirstDate, LastDate, Accounts, MinPositive,
+' MaxPositive, CrSum, DrSum, CrCount, DrCount - each worked out the way its
+' Sheet7 formula does it (numbers only for COUNT/SUM, dates only for
+' MIN/MAX, CR/DR matched without regard to case as = and COUNTIF do,
+' accounts distinct in first-seen order as UNIQUE gives them). Sheet7's
+' account list only read the first 9,999 rows; this reads all of them.
+Private Function BuildStatsM(ByVal colAmt As String, ByVal colDate As String, _
+    ByVal colDrCr As String, ByVal colAcct As String) As String
+    Dim m As String, picks As String, c As Variant, amtList As String
+
+    For Each c In Array(colAmt, colDate, colDrCr, colAcct)
+        If Len(c) > 0 Then
+            If InStr(picks, MText(CStr(c))) = 0 Then
+                If Len(picks) > 0 Then picks = picks & ", "
+                picks = picks & MText(CStr(c))
+            End If
+        End If
+    Next c
+
+    AddLine m, "let"
+    AddLine m, "    Source = TrxDeDupe,"
+    AddLine m, "    Cols = Table.Buffer(Table.SelectColumns(Source, {" & picks & "})),"
+    If Len(colAmt) > 0 Then
+        AddLine m, "    Amt = Table.Column(Cols, " & MText(colAmt) & "),"
+    Else
+        AddLine m, "    Amt = {},"
+    End If
+    AddLine m, "    Nums = List.Select(Amt, each _ is number),"
+    AddLine m, "    Positives = List.Select(Nums, each _ > 0),"
+    If Len(colDate) > 0 Then
+        AddLine m, "    Dates = List.Transform(List.Select(Table.Column(Cols, " & MText(colDate) & _
+            "), each _ is date or _ is datetime), each if _ is datetime then DateTime.Date(_) else _),"
+    Else
+        AddLine m, "    Dates = {},"
+    End If
+    AddLine m, MTpl("    DateText = (d as nullable date) as text => if d = null then `01/00/1900` else Date.ToText(d, `MM/dd/yyyy`, `en-US`),")
+    AddLine m, "    IsSide = (v as any, side as text) as logical => v is text and Text.Upper(v) = side,"
+    If Len(colDrCr) > 0 Then
+        AddLine m, "    SideRows = (side as text) as table => Table.SelectRows(Cols, each IsSide(Record.Field(_, " & MText(colDrCr) & "), side)),"
+    Else
+        AddLine m, "    SideRows = (side as text) as table => Table.FirstN(Cols, 0),"
+    End If
+    If Len(colAmt) > 0 Then
+        AddLine m, "    SideSum = (side as text) => List.Sum(List.Select(Table.Column(SideRows(side), " & MText(colAmt) & "), each _ is number)),"
+    Else
+        AddLine m, "    SideSum = (side as text) => null,"
+    End If
+    AddLine m, "    SideCount = (side as text) => Table.RowCount(SideRows(side)),"
+    If Len(colAcct) > 0 Then
+        AddLine m, MTpl("    Accounts = List.Distinct(List.Transform(List.Select(Table.Column(Cols, ") & MText(colAcct) & _
+            MTpl("), each _ <> null and _ <> ``), each Text.From(_)), Comparer.OrdinalIgnoreCase),")
+    Else
+        AddLine m, "    Accounts = {},"
+    End If
+    AddLine m, "    Result = #table("
+    AddLine m, MTpl("        {`TxnCount`, `TxnSum`, `FirstDate`, `LastDate`, `Accounts`, `MinPositive`, `MaxPositive`, `CrSum`, `DrSum`, `CrCount`, `DrCount`},")
+    AddLine m, "        {{List.Count(Nums), List.Sum(Nums), DateText(List.Min(Dates)), DateText(List.Max(Dates)),"
+    AddLine m, MTpl("          Text.Start(Text.Combine(Accounts, `,`), 32000), List.Min(Positives), List.Max(Positives),")
+    AddLine m, MTpl("          SideSum(`CR`), SideSum(`DR`), SideCount(`CR`), SideCount(`DR`)}})")
+    AddLine m, "in"
+    AddLine m, "    Result"
+    BuildStatsM = m
+End Function
