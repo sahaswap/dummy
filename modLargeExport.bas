@@ -2,7 +2,7 @@ Attribute VB_Name = "modLargeExport"
 Option Explicit
 
 ' ==========================================================
-' LARGE-FILE EXPORT (POWER QUERY) - a separate copy of Export Trx File
+' LARGE-FILE EXPORT - a separate copy of Export Trx File
 ' ==========================================================
 ' For cases with hundreds of thousands of transaction rows, which the
 ' normal Export Trx File in Module9 can't handle. Same three export modes,
@@ -18,39 +18,36 @@ Option Explicit
 ' below its data, or when the files add up to more rows than a sheet
 ' holds.
 '
-' Here Power Query reads the files instead. It combines the folder, does
-' the date / amount / Counterparty cleanup and filters each output sheet,
-' and each sheet is loaded straight into its export workbook. The queries
-' are deleted again before saving, so the exports hold plain data as
-' Module9's do. VBA still does the export picker, the date windows, the
-' pivots, saving, ConsolidatedData and the tracker.
+' LEGACY reads each source file once, in Excel, and does everything in
+' that one pass - see LegacyExport. Differences from Module9's Legacy:
+'   - Raw Transactions is left out (the files are in the Transaction
+'     Files folder); CP Selection and DeDupe carry on onto "(2)", "(3)"...
+'     sheets past RAW_ROWS_PER_SHEET rows.
+'   - The four pivots are built on two totals sheets (Scenario Totals,
+'     Daily Totals) added up in that pass; a pivot adds them back up, so
+'     every figure matches a pivot on the rows.
+'   - When DeDupe is too big for ConsolidatedData, ConsolidatedData gets
+'     only the rows that carry an alert, and Sheet7's narrative figures
+'     come from that pass over every transaction - see
+'     PointSheet7AtLargeStats.
+'   - Counterparty is a value, not a formula; later files are matched to
+'     the first one by column NAME, not position.
 '
-' Differences from Module9's output:
+' EN and PIVOT use Power Query: it combines the folder, does the date /
+' amount / Counterparty cleanup and filters each output sheet, which is
+' loaded straight into its export workbook; the queries are deleted again
+' before saving. Differences from Module9's output there:
 '   - Counterparty is a value, not a formula.
 '   - Numbers a source file holds as text stay text (Module9's value
 '     rewrite turned them into numbers). Amounts are still converted.
-'   - Files are matched up by column NAME when combined; Module9 stacked
-'     them by column position.
+'   - Files are matched up by column NAME when combined.
 '   - A file's "Transaction ID" header must be in its first 100 rows.
 '   - The Pivot Analysis export, which is saved into the same \Pivot
 '     folder it reads from, is not read back in as data on the next run.
 '   - EN's Raw Transactions carries on onto "Raw Transactions (2)",
-'     "(3)"... when it has more rows than one sheet holds.
-'   - Legacy leaves out Raw Transactions (the files themselves are in the
-'     Transaction Files folder), and CP Selection and DeDupe carry on onto
-'     "(2)", "(3)"... sheets. Its four pivots are built on two totals
-'     sheets Power Query adds up (Scenario Totals, Daily Totals), so they
-'     work however many sheets the rows are spread over; the pivots add
-'     the totals back up, so every figure matches a pivot on the rows.
-'   - When Legacy's DeDupe is too big for ConsolidatedData, ConsolidatedData
-'     gets only the rows that carry an alert, and Sheet7's narrative
-'     figures are worked out by Power Query over every transaction - see
-'     PointSheet7AtLargeStats.
-'   - Any other sheet that would need more rows than Excel allows stops
-'     the export with a message instead of being cut short.
-'   - Legacy's duplicate check treats a Transaction ID held as a number in
-'     one file and as text in another as the same ID, and ignores case -
-'     as RemoveDuplicates did after Module9 turned both into numbers.
+'     "(3)"... when it has more rows than one sheet holds; any other sheet
+'     that would need more rows than Excel allows stops the export with a
+'     message instead of being cut short.
 ' ==========================================================
 
 ' TidyDataSheet: sheets up to this many rows get the full column + wrapped
@@ -58,8 +55,8 @@ Option Explicit
 Private Const TIDY_FULL_FIT_ROWS As Long = 50000
 Private Const TIDY_SAMPLE_ROWS As Long = 2000
 
-' Rows per Raw Transactions sheet when Raw has to be spread over several
-' (a sheet holds 1,048,575 below its header).
+' Rows per sheet when a sheet's rows have to be spread over several (a
+' sheet holds 1,048,575 below its header).
 Private Const RAW_ROWS_PER_SHEET As Long = 1000000
 
 ' The step the export is on - shown on the status bar while it runs and
@@ -72,6 +69,34 @@ Private m_unsaved As Collection
 ' Very hidden sheet in this workbook holding Sheet7's narrative figures for
 ' a case too big for ConsolidatedData (B1 = that case's ECM ID).
 Private Const STATS_SHEET As String = "_LargeCaseStats"
+
+' LegacyExport: rows read from a source file, and written to an export
+' sheet, per go (WRITE_BLOCK_ROWS divides RAW_ROWS_PER_SHEET, so a block
+' never straddles two sheets).
+Private Const READ_BLOCK_ROWS As Long = 20000
+Private Const WRITE_BLOCK_ROWS As Long = 20000
+' Dictionaries per duplicate check or total - see NewShards.
+Private Const SHARDS As Long = 1024
+' Raised after a message has already been shown, so CancelHandler stays quiet.
+Private Const ERR_REPORTED As Long = vbObjectError + 999
+
+' One export sheet (and its overflow sheets) being written - see WriterOpen.
+Private Type RowWriter
+    BaseName As String
+    Book As Workbook
+    Sheet As Worksheet
+    Buf() As Variant
+    Fill As Long
+    NextRow As Long
+    Part As Long
+    Total As Long
+End Type
+
+' LegacyExport's header row and column count, set from the first file's
+' header, and the Counterparty column it keeps as text (0 = none).
+Private m_outHeader() As Variant
+Private m_outCols As Long
+Private m_cpTextCol As Long
 
 Sub Consolidated_AML_Workflow_Large()
 
@@ -95,9 +120,6 @@ Dim excelFileName As String, finalSavePath As String
 Dim ecmID As String, AlertID As String
 Dim FSO As Object, objFolder As Object, objFile As Object
 Dim fileFound As Boolean
-Dim wsPivot As Worksheet, ptCache As PivotCache, pt As PivotTable, ptRange As Range
-Dim lastRowCP As Long, lastColCP As Long
-Dim wsExport As Worksheet, wsDeDupe As Worksheet
 
 ' Power Query state: the combine query every export workbook starts from,
 ' the cleanup query built on it, and the real header names they use.
@@ -274,7 +296,15 @@ If wsRealCD Is Nothing Then
 End If
 
 ' ==========================================
-' 2-3. COMBINE + CLEANUP (Power Query)
+' 4. TWO-LAYER EXPORT & DEDUPE (LEGACY) - one pass, no Power Query
+' ==========================================
+If exportMode <> "EN" Then
+    LegacyExport wsHome, wsRealCD, ecmID, AlertID, folderPath, saveFolderPath, origCalc
+    Exit Sub
+End If
+
+' ==========================================
+' 2-3. EN: COMBINE + CLEANUP (Power Query)
 ' ==========================================
 ' The queries live in the export workbook they fill, and are deleted
 ' again before it is saved. Reading the header row first means missing
@@ -444,175 +474,6 @@ If exportMode = "EN" Then
     Exit Sub
 End If
 
-' ==========================================
-' 4. TWO-LAYER EXPORT & DEDUPE (LEGACY)
-' ==========================================
-' CP Selection is the cleaned data less duplicate Transaction ID + Alert
-' Information pairs, and DeDupe that less duplicate Transaction IDs and
-' rows with no date - Module9's two RemoveDuplicates passes. Each carries
-' on onto "(2)", "(3)"... sheets past RAW_ROWS_PER_SHEET rows.
-'
-' Raw Transactions (every row of every file, duplicates included) is left
-' out: the files themselves are in the Transaction Files folder, and with
-' several overlapping files it would be the biggest part of the export.
-'
-' The four pivots are built on two small totals sheets Power Query adds up
-' - Scenario Totals (per alert / Dr Cr / counterparty, from CP Selection)
-' and Daily Totals (per day / Dr Cr, from DeDupe) - not on the data sheets,
-' which can be spread over several sheets. A pivot adds the totals back
-' up, so every figure is the one a pivot on the rows would show.
-Dim colAcct As String, cpRows As Long, ddRows As Long, alertRows As Long, shIdx As Long
-Dim wsScnTot As Worksheet, wsDayTot As Worksheet, wsAlertTmp As Worksheet
-Dim bigCase As Boolean, stats As Variant, unmatched As String, doneMsg As String
-
-colAcct = FindHeaderName(hdr, "Account No", False)
-
-If Len(colTrans) > 0 And Len(colAlert) > 0 Then
-    newWb.Queries.Add Name:="TrxCP", Formula:=BuildDedupeM("TrxClean", Array(colTrans, colAlert), "")
-Else
-    newWb.Queries.Add Name:="TrxCP", Formula:=BuildDedupeM("TrxClean", Empty, "")
-End If
-If Len(colTrans) > 0 Then
-    newWb.Queries.Add Name:="TrxDeDupe", Formula:=BuildDedupeM("TrxCP", Array(colTrans), colDate)
-Else
-    newWb.Queries.Add Name:="TrxDeDupe", Formula:=BuildDedupeM("TrxCP", Empty, colDate)
-End If
-newWb.Queries.Add Name:="TrxScenarioTotals", Formula:=BuildTotalsM("TrxCP", _
-    Array(colAlert, colDrCr, colCp), Array("Alert Information", "Dr Cr", "Counterparty"), colAmt, "")
-newWb.Queries.Add Name:="TrxDailyTotals", Formula:=BuildTotalsM("TrxDeDupe", _
-    Array(colDate, colDrCr), Array("Transaction Date", "Dr Cr"), colAmt, colDate)
-
-Set wsExport = newWb.Sheets(1)
-wsExport.Name = "CP Selection"
-Set wsDeDupe = newWb.Sheets.Add(After:=wsExport)
-wsDeDupe.Name = "DeDupe"
-
-SetStage "loading the CP Selection rows"
-cpRows = LoadQueryAcrossSheets(newWb, wsExport, "TrxCP")
-SetStage "loading the DeDupe rows"
-ddRows = LoadQueryAcrossSheets(newWb, wsDeDupe, "TrxDeDupe")
-
-SetStage "adding up the pivot totals"
-Set wsScnTot = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
-wsScnTot.Name = "Scenario Totals"
-LoadQueryToSheet wsScnTot, "TrxScenarioTotals"
-Set wsDayTot = newWb.Sheets.Add(After:=wsScnTot)
-wsDayTot.Name = "Daily Totals"
-LoadQueryToSheet wsDayTot, "TrxDailyTotals"
-
-' Too many transactions for one sheet means too many for ConsolidatedData.
-' It gets the rows that carry an alert instead - every rule name Generate
-' Narrative looks up is on those - and Sheet7's figures are worked out
-' here over all of them.
-bigCase = (ddRows > RAW_ROWS_PER_SHEET)
-If bigCase Then
-    SetStage "working out the narrative figures"
-    newWb.Queries.Add Name:="TrxStats", Formula:=BuildStatsM(colAmt, colDate, colDrCr, colAcct)
-    stats = ReadQueryRow(newWb, "TrxStats")
-    If Not IsArray(stats) Then
-        Err.Raise vbObjectError + 1005, "modLargeExport", "The narrative figures query returned nothing."
-    End If
-    If Len(colAlert) > 0 Then
-        SetStage "loading the alerted rows for ConsolidatedData"
-        newWb.Queries.Add Name:="TrxAlertRows", Formula:=BuildDedupeM("TrxDeDupe", Empty, colAlert)
-        Set wsAlertTmp = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
-        wsAlertTmp.Name = "_AlertRows"
-        alertRows = LoadQueryToSheet(wsAlertTmp, "TrxAlertRows")
-    End If
-End If
-RemoveAllQueries newWb
-
-' Backwards, because sheets are deleted along the way.
-SetStage "formatting the Legacy sheets"
-For shIdx = newWb.Worksheets.count To 1 Step -1
-    Set ws = newWb.Worksheets(shIdx)
-    If IsSheetPart(ws.Name, "CP Selection") Then
-        FormatDataColumns ws, colDate, "dddd, mmmm d, yyyy", colAmt
-        TidyDataSheet ws
-    ElseIf IsSheetPart(ws.Name, "DeDupe") Then
-        FormatDataColumns ws, colDate, "m/d/yyyy", colAmt
-        TidyDataSheet ws
-    ElseIf ws.Name = "_AlertRows" Then
-        FormatDataColumns ws, colDate, "m/d/yyyy", colAmt
-    ElseIf ws.Name = "Scenario Totals" Or ws.Name = "Daily Totals" Then
-        FormatDataColumns ws, "Transaction Date", "m/d/yyyy", "Transaction Amount"
-        TidyDataSheet ws
-    Else
-        SafeDeleteSheet newWb, ws.Name
-    End If
-Next shIdx
-
-' ==========================================
-' 4.5 PIVOT TABLES (from the totals sheets)
-' ==========================================
-SetStage "building the Legacy pivots"
-Set wsPivot = newWb.Sheets.Add(Before:=newWb.Sheets(1))
-wsPivot.Name = "Pivot"
-BuildTotalsPivots newWb, wsPivot, wsScnTot, wsDayTot
-
-' A big case's ConsolidatedData comes from the temporary alerted-rows
-' sheet, which must not be saved into the export, so it is filled here,
-' before the save.
-If bigCase Then
-    SetStage "updating ConsolidatedData"
-    wsRealCD.Cells.Clear
-    If Not wsAlertTmp Is Nothing Then
-        wsAlertTmp.UsedRange.Copy Destination:=wsRealCD.Range("A1")
-        Application.DisplayAlerts = False
-        wsAlertTmp.Delete
-    End If
-    WriteLargeCaseStats stats, wsHome.Range("J9").Value
-    unmatched = PointSheet7AtLargeStats()
-End If
-
-' ==========================================
-' 5. FINALIZE MASTER TAB & SAVE
-' ==========================================
-Dim fileTag As String
-fileTag = "Alerted"
-excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.xlsx"
-
-finalSavePath = saveFolderPath & slash & excelFileName
-SetStage "saving the Legacy file"
-CloseIfAlreadyOpen finalSavePath
-MoveExistingExportAside finalSavePath
-ZoomAllSheets newWb
-
-Application.DisplayAlerts = False
-newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
-MarkSaved newWb
-DiscardPreviousExport finalSavePath
-
-If Not bigCase Then
-    SetStage "updating ConsolidatedData"
-    wsRealCD.Cells.Clear
-    newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
-    ClearLargeCaseStats
-End If
-TidyDataSheet wsRealCD
-
-On Error Resume Next
-Module3.RefreshRuleNameTag
-On Error GoTo CancelHandler
-
-newWb.Sheets("Pivot").Activate
-FinishRun origCalc
-
-doneMsg = "Workflow Complete!" & vbCrLf & _
-    "Exported file inside the folder exactly to: " & vbCrLf & finalSavePath
-If bigCase Then
-    doneMsg = doneMsg & vbCrLf & vbCrLf & _
-        "There are " & Format$(ddRows, "#,##0") & " de-duplicated transactions - more than one sheet " & _
-        "holds - so DeDupe and CP Selection carry on onto further sheets." & vbCrLf & vbCrLf & _
-        "ConsolidatedData holds only the " & Format$(alertRows, "#,##0") & " rows that carry an alert. " & _
-        "Sheet7's narrative figures (count, totals, date range, CR/DR, account numbers) were worked out " & _
-        "from all " & Format$(ddRows, "#,##0") & " transactions, and apply while Sheet1 has this ECM ID."
-    If Len(unmatched) > 0 Then
-        doneMsg = doneMsg & vbCrLf & vbCrLf & "Check Sheet7 " & unmatched & ": these read ConsolidatedData " & _
-            "but weren't recognised, so they only see the alerted rows."
-    End If
-End If
-MsgBox doneMsg, vbInformation, "Success"
 Exit Sub
 
 CancelHandler:
@@ -641,7 +502,7 @@ On Error GoTo 0
 
 If savedErrNum = 18 Then
     MsgBox "Process Safely Cancelled.", vbInformation, "Aborted"
-ElseIf savedErrNum <> 0 Then
+ElseIf savedErrNum <> 0 And savedErrNum <> ERR_REPORTED Then
     MsgBox "An unexpected error occurred while " & m_stage & ":" & vbCrLf & vbCrLf & _
         "Error " & savedErrNum & ": " & savedErrDesc, vbCritical, "Large Export Error"
 End If
@@ -1586,68 +1447,6 @@ Private Function BuildFilterM(ByVal sourceQuery As String, ByVal flagCol As Stri
     BuildFilterM = m
 End Function
 
-' sourceQuery less duplicate rows on keyCols (the first one kept, as
-' RemoveDuplicates does), then less rows with no value in blankDateCol.
-' keyCols = Empty and/or blankDateCol = "" skip that step.
-'
-' Duplicates are matched on each key as upper-case text, so 1877576904 and
-' "1877576904" - the same ID from two files, one holding it as a number
-' and one as text - are one transaction, and case doesn't matter. That is
-' how Module9's RemoveDuplicates saw them, after its value rewrite had
-' turned both into the same number.
-Private Function BuildDedupeM(ByVal sourceQuery As String, ByVal keyCols As Variant, _
-    ByVal blankDateCol As String) As String
-    Dim m As String, prevStep As String, keys As String, k As Variant, i As Long
-
-    AddLine m, "let"
-    AddLine m, "    Source = " & sourceQuery & ","
-    AddLine m, MTpl("    IsBlankValue = (v as any) as logical => v = null or v = ``,")
-    AddLine m, "    KeyText = (v as any) as nullable text => if v = null then null else Text.Upper(Text.From(v)),"
-    prevStep = "Source"
-
-    If IsArray(keyCols) Then
-        For Each k In keyCols
-            i = i + 1
-            AddLine m, "    Keyed" & i & " = Table.AddColumn(" & prevStep & ", " & MText("__DupKey" & i) & _
-                ", each KeyText(Record.Field(_, " & MText(CStr(k)) & "))),"
-            prevStep = "Keyed" & i
-            If Len(keys) > 0 Then keys = keys & ", "
-            keys = keys & MText("__DupKey" & i)
-        Next k
-        AddLine m, "    Distinct = Table.RemoveColumns(Table.Distinct(" & prevStep & ", {" & keys & "}), {" & keys & "}),"
-        prevStep = "Distinct"
-    End If
-
-    If Len(blankDateCol) > 0 Then
-        AddLine m, "    Dated = Table.SelectRows(" & prevStep & ", each not IsBlankValue(Record.Field(_, " & MText(blankDateCol) & "))),"
-        prevStep = "Dated"
-    End If
-
-    AddLine m, "    Result = " & prevStep
-    AddLine m, "in"
-    AddLine m, "    Result"
-    BuildDedupeM = m
-End Function
-
-' ==========================================================
-' ReadQueryRow - the first row of a query's result, as an array (1 To
-' columns), via a scratch sheet. Empty if the query returned no rows.
-' ==========================================================
-Private Function ReadQueryRow(ByVal wb As Workbook, ByVal queryName As String) As Variant
-    Dim wsTmp As Worksheet, lastC As Long, out() As Variant, c As Long
-    Set wsTmp = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
-    If LoadQueryToSheet(wsTmp, queryName) > 0 Then
-        lastC = wsTmp.Cells(1, wsTmp.Columns.count).End(xlToLeft).Column
-        ReDim out(1 To lastC)
-        For c = 1 To lastC
-            out(c) = wsTmp.Cells(2, c).Value
-        Next c
-        ReadQueryRow = out
-    End If
-    Application.DisplayAlerts = False
-    wsTmp.Delete
-End Function
-
 ' ==========================================================
 ' BuildTotalsPivots - Legacy's four pivots, on the totals sheets
 ' ==========================================================
@@ -1755,7 +1554,7 @@ End Sub
 ' Sheet7 works its figures out from ConsolidatedData with whole-column
 ' formulas (COUNT, SUM, MIN/MAX date, account list, MINIFS/MAXIFS,
 ' CR/DR SUMPRODUCT and COUNTIF). A case too big for ConsolidatedData gets
-' those figures from Power Query instead (BuildStatsM), stored on the very
+' those figures from LegacyExport's pass instead, stored on the very
 ' hidden _LargeCaseStats sheet with that case's ECM ID in B1.
 '
 ' Each such Sheet7 formula is wrapped, once, as
@@ -1781,9 +1580,9 @@ Private Sub ClearLargeCaseStats()
     If Not sh Is Nothing Then sh.Range("B1").ClearContents
 End Sub
 
-' stats = ReadQueryRow of BuildStatsM: count, sum, first date, last date,
-' accounts, smallest and largest amount over 0, CR sum, DR sum, CR count,
-' DR count. Stored exactly as each Sheet7 formula shows it (its TEXT()
+' stats(1 To 11), from LegacyExport's pass: count, sum, first date, last
+' date, accounts, smallest and largest amount over 0, CR sum, DR sum, CR
+' count, DR count. Stored exactly as each Sheet7 formula shows it (its TEXT()
 ' format where it has one), with a leading ' so Excel keeps text as text.
 Private Sub WriteLargeCaseStats(ByVal stats As Variant, ByVal ecmValue As Variant)
     Dim sh As Worksheet
@@ -1886,121 +1685,786 @@ Private Function StatRowForFormula(ByVal u As String) As Long
     End If
 End Function
 
-' Totals of sourceQuery for each combination of keyCols (named outNames in
-' the result): Transaction Amount = sum of the numeric amounts, Transaction
-' Count = rows with an amount (what a pivot's Count of Transaction Amount
-' counts). dayCol, if given, is cut to its date first so totals are per
-' day. Key columns that don't exist are left out.
-Private Function BuildTotalsM(ByVal sourceQuery As String, ByVal keyCols As Variant, ByVal outNames As Variant, _
-    ByVal amtCol As String, ByVal dayCol As String) As String
-    Dim m As String, prevStep As String, i As Long
-    Dim picks As String, renames As String, groupKeys As String
+' ==========================================================
+' LEGACY EXPORT - every file read once, straight from Excel
+' ==========================================================
+' No Power Query here. Power Query re-read every source file for each sheet
+' and total it built - eight or more passes over 30+ lakh rows - with Excel
+' frozen through each one. Instead each file is opened in Excel (much
+' faster than Power Query's own .xlsx reader), read in blocks of
+' READ_BLOCK_ROWS rows, and every row is dealt with in that one pass:
+'   - cleaned as Module9 cleans it: text dates read month/day/year, text
+'     amounts made numbers, Counterparty = Beneficiary Name on DR rows and
+'     Originator Name otherwise;
+'   - kept for CP Selection unless its Transaction ID + Alert Information
+'     pair was already seen, and for DeDupe unless its Transaction ID was
+'     already seen or it has no date - Module9's two RemoveDuplicates
+'     passes and its blank-date delete, in the same order, the first row
+'     kept each time;
+'   - added into the Scenario and Daily totals the pivots are built on, into
+'     Sheet7's narrative figures, and into the alerted rows ConsolidatedData
+'     gets when DeDupe is too big for it.
+' CP Selection and DeDupe are written in blocks onto sheets of
+' RAW_ROWS_PER_SHEET rows, carrying on onto "(2)", "(3)"...
+'
+' Later files are matched to the first file's header by column name;
+' columns the first file doesn't have are left out and counted in the
+' completion message. Raw Transactions is left out (the files themselves
+' are in the Transaction Files folder).
+' ==========================================================
+Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet, _
+    ByVal ecmID As String, ByVal AlertID As String, ByVal folderPath As String, _
+    ByVal saveFolderPath As String, ByVal origCalc As XlCalculation)
 
-    For i = LBound(keyCols) To UBound(keyCols)
-        If Len(keyCols(i)) > 0 Then
-            If Len(picks) > 0 Then picks = picks & ", ": groupKeys = groupKeys & ", "
-            picks = picks & MText(CStr(keyCols(i)))
-            groupKeys = groupKeys & MText(CStr(outNames(i)))
-            If CStr(keyCols(i)) <> CStr(outNames(i)) Then
-                If Len(renames) > 0 Then renames = renames & ", "
-                renames = renames & "{" & MText(CStr(keyCols(i))) & ", " & MText(CStr(outNames(i))) & "}"
-            End If
+    Dim slash As String, FSO As Object, f As Object, files As Collection, item As Variant
+    Dim newWb As Workbook, wbSrc As Workbook, wsSrc As Worksheet, hc As Range, ws As Worksheet
+    Dim fileNo As Long, filesRead As Long, skippedFiles As String, extraCols As Long
+    Dim hRow As Long, hCol As Long, lastR As Long, lastC As Long, startR As Long, endR As Long
+    Dim fileHdr() As String, master() As String, nMaster As Long, haveMaster As Boolean
+    Dim colMap() As Long, blk As Variant, nBlk As Long, r As Long, j As Long, c As Long
+    Dim v As Variant, rowVals() As Variant, isBlank As Boolean, rowsRead As Double
+    Dim iDate As Long, iAmt As Long, iDr As Long, iBen As Long, iOrig As Long
+    Dim iTrans As Long, iAlert As Long, iAcct As Long
+    Dim hasCp As Boolean, dedupeCP As Boolean, dedupeDD As Boolean, isDrRow As Boolean
+    Dim cpSeen As Variant, ddSeen As Variant, scnIdx As Variant, dayIdx As Variant, acctSeen As Variant
+    Dim cpW As RowWriter, ddW As RowWriter, alW As RowWriter
+    Dim amt As Variant, dv As Variant, sideV As Variant, g As Long, prevN As Long, k As String
+
+    ' Scenario totals (from CP Selection) and Daily totals (from DeDupe)
+    Dim scnN As Long, scnCap As Long, scnAlert() As Variant, scnDr() As Variant, scnCp() As Variant
+    Dim scnSum() As Double, scnCnt() As Long
+    Dim dayN As Long, dayCap As Long, dayDate() As Variant, dayDr() As Variant
+    Dim daySum() As Double, dayCnt() As Long
+
+    ' Sheet7's figures, over DeDupe
+    Dim stCount As Double, stSum As Double, stHaveDate As Boolean, stFirst As Date, stLast As Date
+    Dim stHavePos As Boolean, stMinPos As Double, stMaxPos As Double
+    Dim crSum As Double, drSum As Double, crCnt As Double, drCnt As Double, acctText As String
+
+    Dim wsScn As Worksheet, wsDay As Worksheet, wsPivot As Worksheet, outArr() As Variant
+    Dim bigCase As Boolean, st(1 To 11) As Variant, unmatched As String, doneMsg As String
+    Dim dateName As String, amtName As String, shIdx As Long
+    Dim excelFileName As String, finalSavePath As String
+
+    slash = Application.PathSeparator
+
+    ' Same file choice as Module9.
+    Set FSO = CreateObject("Scripting.FileSystemObject")
+    Set files = New Collection
+    For Each f In FSO.GetFolder(folderPath).files
+        If (InStr(1, f.Name, ".xls", vbTextCompare) > 0) And (Left$(f.Name, 2) <> "~$") And _
+           (f.Name <> ThisWorkbook.Name) Then files.Add f.Path
+    Next f
+
+    cpSeen = NewShards(): ddSeen = NewShards(): acctSeen = NewShards()
+    scnIdx = NewShards(): dayIdx = NewShards()
+    scnCap = 4096: dayCap = 4096
+    ReDim scnAlert(1 To scnCap): ReDim scnDr(1 To scnCap): ReDim scnCp(1 To scnCap)
+    ReDim scnSum(1 To scnCap): ReDim scnCnt(1 To scnCap)
+    ReDim dayDate(1 To dayCap): ReDim dayDr(1 To dayCap): ReDim daySum(1 To dayCap): ReDim dayCnt(1 To dayCap)
+
+    Set newWb = NewOutputWorkbook()
+
+    ' ------------------------------------------
+    ' ONE PASS OVER THE FILES
+    ' ------------------------------------------
+    For Each item In files
+        fileNo = fileNo + 1
+        SetStage "opening file " & fileNo & " of " & files.count & " (" & FileNameOf(CStr(item)) & ")"
+        DoEvents
+        Set wbSrc = Workbooks.Open(fileName:=CStr(item), ReadOnly:=True, UpdateLinks:=False, AddToMru:=False)
+        m_unsaved.Add wbSrc
+
+        Set wsSrc = Nothing
+        Set hc = Nothing
+        If TypeName(wbSrc.Sheets(1)) = "Worksheet" Then Set wsSrc = wbSrc.Sheets(1)
+        If Not wsSrc Is Nothing Then
+            Set hc = wsSrc.Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole, _
+                SearchOrder:=xlByRows, MatchCase:=False)
         End If
-    Next i
-    If Len(amtCol) > 0 Then
-        If Len(picks) > 0 Then picks = picks & ", "
-        picks = picks & MText(amtCol)
-        If Len(renames) > 0 Then renames = renames & ", "
-        renames = renames & "{" & MText(amtCol) & ", " & MText("__Amount") & "}"
+
+        If hc Is Nothing Then
+            skippedFiles = skippedFiles & vbCrLf & "   " & FileNameOf(CStr(item))
+        Else
+            filesRead = filesRead + 1
+            hRow = hc.row
+            hCol = hc.Column
+            lastC = wsSrc.Cells(hRow, wsSrc.Columns.count).End(xlToLeft).Column
+            If lastC < hCol Then lastC = hCol
+            lastR = LastDataRow(wsSrc)
+            fileHdr = RowTexts(wsSrc, hRow, hCol, lastC)
+
+            ' The first file's header sets the export's columns.
+            If Not haveMaster Then
+                master = fileHdr
+                nMaster = UBound(master)
+                iDate = FindHeaderIndex(master, "Transaction Date", False)
+                iAmt = FindHeaderIndex(master, "Transaction Amount", False)
+                iDr = FindHeaderIndex(master, "Dr Cr", False)
+                iBen = FindHeaderIndex(master, "Beneficiary Name", False)
+                iOrig = FindHeaderIndex(master, "Originator Name", False)
+                iTrans = FindHeaderIndex(master, "Transaction ID", False)
+                iAlert = FindHeaderIndex(master, "Alert Information", False)
+                iAcct = FindHeaderIndex(master, "Account No", False)
+                hasCp = (iDr > 0 And iBen > 0 And iOrig > 0)
+                dedupeCP = (iTrans > 0 And iAlert > 0)
+                dedupeDD = (iTrans > 0)
+                If iDate > 0 Then dateName = master(iDate)
+                If iAmt > 0 Then amtName = master(iAmt)
+
+                m_outCols = nMaster
+                If hasCp Then m_outCols = nMaster + 1
+                ReDim m_outHeader(1 To 1, 1 To m_outCols)
+                For j = 1 To nMaster
+                    m_outHeader(1, j) = master(j)
+                Next j
+                m_cpTextCol = 0
+                If hasCp Then
+                    m_outHeader(1, m_outCols) = "Counterparty"
+                    m_cpTextCol = m_outCols
+                End If
+                ReDim rowVals(1 To m_outCols)
+
+                WriterOpen cpW, newWb, "CP Selection", newWb.Sheets(newWb.Sheets.count)
+                WriterOpen ddW, newWb, "DeDupe", cpW.Sheet
+                WriterOpen alW, newWb, "_AlertRows", ddW.Sheet
+                haveMaster = True
+            End If
+
+            colMap = MapColumns(master, fileHdr, extraCols)
+
+            For startR = hRow + 1 To lastR Step READ_BLOCK_ROWS
+                endR = startR + READ_BLOCK_ROWS - 1
+                If endR > lastR Then endR = lastR
+                blk = wsSrc.Range(wsSrc.Cells(startR, hCol), wsSrc.Cells(endR, lastC)).Value
+                If Not IsArray(blk) Then blk = OneCellArray(blk)
+                nBlk = endR - startR + 1
+
+                For r = 1 To nBlk
+                    ' Row in the export's column order; wholly empty rows skipped.
+                    isBlank = True
+                    For j = 1 To nMaster
+                        c = colMap(j)
+                        If c > 0 Then v = blk(r, c) Else v = Empty
+                        If isBlank Then isBlank = IsBlankValue(v)
+                        rowVals(j) = v
+                    Next j
+                    If isBlank Then GoTo NextRow
+
+                    ' Module9's step 3 cleanup
+                    If iDate > 0 Then rowVals(iDate) = CleanDate(rowVals(iDate))
+                    If iAmt > 0 Then rowVals(iAmt) = CleanAmount(rowVals(iAmt))
+                    If hasCp Then
+                        ' =IF(DrCr="DR", IF(Ben="","",Ben), IF(Orig="","",Orig))
+                        isDrRow = False
+                        v = rowVals(iDr)
+                        If VarType(v) = vbString Then isDrRow = (StrComp(v, "DR", vbTextCompare) = 0)
+                        If isDrRow Then v = rowVals(iBen) Else v = rowVals(iOrig)
+                        If IsBlankValue(v) Then v = ""
+                        rowVals(m_outCols) = v
+                    End If
+                    If iAmt > 0 Then amt = rowVals(iAmt) Else amt = Empty
+
+                    ' ---- CP Selection: first row per Transaction ID + Alert Information
+                    If dedupeCP Then
+                        If AlreadySeen(cpSeen, KeyText(rowVals(iAlert)) & vbTab & KeyText(rowVals(iTrans))) Then GoTo NextRow
+                    End If
+                    WriterAdd cpW, rowVals
+
+                    ' Scenario totals: per Alert Information / Dr Cr / Counterparty
+                    k = ""
+                    If iAlert > 0 Then k = KeyText(rowVals(iAlert))
+                    If iDr > 0 Then k = k & vbTab & KeyText(rowVals(iDr)) Else k = k & vbTab
+                    If hasCp Then k = k & vbTab & KeyText(rowVals(m_outCols)) Else k = k & vbTab
+                    prevN = scnN
+                    g = GroupIndex(scnIdx, k, scnN)
+                    If scnN > prevN Then
+                        If scnN > scnCap Then
+                            scnCap = scnCap * 2
+                            ReDim Preserve scnAlert(1 To scnCap): ReDim Preserve scnDr(1 To scnCap)
+                            ReDim Preserve scnCp(1 To scnCap): ReDim Preserve scnSum(1 To scnCap)
+                            ReDim Preserve scnCnt(1 To scnCap)
+                        End If
+                        If iAlert > 0 Then scnAlert(g) = rowVals(iAlert)
+                        If iDr > 0 Then scnDr(g) = rowVals(iDr)
+                        If hasCp Then scnCp(g) = rowVals(m_outCols)
+                    End If
+                    If IsNumber(amt) Then scnSum(g) = scnSum(g) + amt
+                    If Not IsBlankValue(amt) Then scnCnt(g) = scnCnt(g) + 1
+
+                    ' ---- DeDupe: first row per Transaction ID, then rows with a date
+                    If dedupeDD Then
+                        If AlreadySeen(ddSeen, KeyText(rowVals(iTrans))) Then GoTo NextRow
+                    End If
+                    If iDate > 0 Then
+                        If IsBlankValue(rowVals(iDate)) Then GoTo NextRow
+                    End If
+                    WriterAdd ddW, rowVals
+
+                    ' Daily totals: per day / Dr Cr
+                    If iDate > 0 Then dv = rowVals(iDate) Else dv = Empty
+                    If VarType(dv) = vbDate Then
+                        dv = CDate(Int(CDbl(dv)))
+                        k = "D" & CStr(CLng(CDbl(dv)))
+                    Else
+                        k = "T" & KeyText(dv)
+                    End If
+                    If iDr > 0 Then k = KeyText(rowVals(iDr)) & vbTab & k
+                    prevN = dayN
+                    g = GroupIndex(dayIdx, k, dayN)
+                    If dayN > prevN Then
+                        If dayN > dayCap Then
+                            dayCap = dayCap * 2
+                            ReDim Preserve dayDate(1 To dayCap): ReDim Preserve dayDr(1 To dayCap)
+                            ReDim Preserve daySum(1 To dayCap): ReDim Preserve dayCnt(1 To dayCap)
+                        End If
+                        dayDate(g) = dv
+                        If iDr > 0 Then dayDr(g) = rowVals(iDr)
+                    End If
+                    If IsNumber(amt) Then daySum(g) = daySum(g) + amt
+                    If Not IsBlankValue(amt) Then dayCnt(g) = dayCnt(g) + 1
+
+                    ' Sheet7's figures (what its formulas give on ConsolidatedData = DeDupe)
+                    If IsNumber(amt) Then
+                        stCount = stCount + 1
+                        stSum = stSum + amt
+                        If amt > 0 Then
+                            If Not stHavePos Then
+                                stMinPos = amt: stMaxPos = amt: stHavePos = True
+                            Else
+                                If amt < stMinPos Then stMinPos = amt
+                                If amt > stMaxPos Then stMaxPos = amt
+                            End If
+                        End If
+                    End If
+                    If VarType(dv) = vbDate Then
+                        If Not stHaveDate Then
+                            stFirst = dv: stLast = dv: stHaveDate = True
+                        Else
+                            If dv < stFirst Then stFirst = dv
+                            If dv > stLast Then stLast = dv
+                        End If
+                    End If
+                    If iDr > 0 Then
+                        sideV = rowVals(iDr)
+                        If VarType(sideV) = vbString Then
+                            If StrComp(sideV, "CR", vbTextCompare) = 0 Then
+                                crCnt = crCnt + 1
+                                If IsNumber(amt) Then crSum = crSum + amt
+                            ElseIf StrComp(sideV, "DR", vbTextCompare) = 0 Then
+                                drCnt = drCnt + 1
+                                If IsNumber(amt) Then drSum = drSum + amt
+                            End If
+                        End If
+                    End If
+                    If iAcct > 0 And Len(acctText) < 32000 Then
+                        v = rowVals(iAcct)
+                        If Not IsBlankValue(v) And Not IsError(v) Then
+                            If Not AlreadySeen(acctSeen, KeyText(v)) Then
+                                If Len(acctText) > 0 Then acctText = acctText & ","
+                                acctText = acctText & CStr(v)
+                            End If
+                        End If
+                    End If
+
+                    ' Rows that carry an alert, for ConsolidatedData if DeDupe won't fit
+                    If iAlert > 0 Then
+                        If Not IsBlankValue(rowVals(iAlert)) Then WriterAdd alW, rowVals
+                    End If
+NextRow:
+                Next r
+
+                rowsRead = rowsRead + nBlk
+                SetStage "file " & fileNo & " of " & files.count & ": " & Format$(rowsRead, "#,##0") & _
+                    " rows read, " & Format$(ddW.Total + ddW.Fill, "#,##0") & " unique transactions"
+                DoEvents
+            Next startR
+        End If
+
+        MarkSaved wbSrc
+        wbSrc.Close SaveChanges:=False
+        Set wbSrc = Nothing
+    Next item
+
+    If Not haveMaster Then
+        MsgBox "None of the Excel files in:" & vbCrLf & folderPath & vbCrLf & vbCrLf & _
+            "has a 'Transaction ID' header, so there is nothing to export.", vbCritical, "No Transaction Data"
+        Err.Raise ERR_REPORTED
     End If
 
-    AddLine m, "let"
-    AddLine m, "    Source = " & sourceQuery & ","
-    AddLine m, "    Picked = Table.SelectColumns(Source, {" & picks & "}),"
-    prevStep = "Picked"
-    If Len(dayCol) > 0 Then
-        AddLine m, "    Dayed = Table.TransformColumns(" & prevStep & ", {{" & MText(dayCol) & _
-            ", each if _ is datetime then DateTime.Date(_) else _}}),"
-        prevStep = "Dayed"
+    WriterFlush cpW
+    WriterFlush ddW
+    WriterFlush alW
+    If scnN + 1 > newWb.Sheets(1).Rows.count Then
+        Err.Raise vbObjectError + 1006, "modLargeExport", "There are too many alert / Dr Cr / counterparty " & _
+            "combinations (" & Format$(scnN, "#,##0") & ") for the Scenario Totals sheet."
     End If
-    If Len(renames) > 0 Then
-        AddLine m, "    Renamed = Table.RenameColumns(" & prevStep & ", {" & renames & "}),"
-        prevStep = "Renamed"
-    End If
-    If Len(amtCol) > 0 Then
-        AddLine m, "    Result = Table.Group(" & prevStep & ", {" & groupKeys & "}, {"
-        AddLine m, MTpl("        {`Transaction Amount`, each List.Sum(List.Select([__Amount], each _ is number)), type nullable number},")
-        AddLine m, MTpl("        {`Transaction Count`, each List.Count(List.Select([__Amount], each _ <> null and _ <> ``)), Int64.Type}})")
+
+    ' ------------------------------------------
+    ' TOTALS SHEETS (the pivots' source)
+    ' ------------------------------------------
+    SetStage "writing the pivot totals"
+    Set wsScn = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
+    wsScn.Name = "Scenario Totals"
+    wsScn.Columns(3).NumberFormat = "@"     ' Counterparty as text, as its formula gave it
+    ReDim outArr(1 To scnN + 1, 1 To 5)
+    outArr(1, 1) = "Alert Information": outArr(1, 2) = "Dr Cr": outArr(1, 3) = "Counterparty"
+    outArr(1, 4) = "Transaction Amount": outArr(1, 5) = "Transaction Count"
+    For g = 1 To scnN
+        outArr(g + 1, 1) = scnAlert(g): outArr(g + 1, 2) = scnDr(g): outArr(g + 1, 3) = scnCp(g)
+        outArr(g + 1, 4) = scnSum(g): outArr(g + 1, 5) = scnCnt(g)
+    Next g
+    wsScn.Range("A1").Resize(scnN + 1, 5).Value = outArr
+
+    Set wsDay = newWb.Sheets.Add(After:=wsScn)
+    wsDay.Name = "Daily Totals"
+    ReDim outArr(1 To dayN + 1, 1 To 4)
+    outArr(1, 1) = "Transaction Date": outArr(1, 2) = "Dr Cr"
+    outArr(1, 3) = "Transaction Amount": outArr(1, 4) = "Transaction Count"
+    For g = 1 To dayN
+        outArr(g + 1, 1) = dayDate(g): outArr(g + 1, 2) = dayDr(g)
+        outArr(g + 1, 3) = daySum(g): outArr(g + 1, 4) = dayCnt(g)
+    Next g
+    wsDay.Range("A1").Resize(dayN + 1, 4).Value = outArr
+
+    ' ------------------------------------------
+    ' CONSOLIDATEDDATA + SHEET7
+    ' ------------------------------------------
+    ' DeDupe on one sheet: ConsolidatedData = DeDupe, as in Module9. Too big
+    ' for one sheet: the rows that carry an alert (every rule name Generate
+    ' Narrative looks up is on those), and Sheet7's figures from this pass.
+    SetStage "updating ConsolidatedData"
+    bigCase = (ddW.Part > 1)
+    wsRealCD.Cells.Clear
+    If bigCase Then
+        newWb.Sheets("_AlertRows").UsedRange.Copy Destination:=wsRealCD.Range("A1")
+        st(1) = stCount: st(2) = stSum
+        If stHaveDate Then
+            st(3) = stFirst: st(4) = stLast
+        Else
+            st(3) = "01/00/1900": st(4) = "01/00/1900"   ' TEXT(0,"mm/dd/yyyy"), as MIN of nothing gives
+        End If
+        st(5) = acctText
+        If stHavePos Then
+            st(6) = stMinPos: st(7) = stMaxPos
+        Else
+            st(6) = 0: st(7) = 0
+        End If
+        st(8) = crSum: st(9) = drSum: st(10) = crCnt: st(11) = drCnt
+        WriteLargeCaseStats st, wsHome.Range("J9").Value
+        unmatched = PointSheet7AtLargeStats()
     Else
-        AddLine m, "    Result = Table.Group(" & prevStep & ", {" & groupKeys & "}, {{" & MText("Transaction Count") & _
-            ", each Table.RowCount(_), Int64.Type}})"
+        ddW.Sheet.UsedRange.Copy Destination:=wsRealCD.Range("A1")
+        ClearLargeCaseStats
     End If
-    AddLine m, "in"
-    AddLine m, "    Result"
-    BuildTotalsM = m
+    FormatDataColumns wsRealCD, dateName, "m/d/yyyy", amtName
+    TidyDataSheet wsRealCD
+
+    ' ------------------------------------------
+    ' FORMAT, TIDY, DROP SCRATCH SHEETS (backwards - sheets go as it runs)
+    ' ------------------------------------------
+    SetStage "formatting the Legacy sheets"
+    For shIdx = newWb.Worksheets.count To 1 Step -1
+        Set ws = newWb.Worksheets(shIdx)
+        If IsSheetPart(ws.Name, "CP Selection") Then
+            StyleHeaderRow ws
+            FormatDataColumns ws, dateName, "dddd, mmmm d, yyyy", amtName
+            TidyDataSheet ws
+        ElseIf IsSheetPart(ws.Name, "DeDupe") Then
+            StyleHeaderRow ws
+            FormatDataColumns ws, dateName, "m/d/yyyy", amtName
+            TidyDataSheet ws
+        ElseIf ws.Name = "Scenario Totals" Or ws.Name = "Daily Totals" Then
+            StyleHeaderRow ws
+            FormatDataColumns ws, "Transaction Date", "m/d/yyyy", "Transaction Amount"
+            TidyDataSheet ws
+        Else
+            SafeDeleteSheet newWb, ws.Name      ' _AlertRows and the new workbook's blank sheet
+        End If
+    Next shIdx
+
+    ' ------------------------------------------
+    ' PIVOTS (from the totals sheets)
+    ' ------------------------------------------
+    SetStage "building the Legacy pivots"
+    Set wsPivot = newWb.Sheets.Add(Before:=newWb.Sheets(1))
+    wsPivot.Name = "Pivot"
+    BuildTotalsPivots newWb, wsPivot, wsScn, wsDay
+
+    ' ------------------------------------------
+    ' SAVE
+    ' ------------------------------------------
+    excelFileName = ecmID & "_" & AlertID & "_Combined_Alerted_Transaction.xlsx"
+    finalSavePath = saveFolderPath & slash & excelFileName
+    SetStage "saving the Legacy file"
+    CloseIfAlreadyOpen finalSavePath
+    MoveExistingExportAside finalSavePath
+    ZoomAllSheets newWb
+    Application.DisplayAlerts = False
+    newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
+    MarkSaved newWb
+    DiscardPreviousExport finalSavePath
+
+    On Error Resume Next
+    Module3.RefreshRuleNameTag
+    On Error GoTo 0
+
+    newWb.Sheets("Pivot").Activate
+    FinishRun origCalc
+
+    doneMsg = "Workflow Complete!" & vbCrLf & _
+        "Exported file inside the folder exactly to: " & vbCrLf & finalSavePath & vbCrLf & vbCrLf & _
+        Format$(rowsRead, "#,##0") & " rows read from " & filesRead & " file(s): " & _
+        Format$(cpW.Total, "#,##0") & " in CP Selection (" & cpW.Part & " sheet(s)), " & _
+        Format$(ddW.Total, "#,##0") & " in DeDupe (" & ddW.Part & " sheet(s))."
+    If bigCase Then
+        doneMsg = doneMsg & vbCrLf & vbCrLf & _
+            "DeDupe is too big for ConsolidatedData, so it holds only the " & Format$(alW.Total, "#,##0") & _
+            " rows that carry an alert. Sheet7's narrative figures (count, totals, date range, CR/DR, " & _
+            "account numbers) were worked out from all " & Format$(ddW.Total, "#,##0") & _
+            " transactions, and apply while Sheet1 has this ECM ID."
+        If Len(unmatched) > 0 Then
+            doneMsg = doneMsg & vbCrLf & vbCrLf & "Check Sheet7 " & unmatched & ": these read " & _
+                "ConsolidatedData but weren't recognised, so they only see the alerted rows."
+        End If
+    End If
+    If Len(skippedFiles) > 0 Then
+        doneMsg = doneMsg & vbCrLf & vbCrLf & "Skipped - no 'Transaction ID' header:" & skippedFiles
+    End If
+    If extraCols > 0 Then
+        doneMsg = doneMsg & vbCrLf & vbCrLf & extraCols & " column(s) in later files aren't in the " & _
+            "first file's header and were left out."
+    End If
+    MsgBox doneMsg, vbInformation, "Success"
+End Sub
+
+' ==========================================================
+' Legacy pass helpers
+' ==========================================================
+
+' The export sheets are written through a RowWriter each: rows collect in
+' Buf and go onto the sheet WRITE_BLOCK_ROWS at a time; a full sheet
+' (RAW_ROWS_PER_SHEET rows) carries on onto "<BaseName> (n)" right after it.
+Private Sub WriterOpen(ByRef w As RowWriter, ByVal wb As Workbook, ByVal baseName As String, _
+    ByVal afterSheet As Object)
+    w.BaseName = baseName
+    Set w.Book = wb
+    w.Part = 1
+    w.Total = 0
+    w.Fill = 0
+    ReDim w.Buf(1 To WRITE_BLOCK_ROWS, 1 To m_outCols)
+    Set w.Sheet = NewWriterSheet(w, afterSheet)
+End Sub
+
+Private Function NewWriterSheet(ByRef w As RowWriter, ByVal afterSheet As Object) As Worksheet
+    Dim ws As Worksheet
+    Set ws = w.Book.Sheets.Add(After:=afterSheet)
+    If w.Part = 1 Then ws.Name = w.BaseName Else ws.Name = w.BaseName & " (" & w.Part & ")"
+    ' Counterparty was a formula in Module9, so its names were never read as
+    ' numbers or dates ("12/25 LLC"); a text column keeps them as written.
+    If m_cpTextCol > 0 Then ws.Columns(m_cpTextCol).NumberFormat = "@"
+    ws.Range("A1").Resize(1, m_outCols).Value = m_outHeader
+    w.NextRow = 2
+    Set NewWriterSheet = ws
 End Function
 
-' Sheet7's figures over every row of TrxDeDupe, as one row:
-' TxnCount, TxnSum, FirstDate, LastDate, Accounts, MinPositive,
-' MaxPositive, CrSum, DrSum, CrCount, DrCount - each worked out the way its
-' Sheet7 formula does it (numbers only for COUNT/SUM, dates only for
-' MIN/MAX, CR/DR matched without regard to case as = and COUNTIF do,
-' accounts distinct in first-seen order as UNIQUE gives them). Sheet7's
-' account list only read the first 9,999 rows; this reads all of them.
-Private Function BuildStatsM(ByVal colAmt As String, ByVal colDate As String, _
-    ByVal colDrCr As String, ByVal colAcct As String) As String
-    Dim m As String, picks As String, c As Variant, amtList As String
+Private Sub WriterAdd(ByRef w As RowWriter, ByRef rowVals() As Variant)
+    Dim j As Long
+    w.Fill = w.Fill + 1
+    For j = 1 To m_outCols
+        w.Buf(w.Fill, j) = rowVals(j)
+    Next j
+    If w.Fill = WRITE_BLOCK_ROWS Then WriterFlush w
+End Sub
 
-    For Each c In Array(colAmt, colDate, colDrCr, colAcct)
-        If Len(c) > 0 Then
-            If InStr(picks, MText(CStr(c))) = 0 Then
-                If Len(picks) > 0 Then picks = picks & ", "
-                picks = picks & MText(CStr(c))
-            End If
+Private Sub WriterFlush(ByRef w As RowWriter)
+    Dim done As Long, n As Long, room As Long, chunkArr() As Variant, r As Long, j As Long
+    Do While done < w.Fill
+        room = RAW_ROWS_PER_SHEET - (w.NextRow - 2)
+        If room <= 0 Then
+            w.Part = w.Part + 1
+            Set w.Sheet = NewWriterSheet(w, w.Sheet)
+            room = RAW_ROWS_PER_SHEET
         End If
-    Next c
+        n = w.Fill - done
+        If n > room Then n = room
+        If done = 0 And n = WRITE_BLOCK_ROWS Then
+            w.Sheet.Cells(w.NextRow, 1).Resize(n, m_outCols).Value = w.Buf
+        Else
+            ReDim chunkArr(1 To n, 1 To m_outCols)
+            For r = 1 To n
+                For j = 1 To m_outCols
+                    chunkArr(r, j) = w.Buf(done + r, j)
+                Next j
+            Next r
+            w.Sheet.Cells(w.NextRow, 1).Resize(n, m_outCols).Value = chunkArr
+        End If
+        w.NextRow = w.NextRow + n
+        w.Total = w.Total + n
+        done = done + n
+    Loop
+    w.Fill = 0
+End Sub
 
-    AddLine m, "let"
-    AddLine m, "    Source = TrxDeDupe,"
-    AddLine m, "    Cols = Table.Buffer(Table.SelectColumns(Source, {" & picks & "})),"
-    If Len(colAmt) > 0 Then
-        AddLine m, "    Amt = Table.Column(Cols, " & MText(colAmt) & "),"
+' Bold white on blue, the header look the exports carried from the source.
+Private Sub StyleHeaderRow(ByVal ws As Worksheet)
+    Dim lastC As Long
+    lastC = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, lastC))
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(68, 114, 196)
+    End With
+End Sub
+
+' Duplicate checks and totals use Scripting.Dictionary, split into SHARDS
+' dictionaries by a hash of the key so no one dictionary holds lakhs of
+' keys - a single one slows down badly well before 30 lakh.
+Private Function NewShards() As Variant
+    Dim a() As Object, i As Long
+    ReDim a(0 To SHARDS - 1)
+    For i = 0 To SHARDS - 1
+        Set a(i) = CreateObject("Scripting.Dictionary")
+    Next i
+    NewShards = a
+End Function
+
+Private Function ShardOf(ByVal k As String) As Long
+    Dim n As Long, h As Long, i As Long, stopAt As Long
+    n = Len(k)
+    h = n
+    stopAt = n - 5
+    If stopAt < 1 Then stopAt = 1
+    For i = n To stopAt Step -1
+        h = (h * 31 + (AscW(Mid$(k, i, 1)) And &HFFFF&)) Mod 1000003
+    Next i
+    ShardOf = h Mod SHARDS
+End Function
+
+' True if k was seen before; otherwise remembers it and returns False.
+Private Function AlreadySeen(ByRef shards As Variant, ByVal k As String) As Boolean
+    Dim d As Object
+    Set d = shards(ShardOf(k))
+    If d.Exists(k) Then
+        AlreadySeen = True
     Else
-        AddLine m, "    Amt = {},"
+        d.Add k, Empty
     End If
-    AddLine m, "    Nums = List.Select(Amt, each _ is number),"
-    AddLine m, "    Positives = List.Select(Nums, each _ > 0),"
-    If Len(colDate) > 0 Then
-        AddLine m, "    Dates = List.Transform(List.Select(Table.Column(Cols, " & MText(colDate) & _
-            "), each _ is date or _ is datetime), each if _ is datetime then DateTime.Date(_) else _),"
+End Function
+
+' The number of k's group, numbering a new group n + 1 (and counting it).
+Private Function GroupIndex(ByRef shards As Variant, ByVal k As String, ByRef n As Long) As Long
+    Dim d As Object
+    Set d = shards(ShardOf(k))
+    If d.Exists(k) Then
+        GroupIndex = d(k)
     Else
-        AddLine m, "    Dates = {},"
+        n = n + 1
+        d.Add k, n
+        GroupIndex = n
     End If
-    AddLine m, MTpl("    DateText = (d as nullable date) as text => if d = null then `01/00/1900` else Date.ToText(d, `MM/dd/yyyy`, `en-US`),")
-    AddLine m, "    IsSide = (v as any, side as text) as logical => v is text and Text.Upper(v) = side,"
-    If Len(colDrCr) > 0 Then
-        AddLine m, "    SideRows = (side as text) as table => Table.SelectRows(Cols, each IsSide(Record.Field(_, " & MText(colDrCr) & "), side)),"
+End Function
+
+' Duplicate-check text for a value: upper case (RemoveDuplicates ignores
+' case) and the number 1877576904 the same as the text "1877576904" (as
+' they were once Module9's value rewrite made both numbers).
+Private Function KeyText(ByVal v As Variant) As String
+    If IsError(v) Then
+        KeyText = "#ERROR"
+    ElseIf Not IsEmpty(v) Then
+        KeyText = UCase$(CStr(v))
+    End If
+End Function
+
+Private Function IsBlankValue(ByVal v As Variant) As Boolean
+    If IsEmpty(v) Then
+        IsBlankValue = True
+    ElseIf VarType(v) = vbString Then
+        IsBlankValue = (Len(v) = 0)
+    End If
+End Function
+
+Private Function IsNumber(ByVal v As Variant) As Boolean
+    Select Case VarType(v)
+        Case vbDouble, vbSingle, vbCurrency, vbDecimal, vbInteger, vbLong, vbByte
+            IsNumber = True
+    End Select
+End Function
+
+' Transaction Date as Module9's TextToColumns (month/day/year) leaves it:
+' dates stay dates, date serial numbers become dates, text dates are read
+' by ParseMdyText, anything else is left as it was.
+Private Function CleanDate(ByVal v As Variant) As Variant
+    CleanDate = v
+    Select Case VarType(v)
+        Case vbDouble, vbSingle, vbCurrency, vbDecimal, vbInteger, vbLong
+            If v >= 1 And v < 2958466 Then CleanDate = CDate(v)
+        Case vbString
+            CleanDate = ParseMdyText(CStr(v))
+    End Select
+End Function
+
+' m/d/yyyy or m-d-yyyy (2-digit years: 00-29 = 2000s, 30-99 = 1900s, as
+' Excel reads them) or yyyy-mm-dd, each with an optional time after a
+' space; dates written with a month name go through VBA's own date
+' reading. Blank text becomes empty; anything else stays as text, as
+' TextToColumns leaves a date it can't read.
+Private Function ParseMdyText(ByVal s As String) As Variant
+    Dim t As String, datePart As String, timePart As String, p() As String, sp As Long
+    Dim y As Long, mo As Long, d As Long, dt As Date
+
+    ParseMdyText = s
+    t = Trim$(s)
+    If Len(t) = 0 Then
+        ParseMdyText = Empty
+        Exit Function
+    End If
+    sp = InStr(t, " ")
+    If sp > 0 Then
+        datePart = Left$(t, sp - 1)
+        timePart = Trim$(Mid$(t, sp + 1))
     Else
-        AddLine m, "    SideRows = (side as text) as table => Table.FirstN(Cols, 0),"
+        datePart = t
     End If
-    If Len(colAmt) > 0 Then
-        AddLine m, "    SideSum = (side as text) => List.Sum(List.Select(Table.Column(SideRows(side), " & MText(colAmt) & "), each _ is number)),"
+
+    If datePart Like "*[A-Za-z]*" Then
+        If IsDate(t) Then ParseMdyText = CDate(t)
+        Exit Function
+    End If
+
+    p = Split(Replace(datePart, "-", "/"), "/")
+    If UBound(p) <> 2 Then Exit Function
+    If Not (IsShortDigits(p(0)) And IsShortDigits(p(1)) And IsShortDigits(p(2))) Then Exit Function
+    If Len(p(0)) = 4 Then
+        y = CLng(p(0)): mo = CLng(p(1)): d = CLng(p(2))
     Else
-        AddLine m, "    SideSum = (side as text) => null,"
+        mo = CLng(p(0)): d = CLng(p(1)): y = CLng(p(2))
+        If Len(p(2)) <= 2 Then
+            If y < 30 Then y = y + 2000 Else y = y + 1900
+        End If
     End If
-    AddLine m, "    SideCount = (side as text) => Table.RowCount(SideRows(side)),"
-    If Len(colAcct) > 0 Then
-        AddLine m, MTpl("    Accounts = List.Distinct(List.Transform(List.Select(Table.Column(Cols, ") & MText(colAcct) & _
-            MTpl("), each _ <> null and _ <> ``), each Text.From(_)), Comparer.OrdinalIgnoreCase),")
+    If mo < 1 Or mo > 12 Or d < 1 Or d > 31 Or y < 1900 Or y > 9999 Then Exit Function
+    dt = DateSerial(y, mo, d)
+    If Month(dt) <> mo Or Day(dt) <> d Then Exit Function
+    If Len(timePart) > 0 Then
+        If Not IsDate(timePart) Then Exit Function
+        dt = dt + TimeValue(timePart)
+    End If
+    ParseMdyText = dt
+End Function
+
+Private Function IsShortDigits(ByVal s As String) As Boolean
+    If Len(s) = 0 Or Len(s) > 4 Then Exit Function
+    IsShortDigits = Not (s Like "*[!0-9]*")
+End Function
+
+' Transaction Amount as Module9's value rewrite leaves it: text holding a
+' number ("$1,018.65", "(250.00)") becomes that number; blank text becomes
+' empty; anything else is left as it was.
+Private Function CleanAmount(ByVal v As Variant) As Variant
+    Dim s As String, neg As Boolean
+    CleanAmount = v
+    If VarType(v) <> vbString Then Exit Function
+    s = Trim$(v)
+    If Len(s) = 0 Then
+        CleanAmount = Empty
+        Exit Function
+    End If
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Mid$(s, 2, Len(s) - 2)
+    End If
+    s = Replace(Replace(Replace(s, "$", ""), ",", ""), " ", "")
+    If Not LooksNumeric(s) Then Exit Function
+    If neg Then CleanAmount = -Val(s) Else CleanAmount = Val(s)
+End Function
+
+Private Function LooksNumeric(ByVal s As String) As Boolean
+    If Len(s) = 0 Then Exit Function
+    If s Like "*[!0-9.-]*" Then Exit Function
+    If s Like "*.*.*" Then Exit Function
+    If InStr(2, s, "-") > 0 Then Exit Function
+    LooksNumeric = (s Like "*#*")
+End Function
+
+' Row r, columns c1..c2, as text (errors and blanks as "").
+Private Function RowTexts(ByVal ws As Worksheet, ByVal r As Long, ByVal c1 As Long, ByVal c2 As Long) As String()
+    Dim v As Variant, out() As String, i As Long, n As Long
+    n = c2 - c1 + 1
+    ReDim out(1 To n)
+    v = ws.Range(ws.Cells(r, c1), ws.Cells(r, c2)).Value
+    If n = 1 Then
+        If Not IsError(v) Then out(1) = CStr(v)
     Else
-        AddLine m, "    Accounts = {},"
+        For i = 1 To n
+            If Not IsError(v(1, i)) Then out(i) = CStr(v(1, i))
+        Next i
     End If
-    AddLine m, "    Result = #table("
-    AddLine m, MTpl("        {`TxnCount`, `TxnSum`, `FirstDate`, `LastDate`, `Accounts`, `MinPositive`, `MaxPositive`, `CrSum`, `DrSum`, `CrCount`, `DrCount`},")
-    AddLine m, "        {{List.Count(Nums), List.Sum(Nums), DateText(List.Min(Dates)), DateText(List.Max(Dates)),"
-    AddLine m, MTpl("          Text.Start(Text.Combine(Accounts, `,`), 32000), List.Min(Positives), List.Max(Positives),")
-    AddLine m, MTpl("          SideSum(`CR`), SideSum(`DR`), SideCount(`CR`), SideCount(`DR`)}})")
-    AddLine m, "in"
-    AddLine m, "    Result"
-    BuildStatsM = m
+    RowTexts = out
+End Function
+
+Private Function OneCellArray(ByVal v As Variant) As Variant
+    Dim a(1 To 1, 1 To 1) As Variant
+    a(1, 1) = v
+    OneCellArray = a
+End Function
+
+' For each column of the export (master), which column of this file holds
+' it: same name, any case. The first file - and any file with the same
+' header - maps straight across. Columns this file has that the export
+' doesn't are counted into extraCols.
+Private Function MapColumns(ByRef master() As String, ByRef fileHdr() As String, ByRef extraCols As Long) As Long()
+    Dim m() As Long, used() As Boolean, i As Long, j As Long, same As Boolean
+    ReDim m(1 To UBound(master))
+    ReDim used(1 To UBound(fileHdr))
+
+    same = (UBound(fileHdr) = UBound(master))
+    If same Then
+        For i = 1 To UBound(master)
+            If StrComp(master(i), fileHdr(i), vbTextCompare) <> 0 Then
+                same = False
+                Exit For
+            End If
+        Next i
+    End If
+
+    If same Then
+        For i = 1 To UBound(master)
+            m(i) = i
+        Next i
+    Else
+        For i = 1 To UBound(master)
+            For j = 1 To UBound(fileHdr)
+                If Not used(j) Then
+                    If StrComp(master(i), fileHdr(j), vbTextCompare) = 0 Then
+                        m(i) = j
+                        used(j) = True
+                        Exit For
+                    End If
+                End If
+            Next j
+        Next i
+        For j = 1 To UBound(fileHdr)
+            If Not used(j) And Len(fileHdr(j)) > 0 Then extraCols = extraCols + 1
+        Next j
+    End If
+    MapColumns = m
+End Function
+
+' FindHeaderName's search, returning the column's position (0 if none).
+Private Function FindHeaderIndex(ByRef names() As String, ByVal what As String, ByVal wholeMatch As Boolean) As Long
+    Dim n As Long, k As Long, i As Long
+    n = UBound(names) - LBound(names) + 1
+    For k = 1 To n
+        i = LBound(names) + (k Mod n)     ' 2nd, 3rd, ... last, then 1st - Rows(1).Find's order
+        If wholeMatch Then
+            If StrComp(names(i), what, vbTextCompare) = 0 Then FindHeaderIndex = i: Exit Function
+        Else
+            If InStr(1, names(i), what, vbTextCompare) > 0 Then FindHeaderIndex = i: Exit Function
+        End If
+    Next k
+End Function
+
+Private Function FileNameOf(ByVal path As String) As String
+    FileNameOf = Mid$(path, InStrRev(path, Application.PathSeparator) + 1)
 End Function
