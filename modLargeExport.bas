@@ -18,8 +18,9 @@ Option Explicit
 ' below its data, or when the files add up to more rows than a sheet
 ' holds.
 '
-' LEGACY reads each source file once, in Excel, and does everything in
-' that one pass - see LegacyExport. If a run stops after that pass,
+' LEGACY reads each source file once - Excel files in Excel, CSV files
+' straight from disk (no row limit) - and does everything in that one
+' pass - see LegacyExport. If a run stops after that pass,
 ' Consolidated_AML_Workflow_Large_Resume finishes it without re-reading. Differences from Module9's Legacy:
 '   - Raw Transactions is left out (the files are in the Transaction
 '     Files folder). CP Selection and DeDupe are saved as files of their
@@ -77,6 +78,10 @@ Private Const STATS_SHEET As String = "_LargeCaseStats"
 ' never straddles two files).
 Private Const READ_BLOCK_ROWS As Long = 20000
 Private Const WRITE_BLOCK_ROWS As Long = 20000
+' ReadCsvSource: bytes read from a CSV per go, and how far down the file
+' it looks for the "Transaction ID" header line.
+Private Const CSV_CHUNK_BYTES As Long = 16777216
+Private Const CSV_HEADER_SEARCH_LINES As Long = 1000
 ' Dictionaries per duplicate check or total - see NewShards.
 Private Const SHARDS As Long = 1024
 ' Raised after a message has already been shown, so CancelHandler stays quiet.
@@ -111,6 +116,17 @@ Private m_fields() As String
 ' so Consolidated_AML_Workflow_Large_Resume can finish the export).
 Private m_tempFolder As String
 Private m_keepTemp As Boolean
+
+' Pass 1's state, shared by the .xlsx and .csv readers - see LegacyExport
+' and SetMasterColumns: the first file's header and the columns found in
+' it, the duplicate checks, the three temporary lists and the row count.
+Private m_haveMaster As Boolean, m_master() As String, m_nMaster As Long
+Private m_p1Date As Long, m_p1Amt As Long, m_p1Dr As Long, m_p1Ben As Long, m_p1Orig As Long
+Private m_p1Trans As Long, m_p1Alert As Long
+Private m_hasCp As Boolean, m_dedupeCP As Boolean, m_dedupeDD As Boolean
+Private m_cpSeen As Variant, m_ddSeen As Variant, m_alertIds As Object
+Private m_cpW As TempWriter, m_ddW As TempWriter, m_alW As TempWriter
+Private m_rowVals() As Variant, m_rowsRead As Double, m_extraCols As Long
 
 ' Pass 2's totals and Sheet7 figures - see ResetTotals.
 Private m_iAlert As Long, m_iDr As Long, m_iAmt As Long, m_iAcct As Long
@@ -223,15 +239,22 @@ End If
 Set objFolder = FSO.GetFolder(folderPath)
 fileFound = False
 
+' Legacy also reads CSV files (see ReadCsvSource); EN and Pivot don't.
 For Each objFile In objFolder.Files
-    If (InStr(1, objFile.Name, ".xls", vbTextCompare) > 0) And (Left(objFile.Name, 2) <> "~$") And (objFile.Name <> ThisWorkbook.Name) Then
-        fileFound = True
-        Exit For
+    If exportMode <> "EN" And exportMode <> "PIVOT" Then
+        fileFound = IsLegacySourceFile(objFile.Name)
+    Else
+        fileFound = (InStr(1, objFile.Name, ".xls", vbTextCompare) > 0) And (Left(objFile.Name, 2) <> "~$") And (objFile.Name <> ThisWorkbook.Name)
     End If
+    If fileFound Then Exit For
 Next objFile
 
 If Not fileFound Then
-    MsgBox "No Excel files found in the target folder!", vbExclamation, "Folder is Empty"
+    If exportMode <> "EN" And exportMode <> "PIVOT" Then
+        MsgBox "No Excel or CSV files found in the target folder!", vbExclamation, "Folder is Empty"
+    Else
+        MsgBox "No Excel files found in the target folder!", vbExclamation, "Folder is Empty"
+    End If
     Exit Sub
 End If
 
@@ -1726,9 +1749,10 @@ End Function
 ' ==========================================================
 ' LEGACY EXPORT - every file read once; lists saved as separate files
 ' ==========================================================
-' Pass 1 (LegacyExport) opens each source file in Excel in turn - much
-' faster than Power Query's .xlsx reader - reads it READ_BLOCK_ROWS rows at
-' a time and deals with every row in that one pass:
+' Pass 1 (LegacyExport) reads each source file in turn - an Excel file
+' opened in Excel (much faster than Power Query's .xlsx reader), a CSV
+' straight from disk (ReadCsvSource) - READ_BLOCK_ROWS rows at a time, and
+' deals with every row in that one pass (ProcessBlock):
 '   - cleaned as Module9 cleans it: text dates read month/day/year, text
 '     amounts made numbers, Counterparty = Beneficiary Name on DR rows and
 '     Originator Name otherwise;
@@ -1770,200 +1794,523 @@ Private Sub LegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Worksheet,
     ByVal ecmID As String, ByVal AlertID As String, ByVal folderPath As String, _
     ByVal saveFolderPath As String, ByVal origCalc As XlCalculation)
 
-    Dim slash As String, FSO As Object, f As Object, files As Collection, item As Variant
-    Dim wbSrc As Workbook, wsSrc As Worksheet, hc As Range
-    Dim fileNo As Long, filesRead As Long, skippedFiles As String, extraCols As Long
-    Dim hRow As Long, hCol As Long, lastR As Long, lastC As Long, startR As Long, endR As Long
-    Dim fileHdr() As String, master() As String, nMaster As Long, haveMaster As Boolean
-    Dim colMap() As Long, blk As Variant, nBlk As Long, r As Long, j As Long, c As Long
-    Dim v As Variant, rowVals() As Variant, isBlank As Boolean, rowsRead As Double, rowText As String
-    Dim iDate As Long, iAmt As Long, iDr As Long, iBen As Long, iOrig As Long
-    Dim iTrans As Long, iAlert As Long
-    Dim hasCp As Boolean, dedupeCP As Boolean, dedupeDD As Boolean, isDrRow As Boolean
-    Dim cpSeen As Variant, ddSeen As Variant, alertIds As Object, k As String
-    Dim cpW As TempWriter, ddW As TempWriter, alW As TempWriter, summary As String
+    Dim FSO As Object, f As Object, files As Collection, item As Variant
+    Dim fileNo As Long, filesRead As Long, skippedFiles As String, summary As String, found As Boolean
 
-    slash = Application.PathSeparator
-
-    ' Same file choice as Module9.
+    ' Module9's file choice, plus .csv files.
     Set FSO = CreateObject("Scripting.FileSystemObject")
     Set files = New Collection
     For Each f In FSO.GetFolder(folderPath).files
-        If (InStr(1, f.Name, ".xls", vbTextCompare) > 0) And (Left$(f.Name, 2) <> "~$") And _
-           (f.Name <> ThisWorkbook.Name) Then files.Add f.Path
+        If IsLegacySourceFile(f.Name) Then files.Add f.Path
     Next f
 
     ' Scratch folder for the temporary files (local, not synced by OneDrive).
-    m_tempFolder = Environ$("TEMP") & slash & "LargeExport_" & Format$(Now, "yyyymmdd_hhnnss")
+    m_tempFolder = Environ$("TEMP") & Application.PathSeparator & "LargeExport_" & Format$(Now, "yyyymmdd_hhnnss")
     MkDir m_tempFolder
 
-    cpSeen = NewShards(): ddSeen = NewShards()
-    Set alertIds = CreateObject("Scripting.Dictionary")
+    m_haveMaster = False
+    m_rowsRead = 0
+    m_extraCols = 0
+    m_cpSeen = NewShards()
+    m_ddSeen = NewShards()
+    Set m_alertIds = CreateObject("Scripting.Dictionary")
 
     For Each item In files
         fileNo = fileNo + 1
-        SetStage "opening file " & fileNo & " of " & files.count & " (" & FileNameOf(CStr(item)) & ")"
-        DoEvents
-        Set wbSrc = Workbooks.Open(fileName:=CStr(item), ReadOnly:=True, UpdateLinks:=False, AddToMru:=False)
-        m_unsaved.Add wbSrc
-
-        Set wsSrc = Nothing
-        Set hc = Nothing
-        If TypeName(wbSrc.Sheets(1)) = "Worksheet" Then Set wsSrc = wbSrc.Sheets(1)
-        If Not wsSrc Is Nothing Then
-            Set hc = wsSrc.Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole, _
-                SearchOrder:=xlByRows, MatchCase:=False)
-        End If
-
-        If hc Is Nothing Then
-            skippedFiles = skippedFiles & vbCrLf & "   " & FileNameOf(CStr(item))
+        If LCase$(Right$(CStr(item), 4)) = ".csv" Then
+            found = ReadCsvSource(CStr(item), fileNo, files.count)
         Else
-            filesRead = filesRead + 1
-            hRow = hc.row
-            hCol = hc.Column
-            lastC = wsSrc.Cells(hRow, wsSrc.Columns.count).End(xlToLeft).Column
-            If lastC < hCol Then lastC = hCol
-            lastR = LastDataRow(wsSrc)
-            fileHdr = RowTexts(wsSrc, hRow, hCol, lastC)
-
-            ' The first file's header sets the export's columns.
-            If Not haveMaster Then
-                master = fileHdr
-                nMaster = UBound(master)
-                iDate = FindHeaderIndex(master, "Transaction Date", False)
-                iAmt = FindHeaderIndex(master, "Transaction Amount", False)
-                iDr = FindHeaderIndex(master, "Dr Cr", False)
-                iBen = FindHeaderIndex(master, "Beneficiary Name", False)
-                iOrig = FindHeaderIndex(master, "Originator Name", False)
-                iTrans = FindHeaderIndex(master, "Transaction ID", False)
-                iAlert = FindHeaderIndex(master, "Alert Information", False)
-                hasCp = (iDr > 0 And iBen > 0 And iOrig > 0)
-                dedupeCP = (iTrans > 0 And iAlert > 0)
-                dedupeDD = (iTrans > 0)
-
-                m_outCols = nMaster
-                If hasCp Then m_outCols = nMaster + 1
-                ReDim m_headerNames(1 To m_outCols)
-                ReDim m_fields(1 To m_outCols)
-                ReDim m_textCol(1 To m_outCols)
-                For j = 1 To nMaster
-                    m_headerNames(j) = CleanFieldText(master(j))
-                Next j
-                m_cpTextCol = 0
-                If hasCp Then
-                    m_headerNames(m_outCols) = "Counterparty"
-                    m_cpTextCol = m_outCols
-                End If
-                m_headerLine = Join(m_headerNames, vbTab)
-                m_dateCol = iDate
-                ReDim rowVals(1 To m_outCols)
-
-                TempOpen cpW, "CP Selection"
-                TempOpen ddW, "DeDupe"
-                TempOpen alW, "Alerted Rows"
-                haveMaster = True
-            End If
-
-            colMap = MapColumns(master, fileHdr, extraCols)
-
-            For startR = hRow + 1 To lastR Step READ_BLOCK_ROWS
-                endR = startR + READ_BLOCK_ROWS - 1
-                If endR > lastR Then endR = lastR
-                blk = wsSrc.Range(wsSrc.Cells(startR, hCol), wsSrc.Cells(endR, lastC)).Value
-                If Not IsArray(blk) Then blk = OneCellArray(blk)
-                nBlk = endR - startR + 1
-
-                For r = 1 To nBlk
-                    ' Row in the export's column order; wholly empty rows skipped.
-                    isBlank = True
-                    For j = 1 To nMaster
-                        c = colMap(j)
-                        If c > 0 Then v = blk(r, c) Else v = Empty
-                        If isBlank Then isBlank = IsBlankValue(v)
-                        rowVals(j) = v
-                    Next j
-                    If isBlank Then GoTo NextRow
-
-                    ' Module9's step 3 cleanup
-                    If iDate > 0 Then rowVals(iDate) = CleanDate(rowVals(iDate))
-                    If iAmt > 0 Then rowVals(iAmt) = CleanAmount(rowVals(iAmt))
-                    If hasCp Then
-                        ' =IF(DrCr="DR", IF(Ben="","",Ben), IF(Orig="","",Orig))
-                        isDrRow = False
-                        v = rowVals(iDr)
-                        If VarType(v) = vbString Then isDrRow = (StrComp(v, "DR", vbTextCompare) = 0)
-                        If isDrRow Then v = rowVals(iBen) Else v = rowVals(iOrig)
-                        If IsBlankValue(v) Then v = ""
-                        rowVals(m_outCols) = v
-                    End If
-
-                    ' ---- CP Selection: first row per Transaction ID + Alert Information.
-                    ' The alert text is swapped for a short number first, so the
-                    ' lakhs of keys held here stay small.
-                    If dedupeCP Then
-                        k = KeyText(rowVals(iAlert))
-                        If Not alertIds.Exists(k) Then alertIds.Add k, alertIds.count + 1
-                        If AlreadySeen(cpSeen, alertIds(k) & vbTab & KeyText(rowVals(iTrans))) Then GoTo NextRow
-                    End If
-                    rowText = RowLine(rowVals)
-                    TempAdd cpW, rowText
-
-                    ' ---- DeDupe: first row per Transaction ID, then rows with a date
-                    If dedupeDD Then
-                        If AlreadySeen(ddSeen, KeyText(rowVals(iTrans))) Then GoTo NextRow
-                    End If
-                    If iDate > 0 Then
-                        If IsBlankValue(rowVals(iDate)) Then GoTo NextRow
-                    End If
-                    TempAdd ddW, rowText
-
-                    ' Rows that carry an alert, for ConsolidatedData if DeDupe won't fit
-                    If iAlert > 0 Then
-                        If Not IsBlankValue(rowVals(iAlert)) Then TempAdd alW, rowText
-                    End If
-NextRow:
-                Next r
-
-                rowsRead = rowsRead + nBlk
-                SetStage "file " & fileNo & " of " & files.count & ": " & Format$(rowsRead, "#,##0") & _
-                    " rows read, " & Format$(ddW.Total + ddW.Fill, "#,##0") & " unique transactions"
-                DoEvents
-            Next startR
+            found = ReadXlsxSource(CStr(item), fileNo, files.count)
         End If
-
-        MarkSaved wbSrc
-        wbSrc.Close SaveChanges:=False
-        Set wbSrc = Nothing
+        If found Then
+            filesRead = filesRead + 1
+        Else
+            skippedFiles = skippedFiles & vbCrLf & "   " & FileNameOf(CStr(item))
+        End If
     Next item
 
-    If Not haveMaster Then
-        MsgBox "None of the Excel files in:" & vbCrLf & folderPath & vbCrLf & vbCrLf & _
+    If Not m_haveMaster Then
+        MsgBox "None of the Excel or CSV files in:" & vbCrLf & folderPath & vbCrLf & vbCrLf & _
             "has a 'Transaction ID' header, so there is nothing to export.", vbCritical, "No Transaction Data"
         Err.Raise ERR_REPORTED
     End If
 
-    TempClose cpW
-    TempClose ddW
-    TempClose alW
+    TempClose m_cpW
+    TempClose m_ddW
+    TempClose m_alW
     ' The duplicate checks are done with; free their memory before pass 2.
-    cpSeen = Empty: ddSeen = Empty
-    Set alertIds = Nothing
+    m_cpSeen = Empty
+    m_ddSeen = Empty
+    Set m_alertIds = Nothing
 
     ' From here on a failure keeps the temporary files for the Resume macro.
     m_keepTemp = True
 
-    summary = Format$(rowsRead, "#,##0") & " rows read from " & filesRead & " file(s)."
+    summary = Format$(m_rowsRead, "#,##0") & " rows read from " & filesRead & " file(s)."
     If Len(skippedFiles) > 0 Then
         summary = summary & vbCrLf & vbCrLf & "Skipped - no 'Transaction ID' header:" & skippedFiles
     End If
-    If extraCols > 0 Then
-        summary = summary & vbCrLf & vbCrLf & extraCols & " column(s) in later files aren't in the " & _
+    If m_extraCols > 0 Then
+        summary = summary & vbCrLf & vbCrLf & m_extraCols & " column(s) in later files aren't in the " & _
             "first file's header and were left out."
     End If
 
     FinishLegacyExport wsHome, wsRealCD, ecmID, AlertID, saveFolderPath, origCalc, _
-        cpW.Paths, ddW.Paths, alW.Paths, summary
+        m_cpW.Paths, m_ddW.Paths, m_alW.Paths, summary
 End Sub
+
+' Excel files as Module9 picks them (".xls" anywhere in the name), and CSV
+' files; never Excel's "~$" lock files or this workbook.
+Private Function IsLegacySourceFile(ByVal fileName As String) As Boolean
+    If Left$(fileName, 2) = "~$" Or fileName = ThisWorkbook.Name Then Exit Function
+    IsLegacySourceFile = (InStr(1, fileName, ".xls", vbTextCompare) > 0) Or _
+        (LCase$(Right$(fileName, 4)) = ".csv")
+End Function
+
+' The first file's header sets the export's columns (the header line, the
+' columns Module9 finds by name, and whether Counterparty is added), and
+' opens the three temporary lists.
+Private Sub SetMasterColumns(ByRef fileHdr() As String)
+    Dim j As Long
+    m_master = fileHdr
+    m_nMaster = UBound(m_master)
+    m_p1Date = FindHeaderIndex(m_master, "Transaction Date", False)
+    m_p1Amt = FindHeaderIndex(m_master, "Transaction Amount", False)
+    m_p1Dr = FindHeaderIndex(m_master, "Dr Cr", False)
+    m_p1Ben = FindHeaderIndex(m_master, "Beneficiary Name", False)
+    m_p1Orig = FindHeaderIndex(m_master, "Originator Name", False)
+    m_p1Trans = FindHeaderIndex(m_master, "Transaction ID", False)
+    m_p1Alert = FindHeaderIndex(m_master, "Alert Information", False)
+    m_hasCp = (m_p1Dr > 0 And m_p1Ben > 0 And m_p1Orig > 0)
+    m_dedupeCP = (m_p1Trans > 0 And m_p1Alert > 0)
+    m_dedupeDD = (m_p1Trans > 0)
+
+    m_outCols = m_nMaster
+    If m_hasCp Then m_outCols = m_nMaster + 1
+    ReDim m_headerNames(1 To m_outCols)
+    ReDim m_fields(1 To m_outCols)
+    ReDim m_textCol(1 To m_outCols)
+    For j = 1 To m_nMaster
+        m_headerNames(j) = CleanFieldText(m_master(j))
+    Next j
+    m_cpTextCol = 0
+    If m_hasCp Then
+        m_headerNames(m_outCols) = "Counterparty"
+        m_cpTextCol = m_outCols
+    End If
+    m_headerLine = Join(m_headerNames, vbTab)
+    m_dateCol = m_p1Date
+    ReDim m_rowVals(1 To m_outCols)
+
+    TempOpen m_cpW, "CP Selection"
+    TempOpen m_ddW, "DeDupe"
+    TempOpen m_alW, "Alerted Rows"
+    m_haveMaster = True
+End Sub
+
+' Pass 1 for a block of source rows - the same for .xlsx and .csv files.
+' blk(r, c) is row r, column c of the file (from its Transaction ID
+' column); colMap says which file column each export column comes from.
+Private Sub ProcessBlock(ByRef blk As Variant, ByVal nBlk As Long, ByRef colMap() As Long)
+    Dim r As Long, j As Long, c As Long, v As Variant, isBlank As Boolean, isDrRow As Boolean
+    Dim k As String, rowText As String
+
+    For r = 1 To nBlk
+        ' Row in the export's column order; wholly empty rows skipped.
+        isBlank = True
+        For j = 1 To m_nMaster
+            c = colMap(j)
+            If c > 0 Then v = blk(r, c) Else v = Empty
+            If isBlank Then isBlank = IsBlankValue(v)
+            m_rowVals(j) = v
+        Next j
+        If isBlank Then GoTo NextRow
+
+        ' Module9's step 3 cleanup
+        If m_p1Date > 0 Then m_rowVals(m_p1Date) = CleanDate(m_rowVals(m_p1Date))
+        If m_p1Amt > 0 Then m_rowVals(m_p1Amt) = CleanAmount(m_rowVals(m_p1Amt))
+        If m_hasCp Then
+            ' =IF(DrCr="DR", IF(Ben="","",Ben), IF(Orig="","",Orig))
+            isDrRow = False
+            v = m_rowVals(m_p1Dr)
+            If VarType(v) = vbString Then isDrRow = (StrComp(v, "DR", vbTextCompare) = 0)
+            If isDrRow Then v = m_rowVals(m_p1Ben) Else v = m_rowVals(m_p1Orig)
+            If IsBlankValue(v) Then v = ""
+            m_rowVals(m_outCols) = v
+        End If
+
+        ' ---- CP Selection: first row per Transaction ID + Alert Information.
+        ' The alert text is swapped for a short number first, so the lakhs of
+        ' keys held here stay small.
+        If m_dedupeCP Then
+            k = KeyText(m_rowVals(m_p1Alert))
+            If Not m_alertIds.Exists(k) Then m_alertIds.Add k, m_alertIds.count + 1
+            If AlreadySeen(m_cpSeen, m_alertIds(k) & vbTab & KeyText(m_rowVals(m_p1Trans))) Then GoTo NextRow
+        End If
+        rowText = RowLine(m_rowVals)
+        TempAdd m_cpW, rowText
+
+        ' ---- DeDupe: first row per Transaction ID, then rows with a date
+        If m_dedupeDD Then
+            If AlreadySeen(m_ddSeen, KeyText(m_rowVals(m_p1Trans))) Then GoTo NextRow
+        End If
+        If m_p1Date > 0 Then
+            If IsBlankValue(m_rowVals(m_p1Date)) Then GoTo NextRow
+        End If
+        TempAdd m_ddW, rowText
+
+        ' Rows that carry an alert, for ConsolidatedData if DeDupe won't fit
+        If m_p1Alert > 0 Then
+            If Not IsBlankValue(m_rowVals(m_p1Alert)) Then TempAdd m_alW, rowText
+        End If
+NextRow:
+    Next r
+    m_rowsRead = m_rowsRead + nBlk
+End Sub
+
+Private Sub ShowReadProgress(ByVal fileNo As Long, ByVal fileCount As Long)
+    SetStage "file " & fileNo & " of " & fileCount & ": " & Format$(m_rowsRead, "#,##0") & _
+        " rows read, " & Format$(m_ddW.Total + m_ddW.Fill, "#,##0") & " unique transactions"
+    DoEvents
+End Sub
+
+' ==========================================================
+' ReadXlsxSource - an Excel source file, opened in Excel
+' ==========================================================
+' Its first sheet, from the "Transaction ID" header cell (whole cell, any
+' case - Module9's Find) across and down, read READ_BLOCK_ROWS rows at a
+' time. False if the sheet has no such header (the file is skipped).
+' ==========================================================
+Private Function ReadXlsxSource(ByVal path As String, ByVal fileNo As Long, ByVal fileCount As Long) As Boolean
+    Dim wbSrc As Workbook, wsSrc As Worksheet, hc As Range
+    Dim hRow As Long, hCol As Long, lastR As Long, lastC As Long, startR As Long, endR As Long
+    Dim fileHdr() As String, colMap() As Long, blk As Variant
+
+    SetStage "opening file " & fileNo & " of " & fileCount & " (" & FileNameOf(path) & ")"
+    DoEvents
+    Set wbSrc = Workbooks.Open(fileName:=path, ReadOnly:=True, UpdateLinks:=False, AddToMru:=False)
+    m_unsaved.Add wbSrc
+
+    If TypeName(wbSrc.Sheets(1)) = "Worksheet" Then
+        Set wsSrc = wbSrc.Sheets(1)
+        Set hc = wsSrc.Cells.Find(What:="Transaction ID", LookIn:=xlValues, LookAt:=xlWhole, _
+            SearchOrder:=xlByRows, MatchCase:=False)
+    End If
+
+    If Not hc Is Nothing Then
+        ReadXlsxSource = True
+        hRow = hc.row
+        hCol = hc.Column
+        lastC = wsSrc.Cells(hRow, wsSrc.Columns.count).End(xlToLeft).Column
+        If lastC < hCol Then lastC = hCol
+        lastR = LastDataRow(wsSrc)
+        fileHdr = RowTexts(wsSrc, hRow, hCol, lastC)
+        If Not m_haveMaster Then SetMasterColumns fileHdr
+        colMap = MapColumns(m_master, fileHdr, m_extraCols)
+
+        For startR = hRow + 1 To lastR Step READ_BLOCK_ROWS
+            endR = startR + READ_BLOCK_ROWS - 1
+            If endR > lastR Then endR = lastR
+            blk = wsSrc.Range(wsSrc.Cells(startR, hCol), wsSrc.Cells(endR, lastC)).Value
+            If Not IsArray(blk) Then blk = OneCellArray(blk)
+            ProcessBlock blk, endR - startR + 1, colMap
+            ShowReadProgress fileNo, fileCount
+        Next startR
+    End If
+
+    MarkSaved wbSrc
+    wbSrc.Close SaveChanges:=False
+End Function
+
+' ==========================================================
+' ReadCsvSource - a CSV source file, read straight from disk
+' ==========================================================
+' Not opened in Excel: Excel loads only the first 1,048,576 rows of a CSV
+' (and with alerts off, silently), and CSV exports this size are often
+' longer than that. Instead the file is read CSV_CHUNK_BYTES at a time,
+' each chunk ending at a line break so no row is cut in two, and split
+' into rows and fields here - no row limit.
+'   - Encoding: UTF-8 (with or without its byte-order mark) or UTF-16 by
+'     its mark; a file that isn't valid UTF-8 is read as Windows ANSI.
+'   - Separator: whichever of , ; tab | the header line uses.
+'   - Quoted fields ("Smith, John", "say ""hi""") are handled, including
+'     ones with a line break inside.
+'   - The header is the first line with a "Transaction ID" field (any
+'     case) within the first CSV_HEADER_SEARCH_LINES lines; columns start
+'     at that field, as in an Excel file.
+' Values arrive as text, as Excel would read them from the CSV: dates and
+' amounts are converted by the same cleanup, other numbers when the
+' finished files are opened (see ImportFieldInfo). VBA's file reading
+' stops at 2 GB, so a bigger file stops the export with a message.
+' False if no header was found (the file is skipped).
+' ==========================================================
+Private Function ReadCsvSource(ByVal path As String, ByVal fileNo As Long, ByVal fileCount As Long) As Boolean
+    Dim fileSize As Double, fn As Integer, pos As Long, n As Long, useLen As Long
+    Dim buf() As Byte, charset As String, utf16 As Boolean, firstChunk As Boolean
+    Dim text As String, lines() As String, i As Long, lastI As Long, s As String, pending As String
+    Dim fields() As String, delim As String, haveHeader As Boolean, scanned As Long
+    Dim hIdx As Long, nHdr As Long, fileHdr() As String, colMap() As Long
+    Dim blk As Variant, r As Long, c As Long, idx As Long, j As Long, lastField As Long
+
+    fileSize = CreateObject("Scripting.FileSystemObject").GetFile(path).Size
+    If fileSize > 2147483647# Then
+        Err.Raise vbObjectError + 1007, "modLargeExport", FileNameOf(path) & " is larger than 2 GB, " & _
+            "which this macro can't read. Split it into smaller CSV files and run the export again."
+    End If
+
+    SetStage "reading file " & fileNo & " of " & fileCount & " (" & FileNameOf(path) & ")"
+    DoEvents
+    fn = FreeFile
+    Open path For Binary Access Read As #fn
+
+    ' Byte-order mark: UTF-8 (EF BB BF) or UTF-16 LE (FF FE); none = UTF-8.
+    charset = "utf-8"
+    pos = 1
+    If fileSize >= 2 Then
+        ReDim buf(0 To 1)
+        Get #fn, 1, buf
+        If buf(0) = &HFF And buf(1) = &HFE Then
+            utf16 = True
+            pos = 3
+        ElseIf fileSize >= 3 And buf(0) = &HEF And buf(1) = &HBB Then
+            ReDim buf(0 To 2)
+            Get #fn, 1, buf
+            If buf(2) = &HBF Then pos = 4
+        End If
+    End If
+
+    firstChunk = True
+    Do While pos <= fileSize
+        n = CSV_CHUNK_BYTES
+        If CDbl(pos) - 1 + n > fileSize Then n = CLng(fileSize - pos + 1)
+        ReDim buf(0 To n - 1)
+        Get #fn, pos, buf
+        useLen = n
+        If CDbl(pos) - 1 + n < fileSize Then
+            useLen = LastLineBreakEnd(buf, n, utf16)
+            If useLen = 0 Then
+                Err.Raise vbObjectError + 1008, "modLargeExport", FileNameOf(path) & _
+                    " has a line longer than " & Format$(CSV_CHUNK_BYTES / 1048576, "0") & " MB."
+            End If
+            If useLen < n Then ReDim Preserve buf(0 To useLen - 1)
+        End If
+
+        If utf16 Then
+            text = buf                              ' UTF-16 bytes are a VBA string as they are
+        Else
+            text = DecodeBytes(buf, charset)
+            If firstChunk Then
+                If InStr(text, ChrW(&HFFFD)) > 0 Then
+                    charset = "windows-1252"        ' not valid UTF-8: Windows ANSI
+                    text = DecodeBytes(buf, charset)
+                End If
+            End If
+        End If
+        firstChunk = False
+        pos = pos + useLen
+
+        lines = Split(text, vbLf)
+        lastI = UBound(lines)
+        If lastI >= 0 Then
+            If Len(lines(lastI)) = 0 Then lastI = lastI - 1   ' the chunk ends with its line break
+        End If
+
+        For i = 0 To lastI
+            s = lines(i)
+            If Right$(s, 1) = vbCr Then s = Left$(s, Len(s) - 1)
+            If Len(pending) > 0 Then
+                s = pending & vbLf & s
+                pending = ""
+            End If
+
+            If Not haveHeader Then
+                scanned = scanned + 1
+                If FindCsvHeader(s, delim, fields, hIdx) Then
+                    lastField = UBound(fields)
+                    Do While lastField > hIdx And Len(Trim$(fields(lastField))) = 0
+                        lastField = lastField - 1
+                    Loop
+                    nHdr = lastField - hIdx + 1
+                    ReDim fileHdr(1 To nHdr)
+                    For j = 1 To nHdr
+                        fileHdr(j) = Trim$(fields(hIdx + j - 1))
+                    Next j
+                    If Not m_haveMaster Then SetMasterColumns fileHdr
+                    colMap = MapColumns(m_master, fileHdr, m_extraCols)
+                    ReDim blk(1 To READ_BLOCK_ROWS, 1 To nHdr)
+                    haveHeader = True
+                ElseIf scanned >= CSV_HEADER_SEARCH_LINES Then
+                    GoTo CsvDone                   ' no header near the top: skip the file
+                End If
+            Else
+                If InStr(s, """") > 0 Then
+                    If Not ParseCsvLine(s, delim, fields) Then
+                        pending = s                ' a quoted field runs onto the next line
+                        GoTo NextLine
+                    End If
+                Else
+                    fields = Split(s, delim)
+                End If
+                r = r + 1
+                For c = 1 To nHdr
+                    idx = hIdx + c - 1
+                    If idx <= UBound(fields) Then blk(r, c) = fields(idx) Else blk(r, c) = Empty
+                Next c
+                If r = READ_BLOCK_ROWS Then
+                    ProcessBlock blk, r, colMap
+                    r = 0
+                    ShowReadProgress fileNo, fileCount
+                End If
+            End If
+NextLine:
+        Next i
+        DoEvents
+    Loop
+
+    ' A last row whose quotes never closed: taken as it stands.
+    If haveHeader And Len(pending) > 0 Then
+        fields = Split(Replace(pending, """", ""), delim)
+        r = r + 1
+        For c = 1 To nHdr
+            idx = hIdx + c - 1
+            If idx <= UBound(fields) Then blk(r, c) = fields(idx) Else blk(r, c) = Empty
+        Next c
+    End If
+    If haveHeader And r > 0 Then
+        ProcessBlock blk, r, colMap
+        ShowReadProgress fileNo, fileCount
+    End If
+
+CsvDone:
+    Close #fn
+    ReadCsvSource = haveHeader
+End Function
+
+' How many bytes of buf(0..n-1) run up to and including its last line
+' break (0 if none). A line break byte never falls inside a UTF-8
+' character, so cutting there never splits one; for UTF-16 the break is
+' the two bytes 0A 00 at an even offset.
+Private Function LastLineBreakEnd(ByRef buf() As Byte, ByVal n As Long, ByVal utf16 As Boolean) As Long
+    Dim k As Long
+    If utf16 Then
+        k = n - 2
+        If k Mod 2 = 1 Then k = k - 1
+        Do While k >= 0
+            If buf(k) = 10 And buf(k + 1) = 0 Then
+                LastLineBreakEnd = k + 2
+                Exit Function
+            End If
+            k = k - 2
+        Loop
+    Else
+        For k = n - 1 To 0 Step -1
+            If buf(k) = 10 Then
+                LastLineBreakEnd = k + 1
+                Exit Function
+            End If
+        Next k
+    End If
+End Function
+
+' Bytes to text in the given character set.
+Private Function DecodeBytes(ByRef buf() As Byte, ByVal charset As String) As String
+    Dim stm As Object
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 1                ' binary
+    stm.Open
+    stm.Write buf
+    stm.Position = 0
+    stm.Type = 2                ' text
+    stm.charset = charset
+    DecodeBytes = stm.ReadText
+    stm.Close
+End Function
+
+' Is line s the CSV header? Tries each common separator; on a match sets
+' delim, fields (the line split by it) and hIdx (the Transaction ID field).
+Private Function FindCsvHeader(ByVal s As String, ByRef delim As String, ByRef fields() As String, _
+    ByRef hIdx As Long) As Boolean
+    Dim d As Variant, f() As String, i As Long, ok As Boolean
+    For Each d In Array(",", ";", vbTab, "|")
+        If InStr(s, d) > 0 Then
+            If InStr(s, """") > 0 Then
+                ok = ParseCsvLine(s, CStr(d), f)
+            Else
+                f = Split(s, d)
+                ok = True
+            End If
+            If ok Then
+                For i = 0 To UBound(f)
+                    If StrComp(Trim$(f(i)), "Transaction ID", vbTextCompare) = 0 Then
+                        delim = CStr(d)
+                        fields = f
+                        hIdx = i
+                        FindCsvHeader = True
+                        Exit Function
+                    End If
+                Next i
+            End If
+        End If
+    Next d
+End Function
+
+' Splits a CSV line that has quotes in it: a field in "..." may hold the
+' separator, and "" inside it is one quote. False if a quoted field is
+' still open at the end of the line (its line break is part of the field,
+' so the next line continues it).
+Private Function ParseCsvLine(ByVal s As String, ByVal delim As String, ByRef fields() As String) As Boolean
+    Dim buf() As String, cnt As Long, pos As Long, n As Long, q As Long, d As Long, cur As String
+
+    ReDim buf(0 To 63)
+    n = Len(s)
+    pos = 1
+    Do
+        If cnt > UBound(buf) Then ReDim Preserve buf(0 To UBound(buf) * 2 + 1)
+        If pos > n Then
+            buf(cnt) = ""                   ' empty last field (line ended with a separator)
+            cnt = cnt + 1
+            Exit Do
+        End If
+        If Mid$(s, pos, 1) = """" Then
+            cur = ""
+            pos = pos + 1
+            Do
+                q = InStr(pos, s, """")
+                If q = 0 Then Exit Function           ' still inside quotes: continues on the next line
+                If q < n And Mid$(s, q + 1, 1) = """" Then
+                    cur = cur & Mid$(s, pos, q - pos) & """"
+                    pos = q + 2
+                Else
+                    cur = cur & Mid$(s, pos, q - pos)
+                    pos = q + 1
+                    Exit Do
+                End If
+            Loop
+            d = InStr(pos, s, delim)
+            If d = 0 Then
+                buf(cnt) = cur & Mid$(s, pos)
+                cnt = cnt + 1
+                Exit Do
+            End If
+            buf(cnt) = cur & Mid$(s, pos, d - pos)
+            cnt = cnt + 1
+            pos = d + Len(delim)
+        Else
+            d = InStr(pos, s, delim)
+            If d = 0 Then
+                buf(cnt) = Mid$(s, pos)
+                cnt = cnt + 1
+                Exit Do
+            End If
+            buf(cnt) = Mid$(s, pos, d - pos)
+            cnt = cnt + 1
+            pos = d + Len(delim)
+        End If
+    Loop
+    ReDim Preserve buf(0 To cnt - 1)
+    fields = buf
+    ParseCsvLine = True
+End Function
 
 ' ==========================================================
 ' RESUME - finishes a Legacy large export whose pass 1 is done
@@ -2941,7 +3288,7 @@ Private Function OneCellArray(ByVal v As Variant) As Variant
 End Function
 
 ' For each column of the export (master), which column of this file holds
-' it: same name, any case. The first file - and any file with the same
+' it: same name, any case, spaces around it ignored. The first file - and any file with the same
 ' header - maps straight across. Columns this file has that the export
 ' doesn't are counted into extraCols.
 Private Function MapColumns(ByRef master() As String, ByRef fileHdr() As String, ByRef extraCols As Long) As Long()
@@ -2952,7 +3299,7 @@ Private Function MapColumns(ByRef master() As String, ByRef fileHdr() As String,
     same = (UBound(fileHdr) = UBound(master))
     If same Then
         For i = 1 To UBound(master)
-            If StrComp(master(i), fileHdr(i), vbTextCompare) <> 0 Then
+            If StrComp(Trim$(master(i)), Trim$(fileHdr(i)), vbTextCompare) <> 0 Then
                 same = False
                 Exit For
             End If
@@ -2967,7 +3314,7 @@ Private Function MapColumns(ByRef master() As String, ByRef fileHdr() As String,
         For i = 1 To UBound(master)
             For j = 1 To UBound(fileHdr)
                 If Not used(j) Then
-                    If StrComp(master(i), fileHdr(j), vbTextCompare) = 0 Then
+                    If StrComp(Trim$(master(i)), Trim$(fileHdr(j)), vbTextCompare) = 0 Then
                         m(i) = j
                         used(j) = True
                         Exit For
