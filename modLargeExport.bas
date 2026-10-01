@@ -54,6 +54,11 @@ Option Explicit
 '     message instead of being cut short.
 ' ==========================================================
 
+' Shown on the status bar and in the Resume prompt, so it's clear which copy
+' of this module is running (an imported module only sticks once the tool
+' itself is saved).
+Private Const MODULE_VERSION As String = "2026-10-01"
+
 ' TidyDataSheet: sheets up to this many rows get the full column + wrapped
 ' row fit; bigger ones fit columns to the first TIDY_SAMPLE_ROWS rows only.
 Private Const TIDY_FULL_FIT_ROWS As Long = 50000
@@ -622,7 +627,7 @@ End Sub
 ' ==========================================================
 Private Sub SetStage(ByVal stage As String)
     m_stage = stage
-    Application.StatusBar = "Large export: " & stage & "..."
+    Application.StatusBar = "Large export (" & MODULE_VERSION & "): " & stage & "..."
 End Sub
 
 ' ==========================================================
@@ -1068,7 +1073,7 @@ Private Sub CloseUnsavedExports()
     On Error Resume Next
     If m_unsaved Is Nothing Then Exit Sub
     For Each wb In m_unsaved
-        wb.Close SaveChanges:=False
+        If Not wb Is ThisWorkbook Then wb.Close SaveChanges:=False   ' never the tool itself
     Next wb
     Set m_unsaved = New Collection
     On Error GoTo 0
@@ -2564,7 +2569,8 @@ Public Sub Consolidated_AML_Workflow_Large_Resume()
     stamp = Mid$(folder, InStrRev(folder, "LargeExport_") + Len("LargeExport_"))
     stoppedAt = Mid$(stamp, 7, 2) & "/" & Mid$(stamp, 5, 2) & "/" & Left$(stamp, 4) & " " & _
         Mid$(stamp, 10, 2) & ":" & Mid$(stamp, 12, 2)
-    If MsgBox("Continue the large export started " & stoppedAt & "?" & vbCrLf & vbCrLf & _
+    If MsgBox("Large export module " & MODULE_VERSION & vbCrLf & vbCrLf & _
+        "Continue the large export started " & stoppedAt & "?" & vbCrLf & vbCrLf & _
         "Its source files are already read: " & cpPaths.count & " CP Selection and " & ddPaths.count & _
         " DeDupe part(s). Any part an earlier attempt already saved is kept, and it carries on " & _
         "from the first one that isn't." & vbCrLf & vbCrLf & _
@@ -2859,7 +2865,7 @@ Private Sub ScanTempFileTotals(ByVal p As String, ByVal mode As Long, ByRef rows
     #End If
     Dim buf() As Byte, part() As Byte, have As Long, got As Long, total As Long, useEnd As Long
     Dim atEof As Boolean, isHeader As Boolean, text As String, lines() As String, i As Long, lastI As Long
-    Dim s As String, f() As String, sinceProgress As Long, fileName As String
+    Dim s As String, f() As String, sinceProgress As Long, fileName As String, fileRows As Long
 
     fileName = FileNameOf(p)
     h = CreateFileW(StrPtr(p), GENERIC_READ, FILE_SHARE_READ Or FILE_SHARE_WRITE, 0, _
@@ -2915,10 +2921,15 @@ Private Sub ScanTempFileTotals(ByVal p As String, ByVal mode As Long, ByRef rows
                         AmountValue(FieldAt(f, m_iAmt)), FieldAt(f, m_iAcct)
                 End If
                 rows = rows + 1
+                fileRows = fileRows + 1
                 sinceProgress = sinceProgress + 1
                 If sinceProgress = 50000 Then
                     sinceProgress = 0
-                    SetStage "adding up the pivot totals (" & fileName & ": " & Format$(rows, "#,##0") & " rows)"
+                    ' This file's rows, and the whole list's so far (it is split
+                    ' into files of RAW_ROWS_PER_SHEET rows, so the list total
+                    ' runs past one file's).
+                    SetStage "adding up the pivot totals (" & fileName & ": " & Format$(fileRows, "#,##0") & _
+                        " rows; " & Format$(rows, "#,##0") & " in the list so far)"
                     DoEvents
                 End If
             End If
@@ -3215,6 +3226,9 @@ Private Function OpenTempPart(ByVal p As String) As Workbook
         Semicolon:=False, Comma:=False, Space:=False, Other:=False, _
         FieldInfo:=ImportFieldInfo(), Local:=False
     Set OpenTempPart = Workbooks(FileNameOf(p))
+    If OpenTempPart Is ThisWorkbook Then
+        Err.Raise vbObjectError + 1011, "modLargeExport", "Opening " & FileNameOf(p) & " didn't give a new workbook."
+    End If
     m_unsaved.Add OpenTempPart
 End Function
 
@@ -3224,10 +3238,13 @@ End Function
 ' the files are added to staged for MoveStagedFiles, and the temporary
 ' files are left for RemoveTempFolder (so a failure can still be resumed).
 '
-' A part whose file is already in the scratch folder was saved by an
-' earlier attempt (Excel only puts the file there once a save has finished)
-' and is skipped - so a resumed export carries on from the part it stopped
-' at. copyTo: when the whole list fits in one file, it is also copied onto
+' A part saved by an earlier attempt is skipped, so a resumed export
+' carries on from the part it stopped at. "Saved" means its file is in the
+' scratch folder AND has a "<temporary file>.saved" marker, written only
+' after the save and close went through: older versions of this module
+' could save a copy of the tool itself under a part's name (they took
+' whatever workbook was active), and a file without a marker is never
+' trusted - it is built again. copyTo: when the whole list fits in one file, it is also copied onto
 ' this sheet (ConsolidatedData) and copied comes back True.
 ' Returns the file names, for the completion message.
 Private Function SaveTempPartsAsXlsx(ByVal paths As Collection, ByVal sheetName As String, _
@@ -3235,13 +3252,14 @@ Private Function SaveTempPartsAsXlsx(ByVal paths As Collection, ByVal sheetName 
     ByVal amtName As String, ByVal copyTo As Worksheet, ByRef copied As Boolean, _
     ByVal staged As Collection) As String
     Dim p As Long, n As Long, wb As Workbook, ws As Worksheet
-    Dim target As String, fileList As String
+    Dim target As String, fileList As String, marker As String, fn As Integer
 
     n = paths.count
     For p = 1 To n
         If n = 1 Then target = basePath & LIST_FILE_EXT Else target = basePath & " (part " & p & ")" & LIST_FILE_EXT
+        marker = CStr(paths(p)) & ".saved"
 
-        If Len(Dir(target)) > 0 Then
+        If Len(Dir(target)) > 0 And Len(Dir(marker)) > 0 Then
             ' Saved by an earlier attempt.
             If n = 1 And Not copyTo Is Nothing Then
                 CopyTempPartToSheet paths, copyTo
@@ -3271,12 +3289,19 @@ Private Function SaveTempPartsAsXlsx(ByVal paths As Collection, ByVal sheetName 
             End If
 
             SetSheetZoom85 wb, Array(ws.Name)
+            If wb Is ThisWorkbook Then
+                Err.Raise vbObjectError + 1011, "modLargeExport", "Refusing to save the tool as " & FileNameOf(target) & "."
+            End If
             Application.DisplayAlerts = False
             wb.SaveAs fileName:=target, FileFormat:=LIST_FILE_FORMAT
             MarkSaved wb
             wb.Close SaveChanges:=False
             Set ws = Nothing
             Set wb = Nothing
+
+            fn = FreeFile
+            Open marker For Output As #fn
+            Close #fn
         End If
         staged.Add target
 
