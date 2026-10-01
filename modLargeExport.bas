@@ -2566,7 +2566,8 @@ Public Sub Consolidated_AML_Workflow_Large_Resume()
         Mid$(stamp, 10, 2) & ":" & Mid$(stamp, 12, 2)
     If MsgBox("Continue the large export started " & stoppedAt & "?" & vbCrLf & vbCrLf & _
         "Its source files are already read: " & cpPaths.count & " CP Selection and " & ddPaths.count & _
-        " DeDupe file(s) are waiting to be saved." & vbCrLf & vbCrLf & _
+        " DeDupe part(s). Any part an earlier attempt already saved is kept, and it carries on " & _
+        "from the first one that isn't." & vbCrLf & vbCrLf & _
         "They will be saved for ECM ID " & ecmID & " / " & AlertID & " (from Sheet1) - make sure that " & _
         "is the case this export was for.", vbQuestion + vbYesNo, "Resume Large Export") <> vbYes Then Exit Sub
 
@@ -2645,7 +2646,8 @@ Private Sub FinishLegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Work
     Dim st(1 To 11) As Variant, newWb As Workbook, ws As Worksheet, wsScn As Worksheet, wsDay As Worksheet
     Dim wsPivot As Worksheet, outArr() As Variant, g As Long, shIdx As Long
     Dim excelFileName As String, finalSavePath As String
-    Dim t0 As Double, tCp As Double, tDd As Double, tRest As Double, timing As String
+    Dim t0 As Double, tTot As Double, tCp As Double, tDd As Double, tRest As Double, timing As String
+    Dim item As Variant
 
     slash = Application.PathSeparator
     prefix = saveFolderPath & slash & ecmID & "_" & AlertID & "_"
@@ -2659,19 +2661,29 @@ Private Sub FinishLegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Work
     If m_iAmt > 0 Then amtName = m_headerNames(m_iAmt)
     ResetTotals
 
-    ' ---- the lists, one .xlsx per temporary file, built in the scratch folder
-    ' DeDupe on one file: ConsolidatedData = DeDupe, as in Module9 (copied
-    ' while that file is open).
+    ' ---- the totals, from the temporary files (every part, saved or not)
+    t0 = Timer
+    SetStage "adding up the pivot totals"
+    For Each item In cpPaths
+        ScanTempFileTotals CStr(item), 1, cpRows
+    Next item
+    For Each item In ddPaths
+        ScanTempFileTotals CStr(item), 2, ddRows
+    Next item
+    tTot = Timer - t0
+
+    ' ---- the lists, one file per temporary file, built in the scratch folder.
+    ' DeDupe on one file: ConsolidatedData = DeDupe, as in Module9.
     Set cpStaged = New Collection
     Set ddStaged = New Collection
     wsRealCD.Cells.Clear
     t0 = Timer
     cpFilesText = SaveTempPartsAsXlsx(cpPaths, "CP Selection", stagePrefix & "CP Selection", dateName, _
-        "dddd, mmmm d, yyyy", amtName, 1, Nothing, cdFilled, cpStaged, cpRows)
+        "dddd, mmmm d, yyyy", amtName, Nothing, cdFilled, cpStaged)
     tCp = Timer - t0
     t0 = Timer
     ddFilesText = SaveTempPartsAsXlsx(ddPaths, "DeDupe", stagePrefix & "DeDupe", dateName, _
-        "m/d/yyyy", amtName, 2, wsRealCD, cdFilled, ddStaged, ddRows)
+        "m/d/yyyy", amtName, wsRealCD, cdFilled, ddStaged)
     tDd = Timer - t0
     t0 = Timer
 
@@ -2780,11 +2792,13 @@ Private Sub FinishLegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Work
 
     tRest = Timer - t0
     If m_readSecs >= 0 Then timing = "reading " & DurationText(m_readSecs) & ", "
-    timing = "Time taken: " & timing & "CP Selection " & DurationText(tCp) & ", DeDupe " & _
-        DurationText(tDd) & ", pivots and the rest " & DurationText(tRest) & "."
+    timing = "Time taken: " & timing & "totals " & DurationText(tTot) & ", CP Selection " & _
+        DurationText(tCp) & ", DeDupe " & DurationText(tDd) & ", pivots and the rest " & _
+        DurationText(tRest) & "."
     If m_readSecs >= 0 Then
-        timing = timing & " Total " & DurationText(m_readSecs + IIf(tCp < 0, tCp + 86400, tCp) + _
-            IIf(tDd < 0, tDd + 86400, tDd) + IIf(tRest < 0, tRest + 86400, tRest)) & "."
+        timing = timing & " Total " & DurationText(m_readSecs + IIf(tTot < 0, tTot + 86400, tTot) + _
+            IIf(tCp < 0, tCp + 86400, tCp) + IIf(tDd < 0, tDd + 86400, tDd) + _
+            IIf(tRest < 0, tRest + 86400, tRest)) & "."
     End If
 
     doneMsg = "Workflow Complete!" & vbCrLf & vbCrLf & _
@@ -2809,12 +2823,16 @@ Private Sub FinishLegacyExport(ByVal wsHome As Worksheet, ByVal wsRealCD As Work
 End Sub
 
 ' ==========================================================
-' Pass 2's totals and Sheet7 figures, added up from each list file
+' Pass 2's totals and Sheet7 figures, added up from the temporary files
 ' ==========================================================
 ' Scenario totals (per Alert Information / Dr Cr / Counterparty) come from
 ' the CP Selection files; Daily totals (per day / Dr Cr) and Sheet7's
 ' figures from the DeDupe files - the sheets Module9's pivots and
-' ConsolidatedData read. Each file is added in while it is open for saving.
+' ConsolidatedData read. They are read straight from the temporary files
+' (tab-separated text this module wrote), not from the saved workbooks, so
+' a resumed export can skip the files an earlier attempt already saved and
+' still have every total. Values are taken the way Excel's import takes
+' them: mm/dd/yyyy dates as dates, plain numbers as numbers, the rest text.
 ' ==========================================================
 Private Sub ResetTotals()
     m_scnIdx = NewShards(): m_dayIdx = NewShards(): m_acctSeen = NewShards()
@@ -2830,126 +2848,210 @@ Private Sub ResetTotals()
     m_acctText = ""
 End Sub
 
-' Column c of a list sheet, rows 2 to lastR, as a 2-D array (Empty when c = 0).
-Private Function ColumnValues(ByVal ws As Worksheet, ByVal c As Long, ByVal lastR As Long) As Variant
-    Dim v As Variant
-    If c = 0 Or lastR < 2 Then Exit Function
-    v = ws.Range(ws.Cells(2, c), ws.Cells(lastR, c)).Value
-    If Not IsArray(v) Then v = OneCellArray(v)
-    ColumnValues = v
-End Function
+' Adds one temporary file into the totals: mode 1 = a CP Selection file
+' (Scenario totals), 2 = a DeDupe file (Daily totals and Sheet7's
+' figures). rows gets the file's row count added.
+Private Sub ScanTempFileTotals(ByVal p As String, ByVal mode As Long, ByRef rows As Long)
+    #If VBA7 Then
+        Dim h As LongPtr
+    #Else
+        Dim h As Long
+    #End If
+    Dim buf() As Byte, part() As Byte, have As Long, got As Long, total As Long, useEnd As Long
+    Dim atEof As Boolean, isHeader As Boolean, text As String, lines() As String, i As Long, lastI As Long
+    Dim s As String, f() As String, sinceProgress As Long, fileName As String
 
-' Row r of a ColumnValues array. ByRef so the array isn't copied on every
-' call - the mistake that made Module9's ArrCell never finish at 6 lakh rows.
-Private Function ColCell(ByRef a As Variant, ByVal r As Long) As Variant
-    If IsArray(a) Then ColCell = a(r, 1)
-End Function
+    fileName = FileNameOf(p)
+    h = CreateFileW(StrPtr(p), GENERIC_READ, FILE_SHARE_READ Or FILE_SHARE_WRITE, 0, _
+        OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0)
+    If h = INVALID_HANDLE_VALUE Then
+        Err.Raise vbObjectError + 1010, "modLargeExport", "Couldn't open the temporary file " & fileName & "."
+    End If
+    m_csvHandle = h
 
-Private Sub AddScenarioTotals(ByVal ws As Worksheet, ByVal nRows As Long)
-    Dim aAlert As Variant, aDr As Variant, aCp As Variant, aAmt As Variant
-    Dim r As Long, g As Long, prevN As Long, k As String, amt As Variant
-    If nRows < 1 Then Exit Sub
-    aAlert = ColumnValues(ws, m_iAlert, nRows + 1)
-    aDr = ColumnValues(ws, m_iDr, nRows + 1)
-    aCp = ColumnValues(ws, m_cpTextCol, nRows + 1)
-    aAmt = ColumnValues(ws, m_iAmt, nRows + 1)
-    For r = 1 To nRows
-        k = KeyText(ColCell(aAlert, r)) & vbTab & KeyText(ColCell(aDr, r)) & vbTab & KeyText(ColCell(aCp, r))
-        prevN = m_scnN
-        g = GroupIndex(m_scnIdx, k, m_scnN)
-        If m_scnN > prevN Then
-            If m_scnN > m_scnCap Then
-                m_scnCap = m_scnCap * 2
-                ReDim Preserve m_scnAlert(1 To m_scnCap): ReDim Preserve m_scnDr(1 To m_scnCap)
-                ReDim Preserve m_scnCp(1 To m_scnCap): ReDim Preserve m_scnSum(1 To m_scnCap)
-                ReDim Preserve m_scnCnt(1 To m_scnCap)
-            End If
-            m_scnAlert(g) = ColCell(aAlert, r)
-            m_scnDr(g) = ColCell(aDr, r)
-            m_scnCp(g) = ColCell(aCp, r)
+    isHeader = True
+    ReDim buf(0 To CSV_CHUNK_BYTES - 1)
+    Do
+        got = 0
+        If ReadFile(h, buf(have), CSV_CHUNK_BYTES - have, got, 0) = 0 Then
+            Err.Raise vbObjectError + 1009, "modLargeExport", "Reading the temporary file " & fileName & " failed."
         End If
-        amt = ColCell(aAmt, r)
-        If IsNumber(amt) Then m_scnSum(g) = m_scnSum(g) + amt
-        If Not IsBlankValue(amt) Then m_scnCnt(g) = m_scnCnt(g) + 1
-    Next r
+        total = have + got
+        If total = 0 Then Exit Do
+        atEof = (total < CSV_CHUNK_BYTES)
+        If atEof Then
+            useEnd = total
+        Else
+            useEnd = LastLineBreakEnd(buf, total, False)
+            If useEnd = 0 Then
+                Err.Raise vbObjectError + 1008, "modLargeExport", "The temporary file " & fileName & _
+                    " has a line longer than " & Format$(CSV_CHUNK_BYTES / 1048576, "0") & " MB."
+            End If
+        End If
+
+        ReDim part(0 To useEnd - 1)
+        CopyMemory part(0), buf(0), useEnd
+        text = DecodeBytes(part, "utf-8")
+        have = total - useEnd
+        If have > 0 Then CopyMemory buf(0), buf(useEnd), have
+
+        lines = Split(text, vbLf)
+        lastI = UBound(lines)
+        If lastI >= 0 Then
+            If Len(lines(lastI)) = 0 Then lastI = lastI - 1
+        End If
+        For i = 0 To lastI
+            s = lines(i)
+            If Right$(s, 1) = vbCr Then s = Left$(s, Len(s) - 1)
+            If isHeader Then
+                isHeader = False
+            ElseIf Len(s) > 0 Then
+                f = Split(s, vbTab)
+                If mode = 1 Then
+                    AddScenarioRow FieldAt(f, m_iAlert), FieldAt(f, m_iDr), FieldAt(f, m_cpTextCol), _
+                        AmountValue(FieldAt(f, m_iAmt))
+                Else
+                    AddDailyRow DateValueOf(FieldAt(f, m_dateCol)), FieldAt(f, m_iDr), _
+                        AmountValue(FieldAt(f, m_iAmt)), FieldAt(f, m_iAcct)
+                End If
+                rows = rows + 1
+                sinceProgress = sinceProgress + 1
+                If sinceProgress = 50000 Then
+                    sinceProgress = 0
+                    SetStage "adding up the pivot totals (" & fileName & ": " & Format$(rows, "#,##0") & " rows)"
+                    DoEvents
+                End If
+            End If
+        Next i
+        If atEof Then Exit Do
+    Loop
+    CloseCsvHandle
 End Sub
 
-Private Sub AddDailyTotalsAndStats(ByVal ws As Worksheet, ByVal nRows As Long)
-    Dim aDate As Variant, aDr As Variant, aAmt As Variant, aAcct As Variant
-    Dim r As Long, g As Long, prevN As Long, k As String, amt As Variant, dv As Variant
-    Dim side As Variant, v As Variant
-    If nRows < 1 Then Exit Sub
-    aDate = ColumnValues(ws, m_dateCol, nRows + 1)
-    aDr = ColumnValues(ws, m_iDr, nRows + 1)
-    aAmt = ColumnValues(ws, m_iAmt, nRows + 1)
-    aAcct = ColumnValues(ws, m_iAcct, nRows + 1)
-    For r = 1 To nRows
-        amt = ColCell(aAmt, r)
-        side = ColCell(aDr, r)
+' Column col (1-based) of a split line, "" if there isn't one.
+Private Function FieldAt(ByRef f() As String, ByVal col As Long) As String
+    If col > 0 Then
+        If col - 1 <= UBound(f) Then FieldAt = f(col - 1)
+    End If
+End Function
 
-        ' Daily totals: per day / Dr Cr
-        dv = ColCell(aDate, r)
-        If VarType(dv) = vbDate Then
-            dv = CDate(Int(CDbl(dv)))
-            k = "D" & CStr(CLng(CDbl(dv)))
-        Else
-            k = "T" & KeyText(dv)
-        End If
-        k = KeyText(side) & vbTab & k
-        prevN = m_dayN
-        g = GroupIndex(m_dayIdx, k, m_dayN)
-        If m_dayN > prevN Then
-            If m_dayN > m_dayCap Then
-                m_dayCap = m_dayCap * 2
-                ReDim Preserve m_dayDate(1 To m_dayCap): ReDim Preserve m_dayDr(1 To m_dayCap)
-                ReDim Preserve m_daySum(1 To m_dayCap): ReDim Preserve m_dayCnt(1 To m_dayCap)
-            End If
-            m_dayDate(g) = dv
-            m_dayDr(g) = side
-        End If
-        If IsNumber(amt) Then m_daySum(g) = m_daySum(g) + amt
-        If Not IsBlankValue(amt) Then m_dayCnt(g) = m_dayCnt(g) + 1
+' An amount from a temporary file: a plain number as a number, blank as
+' Empty, anything else as the text it is.
+Private Function AmountValue(ByVal s As String) As Variant
+    If Len(s) = 0 Then Exit Function
+    If LooksNumeric(s) Then AmountValue = Val(s) Else AmountValue = s
+End Function
 
-        ' Sheet7's figures (what its formulas give on ConsolidatedData = DeDupe)
-        If IsNumber(amt) Then
-            m_stCount = m_stCount + 1
-            m_stSum = m_stSum + amt
-            If amt > 0 Then
-                If Not m_stHavePos Then
-                    m_stMinPos = amt: m_stMaxPos = amt: m_stHavePos = True
-                Else
-                    If amt < m_stMinPos Then m_stMinPos = amt
-                    If amt > m_stMaxPos Then m_stMaxPos = amt
+' A date from a temporary file: "mm/dd/yyyy" or "mm/dd/yyyy hh:nn:ss" (how
+' this module writes them) as a date, blank as Empty, anything else (a date
+' that couldn't be read) as the text it is.
+Private Function DateValueOf(ByVal s As String) As Variant
+    Dim mo As Long, d As Long, y As Long, dt As Date
+    If Len(s) = 0 Then Exit Function
+    If s Like "##/##/####*" Then
+        mo = Val(Left$(s, 2)): d = Val(Mid$(s, 4, 2)): y = Val(Mid$(s, 7, 4))
+        If mo >= 1 And mo <= 12 And d >= 1 And d <= 31 Then
+            dt = DateSerial(y, mo, d)
+            If Month(dt) = mo And Day(dt) = d Then
+                If Len(s) = 10 Then
+                    DateValueOf = dt
+                    Exit Function
+                ElseIf Len(s) = 19 And Mid$(s, 11, 1) = " " Then
+                    DateValueOf = dt + TimeSerial(Val(Mid$(s, 12, 2)), Val(Mid$(s, 15, 2)), Val(Mid$(s, 18, 2)))
+                    Exit Function
                 End If
             End If
         End If
-        If VarType(dv) = vbDate Then
-            If Not m_stHaveDate Then
-                m_stFirst = dv: m_stLast = dv: m_stHaveDate = True
+    End If
+    DateValueOf = s
+End Function
+
+' One CP Selection row into the Scenario totals.
+Private Sub AddScenarioRow(ByVal alertV As Variant, ByVal drV As Variant, ByVal cpV As Variant, _
+    ByVal amt As Variant)
+    Dim k As String, g As Long, prevN As Long
+    k = KeyText(alertV) & vbTab & KeyText(drV) & vbTab & KeyText(cpV)
+    prevN = m_scnN
+    g = GroupIndex(m_scnIdx, k, m_scnN)
+    If m_scnN > prevN Then
+        If m_scnN > m_scnCap Then
+            m_scnCap = m_scnCap * 2
+            ReDim Preserve m_scnAlert(1 To m_scnCap): ReDim Preserve m_scnDr(1 To m_scnCap)
+            ReDim Preserve m_scnCp(1 To m_scnCap): ReDim Preserve m_scnSum(1 To m_scnCap)
+            ReDim Preserve m_scnCnt(1 To m_scnCap)
+        End If
+        m_scnAlert(g) = alertV
+        m_scnDr(g) = drV
+        m_scnCp(g) = cpV
+    End If
+    If IsNumber(amt) Then m_scnSum(g) = m_scnSum(g) + amt
+    If Not IsBlankValue(amt) Then m_scnCnt(g) = m_scnCnt(g) + 1
+End Sub
+
+' One DeDupe row into the Daily totals and Sheet7's figures.
+Private Sub AddDailyRow(ByVal dv As Variant, ByVal side As Variant, ByVal amt As Variant, ByVal acct As Variant)
+    Dim k As String, g As Long, prevN As Long
+
+    ' Daily totals: per day / Dr Cr
+    If VarType(dv) = vbDate Then
+        dv = CDate(Int(CDbl(dv)))
+        k = "D" & CStr(CLng(CDbl(dv)))
+    Else
+        k = "T" & KeyText(dv)
+    End If
+    k = KeyText(side) & vbTab & k
+    prevN = m_dayN
+    g = GroupIndex(m_dayIdx, k, m_dayN)
+    If m_dayN > prevN Then
+        If m_dayN > m_dayCap Then
+            m_dayCap = m_dayCap * 2
+            ReDim Preserve m_dayDate(1 To m_dayCap): ReDim Preserve m_dayDr(1 To m_dayCap)
+            ReDim Preserve m_daySum(1 To m_dayCap): ReDim Preserve m_dayCnt(1 To m_dayCap)
+        End If
+        m_dayDate(g) = dv
+        m_dayDr(g) = side
+    End If
+    If IsNumber(amt) Then m_daySum(g) = m_daySum(g) + amt
+    If Not IsBlankValue(amt) Then m_dayCnt(g) = m_dayCnt(g) + 1
+
+    ' Sheet7's figures (what its formulas give on ConsolidatedData = DeDupe)
+    If IsNumber(amt) Then
+        m_stCount = m_stCount + 1
+        m_stSum = m_stSum + amt
+        If amt > 0 Then
+            If Not m_stHavePos Then
+                m_stMinPos = amt: m_stMaxPos = amt: m_stHavePos = True
             Else
-                If dv < m_stFirst Then m_stFirst = dv
-                If dv > m_stLast Then m_stLast = dv
+                If amt < m_stMinPos Then m_stMinPos = amt
+                If amt > m_stMaxPos Then m_stMaxPos = amt
             End If
         End If
-        If VarType(side) = vbString Then
-            If StrComp(side, "CR", vbTextCompare) = 0 Then
-                m_crCnt = m_crCnt + 1
-                If IsNumber(amt) Then m_crSum = m_crSum + amt
-            ElseIf StrComp(side, "DR", vbTextCompare) = 0 Then
-                m_drCnt = m_drCnt + 1
-                If IsNumber(amt) Then m_drSum = m_drSum + amt
+    End If
+    If VarType(dv) = vbDate Then
+        If Not m_stHaveDate Then
+            m_stFirst = dv: m_stLast = dv: m_stHaveDate = True
+        Else
+            If dv < m_stFirst Then m_stFirst = dv
+            If dv > m_stLast Then m_stLast = dv
+        End If
+    End If
+    If VarType(side) = vbString Then
+        If StrComp(side, "CR", vbTextCompare) = 0 Then
+            m_crCnt = m_crCnt + 1
+            If IsNumber(amt) Then m_crSum = m_crSum + amt
+        ElseIf StrComp(side, "DR", vbTextCompare) = 0 Then
+            m_drCnt = m_drCnt + 1
+            If IsNumber(amt) Then m_drSum = m_drSum + amt
+        End If
+    End If
+    If Len(m_acctText) < 32000 Then
+        If Not IsBlankValue(acct) And Not IsError(acct) Then
+            If Not AlreadySeen(m_acctSeen, KeyText(acct)) Then
+                If Len(m_acctText) > 0 Then m_acctText = m_acctText & ","
+                m_acctText = m_acctText & CStr(acct)
             End If
         End If
-        If Len(m_acctText) < 32000 Then
-            v = ColCell(aAcct, r)
-            If Not IsBlankValue(v) And Not IsError(v) Then
-                If Not AlreadySeen(m_acctSeen, KeyText(v)) Then
-                    If Len(m_acctText) > 0 Then m_acctText = m_acctText & ","
-                    m_acctText = m_acctText & CStr(v)
-                End If
-            End If
-        End If
-    Next r
+    End If
 End Sub
 
 ' ==========================================================
@@ -3104,65 +3206,78 @@ Private Function ImportFieldInfo() As Variant
     ImportFieldInfo = fi
 End Function
 
-' Opens a temporary file in Excel as a workbook of its own.
+' Opens a temporary file in Excel as a workbook of its own - found by its
+' name afterwards, never by "whatever is active", so nothing here can ever
+' touch another open workbook.
 Private Function OpenTempPart(ByVal p As String) As Workbook
     Workbooks.OpenText fileName:=p, Origin:=65001, StartRow:=1, DataType:=xlDelimited, _
         TextQualifier:=xlTextQualifierNone, ConsecutiveDelimiter:=False, Tab:=True, _
         Semicolon:=False, Comma:=False, Space:=False, Other:=False, _
         FieldInfo:=ImportFieldInfo(), Local:=False
-    Set OpenTempPart = ActiveWorkbook
+    Set OpenTempPart = Workbooks(FileNameOf(p))
     m_unsaved.Add OpenTempPart
 End Function
 
-' Pass 2 for one list: each temporary file becomes basePath.xlsx, or
-' basePath (part 1).xlsx, (part 2)... when there is more than one, each
-' saved and closed before the next is opened. basePath is in the scratch
-' folder; the files made are added to staged for MoveStagedFiles, and the
-' temporary files are left for RemoveTempFolder (so a failure here can
-' still be resumed). totalsMode 1 adds each file into the Scenario totals,
-' 2 into the Daily totals and Sheet7's figures. copyTo: when the whole
-' list fits in one file, it is also copied onto this sheet
-' (ConsolidatedData) and copied comes back True. totalRows gets the list's
-' row count. Returns the file names, for the completion message.
+' Pass 2 for one list: each temporary file becomes basePath + LIST_FILE_EXT,
+' or basePath (part 1), (part 2)... when there is more than one, each saved
+' and closed before the next is opened. basePath is in the scratch folder;
+' the files are added to staged for MoveStagedFiles, and the temporary
+' files are left for RemoveTempFolder (so a failure can still be resumed).
+'
+' A part whose file is already in the scratch folder was saved by an
+' earlier attempt (Excel only puts the file there once a save has finished)
+' and is skipped - so a resumed export carries on from the part it stopped
+' at. copyTo: when the whole list fits in one file, it is also copied onto
+' this sheet (ConsolidatedData) and copied comes back True.
+' Returns the file names, for the completion message.
 Private Function SaveTempPartsAsXlsx(ByVal paths As Collection, ByVal sheetName As String, _
     ByVal basePath As String, ByVal dateName As String, ByVal dateFormat As String, _
-    ByVal amtName As String, ByVal totalsMode As Long, ByVal copyTo As Worksheet, _
-    ByRef copied As Boolean, ByVal staged As Collection, ByRef totalRows As Long) As String
-    Dim p As Long, n As Long, nRows As Long, wb As Workbook, ws As Worksheet
+    ByVal amtName As String, ByVal copyTo As Worksheet, ByRef copied As Boolean, _
+    ByVal staged As Collection) As String
+    Dim p As Long, n As Long, wb As Workbook, ws As Worksheet
     Dim target As String, fileList As String
 
     n = paths.count
     For p = 1 To n
-        SetStage "saving " & sheetName & IIf(n > 1, " (part " & p & " of " & n & ")", "")
-        DoEvents
-        Set wb = OpenTempPart(CStr(paths(p)))
-        Set ws = wb.Worksheets(1)
-        ws.Name = sheetName
-
-        nRows = LastDataRow(ws) - 1
-        If nRows < 0 Then nRows = 0
-        totalRows = totalRows + nRows
-        If totalsMode = 1 Then
-            AddScenarioTotals ws, nRows
-        Else
-            AddDailyTotalsAndStats ws, nRows
-        End If
-
-        StyleHeaderRow ws
-        FormatDataColumns ws, dateName, dateFormat, amtName
-        TidyDataSheet ws
-
-        If n = 1 And Not copyTo Is Nothing Then
-            ws.UsedRange.Copy Destination:=copyTo.Range("A1")
-            copied = True
-        End If
-
         If n = 1 Then target = basePath & LIST_FILE_EXT Else target = basePath & " (part " & p & ")" & LIST_FILE_EXT
-        SetSheetZoom85 wb, Array(ws.Name)
-        Application.DisplayAlerts = False
-        wb.SaveAs fileName:=target, FileFormat:=LIST_FILE_FORMAT
-        MarkSaved wb
-        wb.Close SaveChanges:=False
+
+        If Len(Dir(target)) > 0 Then
+            ' Saved by an earlier attempt.
+            If n = 1 And Not copyTo Is Nothing Then
+                CopyTempPartToSheet paths, copyTo
+                copied = True
+            End If
+        Else
+            SetStage "saving " & sheetName & IIf(n > 1, " (part " & p & " of " & n & ")", "")
+            DoEvents
+            Set wb = OpenTempPart(CStr(paths(p)))
+            Set ws = wb.Worksheets(1)
+            ' The sheet is named after the temporary file. Renaming it is only
+            ' cosmetic, and Excel has refused it when short of memory - so a
+            ' refusal leaves the file's name rather than stopping the export.
+            If ws.Name <> sheetName Then
+                On Error Resume Next
+                ws.Name = sheetName
+                Err.Clear
+                On Error GoTo 0
+            End If
+            StyleHeaderRow ws
+            FormatDataColumns ws, dateName, dateFormat, amtName
+            TidyDataSheet ws
+
+            If n = 1 And Not copyTo Is Nothing Then
+                ws.UsedRange.Copy Destination:=copyTo.Range("A1")
+                copied = True
+            End If
+
+            SetSheetZoom85 wb, Array(ws.Name)
+            Application.DisplayAlerts = False
+            wb.SaveAs fileName:=target, FileFormat:=LIST_FILE_FORMAT
+            MarkSaved wb
+            wb.Close SaveChanges:=False
+            Set ws = Nothing
+            Set wb = Nothing
+        End If
         staged.Add target
 
         If Len(fileList) > 0 Then fileList = fileList & vbCrLf & "   "
