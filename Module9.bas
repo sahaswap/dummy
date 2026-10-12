@@ -1,13 +1,9 @@
 Attribute VB_Name = "Module9"
 Option Explicit
 
-' TidyDataSheet: sheets up to this many rows get the full column + wrapped
-' row fit; bigger ones fit columns to the first TIDY_SAMPLE_ROWS rows only.
-Private Const TIDY_FULL_FIT_ROWS As Long = 50000
-Private Const TIDY_SAMPLE_ROWS As Long = 2000
-' FilterRowsFast: added to a dropped row's sort key so every dropped row
-' sorts after every kept one (bigger than Excel's 1,048,576-row limit).
-Private Const DROP_KEY_OFFSET As Long = 2000000
+' Set by Import_ECM_Info (modECMImport) to run this export in a fixed mode
+' ("LEGACY" / "EN" / "PIVOT") without showing the picker. Cleared on use.
+Public gExportModeOverride As String
 
 Sub Consolidated_AML_Workflow()
 
@@ -79,14 +75,19 @@ End If
 ' 1b. EXPORT FORMAT PICKER - frmExportMode
 ' ==========================================
 Dim exportMode As String
-frmExportMode.Show vbModal
+If gExportModeOverride <> "" Then
+    exportMode = gExportModeOverride
+    gExportModeOverride = ""
+Else
+    frmExportMode.Show vbModal
 
-If frmExportMode.userCancelled Then
+    If frmExportMode.userCancelled Then
+        Unload frmExportMode
+        Exit Sub
+    End If
+    exportMode = frmExportMode.SelectedMode   ' "LEGACY" / "EN" / "PIVOT"
     Unload frmExportMode
-    Exit Sub
 End If
-exportMode = frmExportMode.SelectedMode   ' "LEGACY" / "EN" / "PIVOT"
-Unload frmExportMode
 
 Dim sourceFolderName As String
 If exportMode = "PIVOT" Then
@@ -202,16 +203,17 @@ If exportMode = "PIVOT" Then
     ' Raw Transactions/CP Selection/DeDupe, EN Network's 3 sheets,
     ' Lookback Transactions) - "Pivot Data" here was the one sheet still
     ' missing it.
-    TidyDataSheet newWbPiv.Sheets("Pivot Data")
+    With newWbPiv.Sheets("Pivot Data").Cells
+        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+        .EntireRow.AutoFit: .VerticalAlignment = xlTop
+    End With
 
     Dim pivotFileName As String, pivotSavePath As String
     pivotFileName = ecmID & "_" & AlertID & "_Pivot Analysis.xlsx"
     pivotSavePath = folderPath & slash & pivotFileName
     CloseIfAlreadyOpen pivotSavePath
-    MoveExistingExportAside pivotSavePath
     SetSheetZoom85 newWbPiv, Array("Pivot Data", "Pivot")
     newWbPiv.SaveAs fileName:=pivotSavePath, FileFormat:=51
-    DiscardPreviousExport pivotSavePath
 
     newWbPiv.Sheets("Pivot Data").Activate
 
@@ -297,25 +299,19 @@ Next objFile
 
 Application.CutCopyMode = False
 
-FreezeValuesByColumn WsMaster
+If WsMaster.UsedRange.Cells.count > 0 Then WsMaster.UsedRange.Value = WsMaster.UsedRange.Value
 
 ' ==========================================
 ' 2.5 SNAPSHOT RAW DATA (ROCK-SOLID RANGE CLONE)
 ' ==========================================
-' Legacy only. Legacy's Raw Transactions is the data BEFORE cleanup, so it
-' needs this snapshot. EN's Raw Transactions is the data AFTER cleanup and is
-' copied straight from WsMaster (see 4-AN), so for EN this would be a full
-' extra copy of every row for nothing - at 600,000 rows, a lot of memory.
 SafeDeleteSheet wsHome.Parent, "TempRawBackup"
-If exportMode <> "EN" Then
-    Set WsRawTemp = wsHome.Parent.Sheets.Add(After:=wsHome)
-    WsRawTemp.Name = "TempRawBackup"
+Set WsRawTemp = wsHome.Parent.Sheets.Add(After:=wsHome)
+WsRawTemp.Name = "TempRawBackup"
 
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=WsRawTemp.Range("A1")
-    End If
-    WsRawTemp.Visible = xlSheetVeryHidden
+If WsMaster.UsedRange.Cells.count > 0 Then
+    WsMaster.UsedRange.Copy Destination:=WsRawTemp.Range("A1")
 End If
+WsRawTemp.Visible = xlSheetVeryHidden
 
 ' ==========================================
 ' 3. AGGRESSIVE DATA CLEANUP
@@ -371,7 +367,7 @@ End If
 If exportMode = "EN" Then
     Dim aColLB As Long, aDateColLB As Long, scanLastLB As Long, rLB As Long
     Dim cvLB As Variant
-    Dim firstAlertedLB As Date, lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
+    Dim lastAlertedLB As Date, haveAlertedLB As Boolean, lbStart As Date, lbEnd As Date
     Dim wsLB As Worksheet
     Dim lbSavedPath As String
 
@@ -396,17 +392,10 @@ If exportMode = "EN" Then
             If Trim(CStr(ArrCell(sArrLB, rLB))) = "Yes" Then
                 cvLB = ArrCell(dArrLB, rLB)
                 If IsDate(cvLB) Then
-                    ' Track BOTH ends of the alerted period: the earliest alert
-                    ' sets where the lookback STARTS, the latest sets where it
-                    ' ENDS. Only the latest was tracked before, so the start was
-                    ' measured back from the last alert instead of the first.
                     If Not haveAlertedLB Then
-                        firstAlertedLB = CDate(cvLB)
+                        lastAlertedLB = CDate(cvLB): haveAlertedLB = True
+                    ElseIf CDate(cvLB) > lastAlertedLB Then
                         lastAlertedLB = CDate(cvLB)
-                        haveAlertedLB = True
-                    Else
-                        If CDate(cvLB) < firstAlertedLB Then firstAlertedLB = CDate(cvLB)
-                        If CDate(cvLB) > lastAlertedLB Then lastAlertedLB = CDate(cvLB)
                     End If
                 End If
             End If
@@ -416,18 +405,7 @@ If exportMode = "EN" Then
         MsgBox "No dated 'Yes' alerted transactions were found, so the EN Network export can't be built.", vbCritical, "No Alerted Rows"
         GoTo CancelHandler
     End If
-    ' START: the first day of the FIRST alerted transaction's month, one
-    ' year back. First alert 18 Aug 2025 -> lookback starts 01 Aug 2024.
-    '
-    ' This was measured back from the LATEST alert, which gave a window of
-    ' 12 months before the last alert rather than 12 months before the
-    ' first. With alerts spread across several months that is wrong in two
-    ' ways: the history before the first alert is cut short by however far
-    ' apart the alerts are, and if the alerts span more than a year the
-    ' earliest alerted transaction falls outside its own lookback entirely.
-    ' Anchoring the start on the first alert guarantees a full year of
-    ' history before any alerted activity, and every alert in the window.
-    lbStart = DateSerial(Year(firstAlertedLB) - 1, Month(firstAlertedLB), 1)
+    lbStart = DateSerial(Year(lastAlertedLB) - 1, Month(lastAlertedLB), 1)
 
     ' End of the MONTH the last alerted transaction falls in, not the
     ' alerted date itself. Last alerted 09/10 -> window ends 09/30.
@@ -450,7 +428,10 @@ If exportMode = "EN" Then
     End If
 
     FilterRowsFast wsLB, 0, "", aDateColLB, True, lbStart, lbEnd
-    TidyDataSheet wsLB
+    With wsLB.Cells
+        .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+        .EntireRow.AutoFit: .VerticalAlignment = xlTop
+    End With
 
     BuildEnPivots newWb, "Lookback Transactions", "Pivot", "Lookback Transactions"
 
@@ -467,11 +448,9 @@ If exportMode = "EN" Then
         Format$(lbStart, "mm.dd.yyyy") & " to " & Format$(lbEnd, "mm.dd.yyyy") & ").xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
-    MoveExistingExportAside finalSavePath
     SetSheetZoom85 newWb, Array("Lookback Transactions", "Pivot")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
-    DiscardPreviousExport finalSavePath
     Application.DisplayAlerts = True
     lbSavedPath = finalSavePath
 
@@ -525,14 +504,10 @@ If exportMode = "EN" Then
     Set newWb = Workbooks.Add
     Set wsRawEN = newWb.Sheets(1)
     wsRawEN.Name = "Raw Transactions"
-    ' Copied from WsMaster as it stands. This used to copy the pre-cleanup
-    ' snapshot and run CleanTransactionData on it here, which is the same
-    ' date, amount and Counterparty cleanup WsMaster has already had (the
-    ' date column is set to m/d/yyyy on this sheet below either way), so the
-    ' sheet comes out the same without holding a second copy of every row.
-    If WsMaster.UsedRange.Cells.count > 0 Then
-        WsMaster.UsedRange.Copy Destination:=wsRawEN.Range("A1")
+    If WsRawTemp.UsedRange.Cells.count > 0 Then
+        WsRawTemp.UsedRange.Copy Destination:=wsRawEN.Range("A1")
     End If
+    CleanTransactionData wsRawEN
 
     Set wsAlertedEN = newWb.Sheets.Add(After:=newWb.Sheets(newWb.Sheets.count))
     wsAlertedEN.Name = "Alerted Transaction"
@@ -573,7 +548,10 @@ If exportMode = "EN" Then
 
     Dim dateColTidy As Long, lastRTidy As Long
     For Each wsTidy In Array("Raw Transactions", "Alerted Transaction", "Non Alerted Transaction")
-        TidyDataSheet newWb.Sheets(CStr(wsTidy))
+        With newWb.Sheets(CStr(wsTidy)).Cells
+            .WrapText = False: .EntireColumn.AutoFit: .WrapText = True
+            .EntireRow.AutoFit: .VerticalAlignment = xlTop
+        End With
         On Error Resume Next
         dateColTidy = 0
         dateColTidy = newWb.Sheets(CStr(wsTidy)).Rows(1).Find(What:="Transaction Date", LookAt:=xlPart).Column
@@ -605,11 +583,9 @@ If exportMode = "EN" Then
     excelFileName = ecmID & "_" & AlertID & "_Combined Alerted & Non Alerted Transactions.xlsx"
     finalSavePath = saveFolderPath & slash & excelFileName
     CloseIfAlreadyOpen finalSavePath
-    MoveExistingExportAside finalSavePath
     SetSheetZoom85 newWb, Array("Raw Transactions", "Alerted Transaction", "Alerted Transaction Pivot", "Non Alerted Transaction")
     Application.DisplayAlerts = False
     newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
-    DiscardPreviousExport finalSavePath
     Application.DisplayAlerts = True
 
     wsRealCD.Cells.Clear
@@ -684,7 +660,13 @@ If TransCol > 0 Then wsExport.UsedRange.RemoveDuplicates Columns:=Array(TransCol
 
 For Each ws In newWb.Sheets
     If ws.Name = "Raw Transactions" Or ws.Name = "CP Selection" Or ws.Name = "DeDupe" Then
-        TidyDataSheet ws
+        With ws.Cells
+            .WrapText = False
+            .EntireColumn.AutoFit
+            .WrapText = True
+            .EntireRow.AutoFit
+            .VerticalAlignment = xlTop
+        End With
     Else
         SafeDeleteSheet newWb, ws.Name
     End If
@@ -824,20 +806,24 @@ excelFileName = ecmID & "_" & AlertID & "_Combined_" & fileTag & "_Transaction.x
 
 finalSavePath = saveFolderPath & slash & excelFileName
 CloseIfAlreadyOpen finalSavePath
-MoveExistingExportAside finalSavePath
 ' "Pivot" only exists if lastRowCP > 1 above - SetSheetZoom85's own error
 ' handling silently skips it otherwise, same as any other missing name.
 SetSheetZoom85 newWb, Array("Raw Transactions", "CP Selection", "DeDupe", "Pivot")
 
 Application.DisplayAlerts = False
 newWb.SaveAs fileName:=finalSavePath, FileFormat:=51
-DiscardPreviousExport finalSavePath
 Application.DisplayAlerts = True
 
 wsRealCD.Cells.Clear
 newWb.Sheets("DeDupe").UsedRange.Copy Destination:=wsRealCD.Range("A1")
 
-TidyDataSheet wsRealCD
+With wsRealCD.Cells
+    .WrapText = False
+    .EntireColumn.AutoFit
+    .WrapText = True
+    .EntireRow.AutoFit
+    .VerticalAlignment = xlTop
+End With
 
 On Error Resume Next
 Module3.RefreshRuleNameTag
@@ -1042,48 +1028,30 @@ Private Sub BuildEnPivots(ByVal wb As Workbook, ByVal dataSheet As String, _
     End With
     On Error GoTo 0
 
-    ' The date-grouped pivots can't group a Transaction Date column that has
-    ' blanks in it, so blank-date rows are dropped from a hidden copy of the
-    ' data first. With no blanks - always the case for Lookback, where every
-    ' row was kept for its date - that copy would be identical to the data
-    ' sheet, so it is skipped and these pivots read the data sheet directly.
-    ' At 600,000 rows the copy is another full set of every row in memory.
-    Dim needScratch As Boolean, wsGrp As Worksheet
-    needScratch = False
-    If dCol > 0 Then
-        ddLast = wsData.Cells(wsData.Rows.count, dCol).End(xlUp).row
-        If ddLast > 1 Then
-            needScratch = (Application.WorksheetFunction.CountBlank( _
-                wsData.Range(wsData.Cells(2, dCol), wsData.Cells(ddLast, dCol))) > 0)
-        End If
+    ' Build scratch copy for date-grouped pivots using Sheets.Add + UsedRange.Copy
+    On Error Resume Next
+    Set wsPvScratch = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
+    wsPvScratch.Visible = xlSheetVeryHidden
+    If wsData.UsedRange.Cells.count > 0 Then
+        wsData.UsedRange.Copy Destination:=wsPvScratch.Range("A1")
     End If
+    On Error GoTo 0
+    If wsPvScratch Is Nothing Then GoTo SkipDateGroupedPivots
 
-    If needScratch Then
-        On Error Resume Next
-        Set wsPvScratch = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.count))
-        wsPvScratch.Visible = xlSheetVeryHidden
-        If wsData.UsedRange.Cells.count > 0 Then
-            wsData.UsedRange.Copy Destination:=wsPvScratch.Range("A1")
-        End If
-        On Error GoTo 0
-        If wsPvScratch Is Nothing Then GoTo SkipDateGroupedPivots
-
-        On Error Resume Next
+    On Error Resume Next
+    If dCol > 0 Then
         ddLast = wsPvScratch.Cells(wsPvScratch.Rows.count, dCol).End(xlUp).row
         If ddLast > 1 Then
             wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).SpecialCells(xlCellTypeBlanks).EntireRow.Delete
             wsPvScratch.Range(wsPvScratch.Cells(2, dCol), wsPvScratch.Cells(ddLast, dCol)).NumberFormat = "m/d/yyyy"
         End If
-        On Error GoTo 0
-        Set wsGrp = wsPvScratch
-    Else
-        Set wsGrp = wsData
     End If
+    On Error GoTo 0
 
-    lastRow = wsGrp.Cells(wsGrp.Rows.count, "A").End(xlUp).row
-    lastCol = wsGrp.Cells(1, wsGrp.Columns.count).End(xlToLeft).Column
+    lastRow = wsPvScratch.Cells(wsPvScratch.Rows.count, "A").End(xlUp).row
+    lastCol = wsPvScratch.Cells(1, wsPvScratch.Columns.count).End(xlToLeft).Column
     If lastRow > 1 Then
-        Set rngTmp = wsGrp.Range(wsGrp.Cells(1, 1), wsGrp.Cells(lastRow, lastCol))
+        Set rngTmp = wsPvScratch.Range(wsPvScratch.Cells(1, 1), wsPvScratch.Cells(lastRow, lastCol))
         Set cacheTmp = wb.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=rngTmp)
 
         ' PIVOT 2: TEMPORAL
@@ -1175,77 +1143,6 @@ Private Sub SetSheetZoom85(ByVal wb As Workbook, ByVal sheetNames As Variant)
 End Sub
 
 ' ==========================================================
-' MoveExistingExportAside - never overwrite an export in place.
-' ==========================================================
-' Evidence from a real run: the Lookback file saved and the Combined file
-' did not, from the same code, into the same folder. The difference was
-' that the Lookback had a NEW filename (its date range had just changed),
-' so SaveAs created a fresh file - while the Combined filename is identical
-' on every run, so SaveAs had to OVERWRITE the copy left by the last run.
-'
-' Excel overwrites by writing a temporary file and then swapping it in for
-' the old one. On the OneDrive-synced Desktop that replace is exactly what
-' sync interferes with, and it fails as a bare "Method 'SaveAs' of object
-' '_Workbook' failed". Creating a new file does not hit it - which is why
-' the Lookback succeeded.
-'
-' So the old export is renamed out of the way first, and every save is a
-' plain create. The old copy is kept as "<name> (previous).xlsx" until the
-' new save has definitely succeeded, then deleted - so if anything still
-' goes wrong, the previous export is still on disk under a readable name
-' rather than lost.
-'
-' (This replaces an earlier check that opened the existing file for
-' exclusive write access to test for a lock. That was the wrong test: the
-' open could pass while the replace still failed, and on a synced folder
-' opening the file for write can itself prompt OneDrive to pick it up.)
-Private Sub MoveExistingExportAside(ByVal targetPath As String)
-    Dim asidePath As String, moved As Boolean
-    asidePath = PreviousExportPath(targetPath)
-
-    On Error Resume Next
-    If Len(Dir(targetPath)) = 0 Then Exit Sub          ' nothing to move
-    If Len(Dir(asidePath)) > 0 Then Kill asidePath       ' stale copy from a failed run
-    Err.Clear
-    Name targetPath As asidePath
-    moved = (Err.Number = 0)
-    Err.Clear
-    On Error GoTo 0
-
-    If Not moved Then
-        Err.Raise vbObjectError + 1004, "Consolidated_AML_Workflow", _
-            "The export could not replace the existing file, because it is open " & _
-            "or locked:" & vbCrLf & vbCrLf & _
-            Mid$(targetPath, InStrRev(targetPath, Application.PathSeparator) + 1) & _
-            vbCrLf & vbCrLf & _
-            "Close every open copy of it - check all Excel windows, and Task " & _
-            "Manager for a second EXCEL.EXE - or wait for OneDrive to finish " & _
-            "syncing it. Then run the export again."
-    End If
-End Sub
-
-' Called only AFTER a SaveAs has succeeded, so the previous copy is never
-' removed until its replacement exists.
-Private Sub DiscardPreviousExport(ByVal targetPath As String)
-    On Error Resume Next
-    Dim asidePath As String
-    asidePath = PreviousExportPath(targetPath)
-    If Len(Dir(asidePath)) > 0 Then Kill asidePath
-    On Error GoTo 0
-End Sub
-
-' "...\X.xlsx" -> "...\X (previous).xlsx"
-Private Function PreviousExportPath(ByVal targetPath As String) As String
-    Dim dot As Long
-    dot = InStrRev(targetPath, ".")
-    If dot = 0 Then
-        PreviousExportPath = targetPath & " (previous)"
-    Else
-        PreviousExportPath = Left$(targetPath, dot - 1) & " (previous)" & Mid$(targetPath, dot)
-    End If
-End Function
-
-' ==========================================================
 ' CloseIfAlreadyOpen - safely closes an open target file prior to SaveAs
 ' ==========================================================
 Private Sub CloseIfAlreadyOpen(ByVal targetPath As String)
@@ -1281,12 +1178,7 @@ Private Function LastDataRow(ByVal ws As Worksheet) As Long
     End If
 End Function
 
-' v is ByRef on purpose. A Variant holding an array that is passed ByVal is
-' copied in full on every call, so reading one row cost a copy of the whole
-' column. Harmless at a few hundred rows; at 600,000 rows every loop that
-' reads through a column made 600,000 copies of a 600,000-row array, which
-' never finishes - Excel goes "Not Responding" and has to be killed.
-Private Function ArrCell(ByRef v As Variant, ByVal idx As Long) As Variant
+Private Function ArrCell(ByVal v As Variant, ByVal idx As Long) As Variant
     If IsArray(v) Then
         ArrCell = v(idx, 1)
     Else
@@ -1295,16 +1187,7 @@ Private Function ArrCell(ByRef v As Variant, ByVal idx As Long) As Variant
 End Function
 
 ' ==========================================================
-' FilterRowsFast - keeps the rows that match, deletes the rest
-' ==========================================================
-' Rows are removed by sorting, not by filtering and deleting what's visible.
-' A filter leaves every run of unwanted rows as its own area, and deleting a
-' range made of thousands of areas is one of the slowest things Excel does -
-' with hundreds of thousands of rows it can run for an hour or run out of
-' memory. Instead each kept row gets its own row number as a sort key and
-' each dropped row gets DROP_KEY_OFFSET plus its row number, so one ascending
-' sort puts every kept row first, still in its original order, with the
-' dropped rows in a single block below them that is deleted in one go.
+' FilterRowsFast - high-performance bulk row deletion via AutoFilter
 ' ==========================================================
 Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
     ByVal wantVal As String, ByVal dateCol As Long, ByVal useWindow As Boolean, _
@@ -1312,8 +1195,9 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
 
     Dim lastRow As Long, lastCol As Long, helperCol As Long, r As Long
     Dim sVals As Variant, dVals As Variant, dv As Variant
-    Dim keep As Boolean, keptCount As Long
-    Dim sortKeys() As Variant
+    Dim keep As Boolean, anyDelete As Boolean
+    Dim flags() As Variant
+    Dim delRange As Range
 
     lastRow = LastDataRow(ws)
     If lastRow < 2 Then Exit Sub
@@ -1328,8 +1212,8 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
     If splitCol > 0 Then sVals = ws.Range(ws.Cells(2, splitCol), ws.Cells(lastRow, splitCol)).Value
     If dateCol > 0 Then dVals = ws.Range(ws.Cells(2, dateCol), ws.Cells(lastRow, dateCol)).Value
 
-    ReDim sortKeys(1 To lastRow - 1, 1 To 1)
-    keptCount = 0
+    ReDim flags(1 To lastRow - 1, 1 To 1)
+    anyDelete = False
     For r = 1 To lastRow - 1
         keep = True
         If splitCol > 0 And Len(wantVal) > 0 Then
@@ -1344,68 +1228,32 @@ Private Sub FilterRowsFast(ByVal ws As Worksheet, ByVal splitCol As Long, _
             End If
         End If
         If keep Then
-            sortKeys(r, 1) = r
-            keptCount = keptCount + 1
+            flags(r, 1) = "K"
         Else
-            sortKeys(r, 1) = DROP_KEY_OFFSET + r
+            flags(r, 1) = "D"
+            anyDelete = True
         End If
     Next r
 
-    If keptCount = lastRow - 1 Then Exit Sub
+    If Not anyDelete Then Exit Sub
 
     On Error Resume Next
     If ws.AutoFilterMode Then ws.AutoFilterMode = False
     On Error GoTo 0
 
     ws.Cells(1, helperCol).Value = "_flag"
-    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = sortKeys
-    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, helperCol)).Sort _
-        Key1:=ws.Cells(1, helperCol), Order1:=xlAscending, Header:=xlYes
-    ws.Range(ws.Rows(keptCount + 2), ws.Rows(lastRow)).Delete
+    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).Value = flags
+    ws.Range(ws.Cells(1, helperCol), ws.Cells(lastRow, helperCol)).AutoFilter Field:=1, Criteria1:="D"
+
+    On Error Resume Next
+    Set delRange = ws.Range(ws.Cells(2, helperCol), ws.Cells(lastRow, helperCol)).SpecialCells(xlCellTypeVisible)
+    On Error GoTo 0
+    If Not delRange Is Nothing Then delRange.EntireRow.Delete
+
+    On Error Resume Next
+    ws.AutoFilterMode = False
+    On Error GoTo 0
     ws.Columns(helperCol).Delete
-End Sub
-
-' ==========================================================
-' FreezeValuesByColumn - UsedRange.Value = UsedRange.Value, a column at a time
-' ==========================================================
-' Same result as rewriting the whole sheet in one go, but that holds the
-' entire sheet in memory as one array: 600,000 rows x 38 columns is 22
-' million values, several hundred MB before any text, which fails with "Out
-' of memory" or takes Excel down with it. One column is about 10 MB.
-' ==========================================================
-Private Sub FreezeValuesByColumn(ByVal ws As Worksheet)
-    Dim col As Range
-    For Each col In ws.UsedRange.Columns
-        col.Value = col.Value
-    Next col
-End Sub
-
-' ==========================================================
-' TidyDataSheet - the column/row fit every exported data sheet gets
-' ==========================================================
-' Up to TIDY_FULL_FIT_ROWS rows: exactly as before - fit the columns, wrap
-' text, fit every row to its wrapped text, align to the top.
-'
-' Above that, the fitting is what hangs Excel. Fitting a column measures
-' every cell in it and fitting a wrapped row measures every cell across it,
-' so at 600,000 rows x 38 columns each pass measures 22 million cells, on
-' every sheet it runs on. Big sheets fit their columns to the first
-' TIDY_SAMPLE_ROWS rows and stay unwrapped at standard row height.
-' ==========================================================
-Private Sub TidyDataSheet(ByVal ws As Worksheet)
-    If LastDataRow(ws) <= TIDY_FULL_FIT_ROWS Then
-        With ws.Cells
-            .WrapText = False
-            .EntireColumn.AutoFit
-            .WrapText = True
-            .EntireRow.AutoFit
-            .VerticalAlignment = xlTop
-        End With
-    Else
-        ws.Cells.WrapText = False
-        ws.Range(ws.Rows(1), ws.Rows(TIDY_SAMPLE_ROWS)).Columns.AutoFit
-        ws.Cells.VerticalAlignment = xlTop
-    End If
 End Sub
 
 ' ==========================================================
@@ -1461,3 +1309,4 @@ Private Sub CleanTransactionData(ByVal ws As Worksheet)
 
     On Error GoTo 0
 End Sub
+
