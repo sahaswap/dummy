@@ -1,9 +1,14 @@
 Attribute VB_Name = "Module9"
 Option Explicit
 
-' Set by Import_ECM_Info (modECMImport) to run this export in a fixed mode
-' ("LEGACY" / "EN" / "PIVOT") without showing the picker. Cleared on use.
+' Set by modECMImport (Import ECM Info / auto-import) to run this export in a
+' fixed mode ("LEGACY" / "EN" / "PIVOT") without showing the picker. Cleared on use.
 Public gExportModeOverride As String
+' gExportQuiet (auto-import batch): no completion or empty-window message, and
+' the EN export's two saved files are closed instead of left open.
+' gExportLastResult is set to "OK" when an export finishes.
+Public gExportQuiet As Boolean
+Public gExportLastResult As String
 
 Sub Consolidated_AML_Workflow()
 
@@ -229,6 +234,7 @@ If exportMode = "PIVOT" Then
     Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
     On Error GoTo 0
 
+    gExportLastResult = "OK"
     MsgBox "Pivot Analysis export complete!" & vbCrLf & _
         "ConsolidatedData was not touched." & vbCrLf & _
         "Saved to:" & vbCrLf & pivotSavePath, vbInformation, "Success"
@@ -498,7 +504,7 @@ If exportMode = "EN" Then
         winStartEN = DateSerial(Year(minAlerted), Month(minAlerted), 1)
         winEndEN = DateSerial(Year(maxAlerted), Month(maxAlerted) + 1, 0)
     Else
-        MsgBox "No 'Yes' alerted transactions were found, so the Non Alerted window can't be built. The Non Alerted sheet will be empty.", vbExclamation, "No Alerted Rows"
+        If Not gExportQuiet Then MsgBox "No 'Yes' alerted transactions were found, so the Non Alerted window can't be built. The Non Alerted sheet will be empty.", vbExclamation, "No Alerted Rows"
     End If
 
     Set newWb = Workbooks.Add
@@ -610,6 +616,12 @@ If exportMode = "EN" Then
     Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
     On Error GoTo 0
 
+    gExportLastResult = "OK"
+    If gExportQuiet Then
+        CloseSavedExport lbSavedPath
+        CloseSavedExport finalSavePath
+        Exit Sub
+    End If
     MsgBox "EN Network export complete! Both files were generated:" & vbCrLf & vbCrLf & _
         "Lookback Transactions:" & vbCrLf & lbSavedPath & vbCrLf & vbCrLf & _
         "Alerted / Non-Alerted Transactions:" & vbCrLf & finalSavePath, vbInformation, "Success"
@@ -851,6 +863,7 @@ On Error Resume Next
 Application.OnTime Now + TimeSerial(0, 0, 1), "PushTrxTracker_Deferred"
 On Error GoTo 0
 
+gExportLastResult = "OK"
 MsgBox "Workflow Complete!" & vbCrLf & _
 "Exported file inside the folder exactly to: " & vbCrLf & finalSavePath, vbInformation, "Success"
 Exit Sub
