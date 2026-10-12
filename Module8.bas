@@ -11,7 +11,16 @@ Set wsHome = ThisWorkbook.Sheets("Sheet1")
 ecmID = Trim(wsHome.Range("J9").Value)
 
 If ecmID = "" Then
-MsgBox "Action Denied: ECM ID is missing." & vbCrLf & "Please fill in the ECM ID before clicking START.", vbCritical, "Missing ID"
+' No ECM ID yet: offer to fill the case from the ECM export file
+' (modECMImport), which also creates these folders and copies the
+' transaction file in.
+If MsgBox("ECM ID is empty." & vbCrLf & vbCrLf & _
+          "Fill the case from the ECM export file (ECM_Alert_Info_....csv) in Downloads?", _
+          vbYesNo + vbQuestion, "START") = vbYes Then
+    Import_ECM_Info
+Else
+    MsgBox "Action Denied: ECM ID is missing." & vbCrLf & "Please fill in the ECM ID before clicking START.", vbCritical, "Missing ID"
+End If
 Exit Sub
 End If
 
@@ -45,19 +54,9 @@ If Not FSO.FolderExists(otherFolderPath) Then
 FSO.CreateFolder otherFolderPath
 End If
 
-' Centralized audit ledger row - also seeds this case's own
-' Register tab inside its Desktop\{ecmID}\{ecmID}_Audit_Log.xlsx.
-modAuditLog.LogAuditEvent ecmID:=ecmID, _
-AlertID:=Trim(wsHome.Range("J10").Value), _
-customerName:=Trim(wsHome.Range("J13").Value), _
-counterparties:=modAuditLog.GetCounterpartyList(wsHome), _
-eventType:="Case Folder Created", _
-outputFile:=mainFolderPath, _
-toolVersion:="n/a", _
-notes:="Transaction Files and Pivot folders created"
-
 ' Open the main case folder so the analyst sees both sub-folders.
 Shell "explorer.exe """ & mainFolderPath & """", vbNormalFocus
 End Sub
+
 
 
