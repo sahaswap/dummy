@@ -19,7 +19,7 @@ Option Explicit
 '
 ' Also adds a [Country Risk] tag to Sheet7 for the "Country Risk Rating"
 ' line, followed by the country's ISO Code 2 (L27, which Sheet1 keeps in
-' step with the country name), e.g. High CY:
+' step with the country name) in brackets, e.g. High (CY):
 '   - Sheet1's PDF Risk Class (R27) whenever it has a rating;
 '   - otherwise the Excel Risk Class (T27). The country table marks "no
 '     PDF rating" as N/A, and a blank lookup comes back as 0, so N/A,
@@ -181,8 +181,8 @@ Sub SetNonEscalationTemplate()
     If tagRow = 0 Then tagRow = lastRow + 1
     ws7.Cells(tagRow, "J").Value = "[Country Risk]"
     ws7.Cells(tagRow, "K").Formula = _
-        "=IF(OR(Sheet1!$R$27="""",Sheet1!$R$27=""N/A"",Sheet1!$R$27=0),IF(OR(Sheet1!$T$27="""",Sheet1!$T$27=0),"""",Sheet1!$T$27&IF(Sheet1!$L$27="""","""","" ""&Sheet1!$L$27))" & _
-        ",Sheet1!$R$27&IF(Sheet1!$L$27="""","""","" ""&Sheet1!$L$27))"
+        "=IF(OR(Sheet1!$R$27="""",Sheet1!$R$27=""N/A"",Sheet1!$R$27=0),IF(OR(Sheet1!$T$27="""",Sheet1!$T$27=0),"""",Sheet1!$T$27&IF(Sheet1!$L$27="""","""","" (""&Sheet1!$L$27&"")""))" & _
+        ",Sheet1!$R$27&IF(Sheet1!$L$27="""","""","" (""&Sheet1!$L$27&"")""))"
 
     MsgBox "Non-Escalation template (Individual / Entity) written to Template_DB!B" & keyRow & "." & vbCrLf & _
            "[Country Risk] tag added to Sheet7 row " & tagRow & "." & vbCrLf & vbCrLf & _
