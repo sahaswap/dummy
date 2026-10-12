@@ -65,7 +65,12 @@ If restoreErrNum <> 0 Then
            vbCritical, "ClearForm"
 Else
     MsgBox "Form cleared.", vbInformation
+    ' Load the next waiting ECM alert straight away (modECMImport), if any.
+    On Error Resume Next
+    Application.Run "'" & ThisWorkbook.Name & "'!ECM_AfterReset"
+    On Error GoTo 0
 End If
 End Sub
+
 
 

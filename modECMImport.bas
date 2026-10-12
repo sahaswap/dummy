@@ -39,9 +39,14 @@ Option Explicit
 '              no prompts - and then leaves it for you to work. Press Reset
 '              when you are done and the next alert loads within ~10 seconds.
 '              Waiting alerts come from every ECM_Alert_Info csv in Downloads
-'              (moved to Downloads\ECM_Imported when picked up), oldest first;
-'              an alert counts as done once its Desktop case folder exists.
-'              A csv whose alerts are all done is renamed Done_<name>.
+'              (moved to Downloads\ECM_Imported when picked up), oldest first.
+'              Each csv keeps its own list of alerts already loaded
+'              (<csv name>_loaded.txt), so every new export is a fresh queue
+'              whatever is already on the Desktop. A csv whose alerts have all
+'              been loaded is renamed Done_<name>.
+'              Reset (ClearForm) calls ECM_AfterReset, which loads the next
+'              alert straight away and restarts the watcher if Excel lost it.
+'              ECM_Queue_Status shows what is waiting.
 '              StopEcmWatcher / StartEcmWatcher pause and resume it.
 '   MANUAL     START with an empty ECM ID, or Alt+F8 > Import_ECM_Info:
 '              pick the csv and the alert.
@@ -217,13 +222,13 @@ Private Sub PickUpNewExports()
     Next item
 End Sub
 
-' Finds the first waiting alert (oldest csv first, then file order): one whose
-' Desktop case folder does not exist yet. Sets csv / idx to it and returns how
-' many alerts are waiting in total. Csvs with nothing left are renamed Done_.
+' Finds the first waiting alert (oldest csv first, then file order): one not in
+' that csv's loaded list. Sets csv / idx to it and returns how many alerts are
+' waiting in total. Csvs with nothing left are renamed Done_.
 Private Function NextWaiting(ByRef csv As String, ByRef idx As Long) As Long
     Dim fso As Object, folder As String, f As String, files As New Collection
     Dim i As Long, j As Long, r As Long, pending As Long, total As Long
-    Dim paths() As String, times() As Date, tmpS As String, tmpT As Date
+    Dim paths() As String, times() As Date, tmpS As String, tmpT As Date, loadedList As String
     Set fso = CreateObject("Scripting.FileSystemObject")
     folder = DownloadsFolder() & "\" & IMPORTED_FOLDER
     csv = "": idx = 0
@@ -253,14 +258,17 @@ Private Function NextWaiting(ByRef csv As String, ByRef idx As Long) As Long
     For i = 1 To files.Count
         If LoadCsv(paths(i)) = "" Then
             pending = 0
+            loadedList = ReadLoaded(paths(i))
             For r = 2 To mRows.Count
-                If Not fso.FolderExists(CaseFolderPath(Field(mRows(r), mCEcm))) Then
+                If InStr(loadedList, "|" & Field(mRows(r), mCEcm) & "|") = 0 Then
                     pending = pending + 1
                     If csv = "" Then csv = paths(i): idx = r
                 End If
             Next r
             If pending = 0 Then
                 fso.MoveFile paths(i), folder & "\" & DONE_PREFIX & fso.GetFileName(paths(i))
+                If fso.FileExists(LoadedPath(paths(i))) Then _
+                    fso.MoveFile LoadedPath(paths(i)), folder & "\" & DONE_PREFIX & fso.GetFileName(LoadedPath(paths(i)))
             End If
             total = total + pending
         End If
@@ -275,6 +283,7 @@ Private Sub LoadQueued(ByVal ws As Worksheet, ByVal csv As String, ByVal idx As 
 
     If LoadCsv(csv) <> "" Then Exit Sub
     ecmID = Field(mRows(idx), mCEcm)
+    MarkLoaded csv, ecmID          ' first, so a failing alert can never block the queue
 
     ThisWorkbook.Activate
     ws.Activate
@@ -326,6 +335,62 @@ Private Sub PrepareToolWindow(ByVal ws As Worksheet)
     If ThisWorkbook.Windows(1).WindowState = WIN_MINIMIZED Then ThisWorkbook.Windows(1).WindowState = WIN_NORMAL
     If Application.WindowState = WIN_MINIMIZED Then Application.WindowState = WIN_NORMAL
     ws.Activate
+End Sub
+
+' Per-csv list of alerts the queue has already loaded: "<csv name>_loaded.txt".
+Private Function LoadedPath(ByVal csv As String) As String
+    LoadedPath = Left$(csv, Len(csv) - 4) & "_loaded.txt"
+End Function
+
+' The loaded list as "|id|id|...|" for quick InStr checks.
+Private Function ReadLoaded(ByVal csv As String) As String
+    Dim fso As Object, ts As Object, t As String
+    ReadLoaded = "|"
+    On Error Resume Next
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If Not fso.FileExists(LoadedPath(csv)) Then Exit Function
+    Set ts = fso.OpenTextFile(LoadedPath(csv), 1)
+    t = ts.ReadAll
+    ts.Close
+    ReadLoaded = "|" & Replace(Replace(t, vbCr, ""), vbLf, "|")
+    If Right$(ReadLoaded, 1) <> "|" Then ReadLoaded = ReadLoaded & "|"
+End Function
+
+Private Sub MarkLoaded(ByVal csv As String, ByVal ecmID As String)
+    Dim ts As Object
+    On Error Resume Next
+    Set ts = CreateObject("Scripting.FileSystemObject").OpenTextFile(LoadedPath(csv), 8, True)
+    ts.WriteLine ecmID
+    ts.Close
+End Sub
+
+' Called by Reset (ClearForm): load the next waiting alert now instead of at
+' the next 10-second check, and restart the watcher if Excel lost it.
+Public Sub ECM_AfterReset()
+    If Not mWatching Then StartEcmWatcher
+    If mBusy Then Exit Sub
+    mBusy = True
+    On Error Resume Next
+    CheckQueue
+    On Error GoTo 0
+    mBusy = False
+End Sub
+
+' Alt+F8 > ECM_Queue_Status: what the queue sees right now.
+Public Sub ECM_Queue_Status()
+    Dim csv As String, idx As Long, waiting As Long, msg As String
+    On Error Resume Next
+    PickUpNewExports
+    waiting = NextWaiting(csv, idx)
+    msg = "Watcher: " & IIf(mWatching, "ON", "OFF (run StartEcmWatcher, or press Reset)") & vbCrLf & _
+          "Case on the form (J9): " & IIf(Trim$(CStr(ThisWorkbook.Sheets("Sheet1").Range("J9").Value)) = "", "none", _
+                                          ThisWorkbook.Sheets("Sheet1").Range("J9").Value) & vbCrLf & _
+          "Alerts waiting: " & waiting & vbCrLf
+    If waiting > 0 Then
+        If LoadCsv(csv) = "" Then msg = msg & "Next: ECM " & Field(mRows(idx), mCEcm) & "  (from " & Mid$(csv, InStrRev(csv, "\") + 1) & ")" & vbCrLf
+    End If
+    msg = msg & vbCrLf & "Exports are read from: " & DownloadsFolder() & "\" & IMPORTED_FOLDER
+    MsgBox msg, vbInformation, "ECM queue"
 End Sub
 
 Private Sub WriteLog(ByVal ecmID As String, ByVal result As String)
