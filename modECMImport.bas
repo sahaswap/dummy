@@ -22,15 +22,16 @@ Option Explicit
 '   4. runs "Export Trx File" in AUTO_EXPORT_MODE (EN Network), no picker.
 '
 ' Two ways in:
-'   AUTOMATIC  The workbook watches Downloads (started on open by Auto_Open).
-'              When a new ECM_Alert_Info csv appears it moves it to
-'              Downloads\ECM_Imported and runs steps 1-4 for every alert in
-'              it, one after another, with no prompts. Sheet1 is left on the
-'              last alert. A new export is only picked up while the form is
-'              empty or untouched since the last import (no Decision, Template
-'              or counterparties entered) - otherwise the status bar asks for
-'              Reset, so work in progress is never overwritten.
-'              StopEcmWatcher / StartEcmWatcher turn it off and on.
+'   AUTOMATIC  The workbook watches Downloads (started on open by Auto_Open)
+'              and works as a queue, ONE CASE AT A TIME: whenever the form is
+'              empty (after Reset) it loads the next waiting alert - steps 1-4,
+'              no prompts - and then leaves it for you to work. Press Reset
+'              when you are done and the next alert loads within ~10 seconds.
+'              Waiting alerts come from every ECM_Alert_Info csv in Downloads
+'              (moved to Downloads\ECM_Imported when picked up), oldest first;
+'              an alert counts as done once its Desktop case folder exists.
+'              A csv whose alerts are all done is renamed Done_<name>.
+'              StopEcmWatcher / StartEcmWatcher pause and resume it.
 '   MANUAL     START with an empty ECM ID, or Alt+F8 > Import_ECM_Info:
 '              pick the csv and the alert.
 ' ==========================================================================
@@ -39,21 +40,18 @@ Private Const PWD As String = "p7ss"
 Private Const MAX_LISTED As Long = 15
 Private Const AUTO_EXPORT_MODE As String = "EN"   ' "EN" / "LEGACY" / "PIVOT" / "" = do not export
 Private Const WATCH_SECONDS As Long = 10          ' how often Downloads is checked
-Private Const NEXT_ALERT_SECONDS As Long = 5      ' gap between alerts in a batch
 Private Const IMPORTED_FOLDER As String = "ECM_Imported"
+Private Const DONE_PREFIX As String = "Done_"
+Private Const LOG_NAME As String = "ECM_import_log.txt"
 
 ' Loaded csv
 Private mRows As Collection
 Private mCEcm As Long, mCVel As Long, mCCust As Long, mCAddr As Long, mCCountry As Long, mCFile As Long
 
-' Watcher / batch state
+' Watcher state
 Private mWatching As Boolean
 Private mNextTick As Date
-Private mBatchCsv As String
-Private mBatchNext As Long
-Private mBatchLog As String
-Private mBatchOk As Long
-Private mBatchFailed As Long
+Private mBusy As Boolean
 
 ' ==========================================================================
 ' MANUAL
@@ -108,7 +106,7 @@ Fail:
 End Sub
 
 ' ==========================================================================
-' AUTOMATIC - Downloads watcher
+' AUTOMATIC - Downloads watcher, one case at a time
 ' ==========================================================================
 Public Sub Auto_Open()
     StartEcmWatcher
@@ -121,7 +119,7 @@ End Sub
 Public Sub StartEcmWatcher()
     mWatching = True
     ScheduleTick
-    Application.StatusBar = "ECM auto-import is on - watching Downloads for ECM exports."
+    Application.StatusBar = "ECM auto-import is on - the next waiting alert loads whenever the form is empty."
 End Sub
 
 Public Sub StopEcmWatcher()
@@ -143,100 +141,126 @@ End Function
 
 Public Sub ECM_Watch_Tick()
     If Not mWatching Then Exit Sub
-    On Error Resume Next      ' a failed check must never stop the watcher
-    CheckDownloads
-    On Error GoTo 0
+    If Not mBusy Then
+        mBusy = True
+        On Error Resume Next      ' a failed check must never stop the watcher
+        CheckQueue
+        On Error GoTo 0
+        mBusy = False
+    End If
     If mWatching Then ScheduleTick
 End Sub
 
-Private Sub CheckDownloads()
-    Dim csv As String
-    If mBatchCsv <> "" Then Exit Sub          ' a batch is already running
-    csv = WaitingCsv(DownloadsFolder())
-    If csv = "" Then Exit Sub
-    If FormInUse(ThisWorkbook.Sheets("Sheet1")) Then
-        Application.StatusBar = "New ECM export in Downloads - press Reset to import it " & _
-                                "(case " & ThisWorkbook.Sheets("Sheet1").Range("J9").Value & " is in progress)."
-    Else
-        StartBatch csv
-    End If
-End Sub
+' Picks up new exports, then - only if the form is empty - loads the next
+' waiting alert. A case on the form (J9 filled) is never replaced.
+Private Sub CheckQueue()
+    Dim ws As Worksheet, csv As String, idx As Long, waiting As Long
+    Set ws = ThisWorkbook.Sheets("Sheet1")
 
-' Work has started on the case on Sheet1 (Decision, Template or a counterparty
-' entered). An empty form, or one only filled by an import, is not "in use".
-Private Function FormInUse(ByVal ws As Worksheet) As Boolean
-    Dim r As Long
-    If Trim$(CStr(ws.Range("J9").Value)) = "" Then Exit Function
-    If Trim$(CStr(ws.Range("J5").Value)) <> "" Or Trim$(CStr(ws.Range("J6").Value)) <> "" Then FormInUse = True: Exit Function
-    For r = 18 To 23
-        If Trim$(CStr(ws.Cells(r, "J").Value)) <> "" Then FormInUse = True: Exit Function
-    Next r
-End Function
+    PickUpNewExports
+    waiting = NextWaiting(csv, idx)
 
-' Oldest ECM_Alert_Info csv sitting directly in Downloads that has finished
-' saving (unchanged for 3 seconds). Processed files are moved out, so anything
-' here is new.
-Private Function WaitingCsv(ByVal folder As String) As String
-    Dim f As String, best As String, bestT As Date, t As Date
-    On Error Resume Next
-    f = Dir$(folder & "\ECM_Alert_Info_*.csv")
-    Do While f <> ""
-        t = FileDateTime(folder & "\" & f)
-        If Now - t > TimeSerial(0, 0, 3) Then
-            If best = "" Or t < bestT Then best = folder & "\" & f: bestT = t
+    If Trim$(CStr(ws.Range("J9").Value)) <> "" Then
+        If waiting > 0 Then
+            Application.StatusBar = waiting & " ECM alert(s) waiting - press Reset when you finish case " & _
+                                    ws.Range("J9").Value & " to load the next one."
         End If
-        f = Dir$()
-    Loop
-    WaitingCsv = best
-End Function
-
-Private Sub StartBatch(ByVal csv As String)
-    Dim fso As Object, destFolder As String, dest As String, loadErr As String
-    Set fso = CreateObject("Scripting.FileSystemObject")
-
-    ' Move it out of Downloads first so it is only ever picked up once.
-    destFolder = DownloadsFolder() & "\" & IMPORTED_FOLDER
-    If Not fso.FolderExists(destFolder) Then fso.CreateFolder destFolder
-    dest = destFolder & "\" & fso.GetFileName(csv)
-    If fso.FileExists(dest) Then dest = destFolder & "\" & fso.GetBaseName(csv) & "_" & Format$(Now, "hhnnss") & ".csv"
-    fso.MoveFile csv, dest
-
-    loadErr = LoadCsv(dest)
-    If loadErr <> "" Then
-        Application.StatusBar = "ECM auto-import skipped " & fso.GetFileName(dest) & ": " & loadErr
         Exit Sub
     End If
+    If waiting = 0 Then Exit Sub
 
-    mBatchCsv = dest
-    mBatchNext = 2
-    mBatchLog = ""
-    mBatchOk = 0
-    mBatchFailed = 0
-    Application.StatusBar = "ECM auto-import: " & (mRows.Count - 1) & " alert(s) found - starting..."
-    Application.OnTime Now + TimeSerial(0, 0, 1), MacroRef("ECM_Batch_Next")
+    LoadQueued ws, csv, idx, waiting - 1
 End Sub
 
-' One alert per call, then schedules itself for the next one. The gap lets the
-' export's deferred tracker update run while Sheet1 still shows that alert.
-Public Sub ECM_Batch_Next()
-    Dim ws As Worksheet, idx As Long, total As Long, ecmID As String
-    Dim note As String, copied As String, result As String
+' Moves finished ECM_Alert_Info csvs from Downloads into ECM_Imported.
+' A file still being written (changed in the last 3 seconds) is left for the next check.
+Private Sub PickUpNewExports()
+    Dim fso As Object, folder As String, destFolder As String, f As String, dest As String
+    Dim found As New Collection, item As Variant
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    folder = DownloadsFolder()
+    destFolder = folder & "\" & IMPORTED_FOLDER
 
-    If mBatchCsv = "" Then Exit Sub
-    On Error GoTo Failed
-    If LoadCsv(mBatchCsv) <> "" Then GoTo Finish
+    f = Dir$(folder & "\ECM_Alert_Info_*.csv")
+    Do While f <> ""
+        If Now - FileDateTime(folder & "\" & f) > TimeSerial(0, 0, 3) Then found.Add f
+        f = Dir$()
+    Loop
+    If found.Count = 0 Then Exit Sub
 
-    idx = mBatchNext
-    total = mRows.Count - 1
-    If idx > mRows.Count Then GoTo Finish
+    If Not fso.FolderExists(destFolder) Then fso.CreateFolder destFolder
+    For Each item In found
+        dest = destFolder & "\" & item
+        If fso.FileExists(dest) Then dest = destFolder & "\" & fso.GetBaseName(item) & "_" & Format$(Now, "hhnnss") & ".csv"
+        fso.MoveFile folder & "\" & item, dest
+    Next item
+End Sub
+
+' Finds the first waiting alert (oldest csv first, then file order): one whose
+' Desktop case folder does not exist yet. Sets csv / idx to it and returns how
+' many alerts are waiting in total. Csvs with nothing left are renamed Done_.
+Private Function NextWaiting(ByRef csv As String, ByRef idx As Long) As Long
+    Dim fso As Object, folder As String, f As String, files As New Collection
+    Dim i As Long, j As Long, r As Long, pending As Long, total As Long
+    Dim paths() As String, times() As Date, tmpS As String, tmpT As Date
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    folder = DownloadsFolder() & "\" & IMPORTED_FOLDER
+    csv = "": idx = 0
+    If Not fso.FolderExists(folder) Then Exit Function
+
+    f = Dir$(folder & "\ECM_Alert_Info_*.csv")
+    Do While f <> ""
+        files.Add folder & "\" & f
+        f = Dir$()
+    Loop
+    If files.Count = 0 Then Exit Function
+
+    ' oldest first
+    ReDim paths(1 To files.Count): ReDim times(1 To files.Count)
+    For i = 1 To files.Count
+        paths(i) = files(i): times(i) = FileDateTime(files(i))
+    Next i
+    For i = 1 To files.Count - 1
+        For j = i + 1 To files.Count
+            If times(j) < times(i) Then
+                tmpS = paths(i): paths(i) = paths(j): paths(j) = tmpS
+                tmpT = times(i): times(i) = times(j): times(j) = tmpT
+            End If
+        Next j
+    Next i
+
+    For i = 1 To files.Count
+        If LoadCsv(paths(i)) = "" Then
+            pending = 0
+            For r = 2 To mRows.Count
+                If Not fso.FolderExists(CaseFolderPath(Field(mRows(r), mCEcm))) Then
+                    pending = pending + 1
+                    If csv = "" Then csv = paths(i): idx = r
+                End If
+            Next r
+            If pending = 0 Then
+                fso.MoveFile paths(i), folder & "\" & DONE_PREFIX & fso.GetFileName(paths(i))
+            End If
+            total = total + pending
+        End If
+    Next i
+    NextWaiting = total
+End Function
+
+' Steps 1-4 for one queued alert, with no prompts. Leaves the case on Sheet1
+' for the analyst. Only a failure shows a message.
+Private Sub LoadQueued(ByVal ws As Worksheet, ByVal csv As String, ByVal idx As Long, ByVal stillWaiting As Long)
+    Dim ecmID As String, note As String, copied As String, result As String
+
+    If LoadCsv(csv) <> "" Then Exit Sub
     ecmID = Field(mRows(idx), mCEcm)
 
     ThisWorkbook.Activate
-    Set ws = ThisWorkbook.Sheets("Sheet1")
     ws.Activate
-    Application.StatusBar = "ECM auto-import: alert " & (idx - 1) & " of " & total & " (ECM " & ecmID & ")..."
+    Application.StatusBar = "ECM auto-import: loading ECM " & ecmID & "..."
 
-    copied = ImportRow(ws, idx, mBatchCsv, note)
+    On Error GoTo Failed
+    copied = ImportRow(ws, idx, csv, note)
     If copied = "" Then
         result = "transaction file not found in Downloads"
     ElseIf AUTO_EXPORT_MODE = "" Then
@@ -245,43 +269,34 @@ Public Sub ECM_Batch_Next()
         result = RunAutoExport(True)
         If result = "" Then result = "export did not finish (see its message)"
     End If
-    GoTo Record
+    GoTo Report
 
 Failed:
     result = "error " & Err.Number & ": " & Err.Description
-    ProtectSheet ThisWorkbook.Sheets("Sheet1")
+    ProtectSheet ws
     Application.EnableEvents = True
-    Resume Record
+    Resume Report
 
-Record:
-    If result = "OK" Then mBatchOk = mBatchOk + 1 Else mBatchFailed = mBatchFailed + 1
-    mBatchLog = mBatchLog & ecmID & vbTab & result & vbCrLf
-    mBatchNext = idx + 1
-    If mBatchNext <= mRows.Count Then
-        Application.OnTime Now + TimeSerial(0, 0, NEXT_ALERT_SECONDS), MacroRef("ECM_Batch_Next")
-        Exit Sub
+Report:
+    WriteLog ecmID, result
+    If result = "OK" Then
+        Application.StatusBar = "ECM " & ecmID & " loaded and exported. " & _
+            IIf(stillWaiting > 0, stillWaiting & " more waiting - press Reset when done to load the next.", "No more alerts waiting.")
+    Else
+        Application.StatusBar = False
+        MsgBox "ECM auto-import - case " & ecmID & ":" & vbCrLf & result & vbCrLf & vbCrLf & note, _
+               vbExclamation, "ECM auto-import"
     End If
-
-Finish:
-    FinishBatch
 End Sub
 
-Private Sub FinishBatch()
-    Dim logPath As String, msg As String, ts As Object
+Private Sub WriteLog(ByVal ecmID As String, ByVal result As String)
+    Dim fso As Object, ts As Object, path As String
     On Error Resume Next
-    logPath = Left$(mBatchCsv, Len(mBatchCsv) - 4) & "_import_log.txt"
-    Set ts = CreateObject("Scripting.FileSystemObject").CreateTextFile(logPath, True)
-    ts.Write "ECM ID" & vbTab & "Result" & vbCrLf & mBatchLog
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    path = DownloadsFolder() & "\" & IMPORTED_FOLDER & "\" & LOG_NAME
+    Set ts = fso.OpenTextFile(path, 8, True)     ' 8 = append, create if missing
+    ts.WriteLine Format$(Now, "yyyy-mm-dd hh:nn:ss") & vbTab & ecmID & vbTab & result
     ts.Close
-    On Error GoTo 0
-
-    msg = "ECM auto-import finished: " & mBatchOk & " OK" & IIf(mBatchFailed > 0, ", " & mBatchFailed & " failed", "") & _
-          ". Sheet1 shows ECM " & ThisWorkbook.Sheets("Sheet1").Range("J9").Value & "."
-    Application.StatusBar = msg
-    If mBatchFailed > 0 Then
-        MsgBox msg & vbCrLf & vbCrLf & mBatchLog & vbCrLf & "Log: " & logPath, vbExclamation, "ECM auto-import"
-    End If
-    mBatchCsv = ""
 End Sub
 
 ' ==========================================================================
@@ -391,15 +406,18 @@ End Function
 ' file picker. Returns "" if cancelled.
 ' --------------------------------------------------------------------------
 Private Function ChooseCsv() As String
-    Dim folder As String, newest As String, ans As VbMsgBoxResult
+    Dim folder As String, newest As String, imported As String, ans As VbMsgBoxResult
     Dim picked As Variant
 
     folder = DownloadsFolder()
     newest = NewestCsv(folder)
-    If newest = "" Then newest = NewestCsv(folder & "\" & IMPORTED_FOLDER)
-    If newest <> "" And NewestCsv(folder & "\" & IMPORTED_FOLDER) <> "" Then
-        If FileDateTime(NewestCsv(folder & "\" & IMPORTED_FOLDER)) > FileDateTime(newest) Then _
-            newest = NewestCsv(folder & "\" & IMPORTED_FOLDER)
+    imported = NewestCsv(folder & "\" & IMPORTED_FOLDER)
+    If imported <> "" Then
+        If newest = "" Then
+            newest = imported
+        ElseIf FileDateTime(imported) > FileDateTime(newest) Then
+            newest = imported
+        End If
     End If
 
     If newest <> "" Then
@@ -424,7 +442,7 @@ End Function
 Private Function NewestCsv(ByVal folder As String) As String
     Dim f As String, best As String, bestT As Date, t As Date
     On Error Resume Next
-    f = Dir$(folder & "\ECM_Alert_Info_*.csv")
+    f = Dir$(folder & "\*ECM_Alert_Info_*.csv")       ' includes Done_ files
     Do While f <> ""
         t = FileDateTime(folder & "\" & f)
         If best = "" Or t > bestT Then best = folder & "\" & f: bestT = t
@@ -521,16 +539,21 @@ End Function
 ' --------------------------------------------------------------------------
 ' Case folders - same location rule as START (Start_Button_Create_Folders).
 ' --------------------------------------------------------------------------
-Private Function MakeCaseFolders(ByVal ecmID As String) As String
-    Dim fso As Object, userProfile As String, desktopPath As String, mainFolder As String
+Private Function CaseFolderPath(ByVal ecmID As String) As String
+    Dim fso As Object, userProfile As String
     Set fso = CreateObject("Scripting.FileSystemObject")
     userProfile = Environ$("USERPROFILE")
     If fso.FolderExists(userProfile & "\OneDrive - Community Federal Savings Bank\Desktop") Then
-        desktopPath = userProfile & "\OneDrive - Community Federal Savings Bank\Desktop"
+        CaseFolderPath = userProfile & "\OneDrive - Community Federal Savings Bank\Desktop\" & ecmID
     Else
-        desktopPath = userProfile & "\Desktop"
+        CaseFolderPath = userProfile & "\Desktop\" & ecmID
     End If
-    mainFolder = desktopPath & "\" & ecmID
+End Function
+
+Private Function MakeCaseFolders(ByVal ecmID As String) As String
+    Dim fso As Object, mainFolder As String
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    mainFolder = CaseFolderPath(ecmID)
     If Not fso.FolderExists(mainFolder) Then fso.CreateFolder mainFolder
     If Not fso.FolderExists(mainFolder & "\Transaction Files") Then fso.CreateFolder mainFolder & "\Transaction Files"
     If Not fso.FolderExists(mainFolder & "\Pivot") Then fso.CreateFolder mainFolder & "\Pivot"
