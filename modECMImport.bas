@@ -16,15 +16,17 @@ Option Explicit
 ' Cells are written one at a time with events on, so Sheet1 applies its
 ' usual auto-capitalisation exactly as if they had been typed.
 '
-' Then creates the case folders (same rule as START) and copies the alert's
+' Then creates the case folders (same rule as START), copies the alert's
 ' transaction file from Downloads into <Desktop>\<ECM>\Transaction Files,
-' ready for "Export Trx File".
+' and runs "Export Trx File" in the AUTO_EXPORT_MODE format (EN Network) -
+' no picker. Set AUTO_EXPORT_MODE to "" to stop after the copy instead.
 '
 ' Run it from START (when the ECM ID is empty) or with Alt+F8 > Import_ECM_Info.
 ' ==========================================================================
 
 Private Const PWD As String = "p7ss"
 Private Const MAX_LISTED As Long = 15
+Private Const AUTO_EXPORT_MODE As String = "EN"   ' "EN" / "LEGACY" / "PIVOT" / "" = do not export
 
 Public Sub Import_ECM_Info()
     Dim ws As Worksheet
@@ -119,8 +121,18 @@ Public Sub Import_ECM_Info()
                   "   " & caseFolder & "\Transaction Files" & vbCrLf
     End If
 
-    summary = summary & vbCrLf & "Next: choose Decision and Template, then click Export Trx File."
-    MsgBox summary, vbInformation, "Import ECM Info"
+    If copied <> "" And AUTO_EXPORT_MODE <> "" Then
+        summary = summary & vbCrLf & "Click OK to run Export Trx File (" & ExportModeName(AUTO_EXPORT_MODE) & ") now." & _
+                  vbCrLf & "Then choose Decision and Template as usual."
+        If MsgBox(summary, vbOKCancel + vbInformation, "Import ECM Info") = vbOK Then
+            gExportModeOverride = AUTO_EXPORT_MODE
+            Consolidated_AML_Workflow
+            gExportModeOverride = ""
+        End If
+    Else
+        summary = summary & vbCrLf & "Next: choose Decision and Template, then click Export Trx File."
+        MsgBox summary, vbInformation, "Import ECM Info"
+    End If
     Exit Sub
 
 Fail:
@@ -243,6 +255,14 @@ Private Sub FillCountryFromIso2(ByVal ws As Worksheet, ByVal iso2 As String)
     PutValue ws, "G27", CStr(ws.Range("O37:O290").Cells(CLng(m), 1).Value)
     PutValue ws, "O27", CStr(ws.Range("Q37:Q290").Cells(CLng(m), 1).Value)
 End Sub
+
+Private Function ExportModeName(ByVal mode As String) As String
+    Select Case UCase$(mode)
+        Case "EN": ExportModeName = "EN Network"
+        Case "PIVOT": ExportModeName = "Pivot Analysis"
+        Case Else: ExportModeName = "Legacy"
+    End Select
+End Function
 
 ' "US - United States" -> "US"; a bare 2-letter code is returned as is.
 Private Function CountryCode(ByVal v As String) As String
