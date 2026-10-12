@@ -122,13 +122,14 @@ Public Sub Import_ECM_Info()
     End If
 
     If copied <> "" And AUTO_EXPORT_MODE <> "" Then
-        summary = summary & vbCrLf & "Click OK to run Export Trx File (" & ExportModeName(AUTO_EXPORT_MODE) & ") now." & _
-                  vbCrLf & "Then choose Decision and Template as usual."
-        If MsgBox(summary, vbOKCancel + vbInformation, "Import ECM Info") = vbOK Then
-            gExportModeOverride = AUTO_EXPORT_MODE
-            Consolidated_AML_Workflow
-            gExportModeOverride = ""
-        End If
+        ' Straight on to the export - no prompt. Its own completion message
+        ' ends the run.
+        Application.StatusBar = "ECM case " & ecmID & " imported - running Export Trx File (" & _
+                                ExportModeName(AUTO_EXPORT_MODE) & ")..."
+        gExportModeOverride = AUTO_EXPORT_MODE
+        Consolidated_AML_Workflow
+        gExportModeOverride = ""
+        Application.StatusBar = False
     Else
         summary = summary & vbCrLf & "Next: choose Decision and Template, then click Export Trx File."
         MsgBox summary, vbInformation, "Import ECM Info"
