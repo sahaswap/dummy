@@ -21,6 +21,14 @@ Option Explicit
 '      <Desktop>\<ECM>\Transaction Files;
 '   4. runs "Export Trx File" in AUTO_EXPORT_MODE (EN Network), no picker.
 '
+' Failsafe - nothing already made for a case is made again:
+'   - a Transaction Files folder that already has an Excel file is not copied into;
+'   - if the case folder already has its EN "Combined Alerted & Non Alerted
+'     Transactions" file, the export is not re-run; instead ConsolidatedData is
+'     reloaded from that file's "Alerted Transaction" sheet (what the export
+'     itself would put there), so the narrative still matches the case.
+'   (The Export Trx File button itself is unchanged and always rebuilds.)
+'
 ' Two ways in:
 '   AUTOMATIC  The workbook watches Downloads (started on open by Auto_Open)
 '              and works as a queue, ONE CASE AT A TIME: whenever the form is
@@ -58,7 +66,7 @@ Private mBusy As Boolean
 ' ==========================================================================
 Public Sub Import_ECM_Info()
     Dim ws As Worksheet, csvPath As String, loadErr As String
-    Dim pick As Long, ecmID As String, note As String, copied As String
+    Dim pick As Long, ecmID As String, note As String, copied As String, result As String
 
     Set ws = ThisWorkbook.Sheets("Sheet1")
 
@@ -86,8 +94,14 @@ Public Sub Import_ECM_Info()
         ' Straight on to the export - no prompt. Its own completion message ends the run.
         Application.StatusBar = "ECM case " & ecmID & " imported - running Export Trx File (" & _
                                 ExportModeName(AUTO_EXPORT_MODE) & ")..."
-        RunAutoExport False
+        result = RunAutoExport(ecmID, False)
         Application.StatusBar = False
+        If result <> "OK" And Left$(result, 2) = "OK" Then
+            MsgBox note & vbCrLf & "EN Network files already exist for this case - " & Mid$(result, 6) & ".", _
+                   vbInformation, "Import ECM Info"
+        ElseIf result <> "OK" And result <> "" Then
+            MsgBox note & vbCrLf & result, vbExclamation, "Import ECM Info"
+        End If
     Else
         MsgBox note & vbCrLf & "Next: choose Decision and Template, then click Export Trx File.", _
                vbInformation, "Import ECM Info"
@@ -266,7 +280,7 @@ Private Sub LoadQueued(ByVal ws As Worksheet, ByVal csv As String, ByVal idx As 
     ElseIf AUTO_EXPORT_MODE = "" Then
         result = "OK"
     Else
-        result = RunAutoExport(True)
+        result = RunAutoExport(ecmID, True)
         If result = "" Then result = "export did not finish (see its message)"
     End If
     GoTo Report
@@ -279,8 +293,8 @@ Failed:
 
 Report:
     WriteLog ecmID, result
-    If result = "OK" Then
-        Application.StatusBar = "ECM " & ecmID & " loaded and exported. " & _
+    If Left$(result, 2) = "OK" Then
+        Application.StatusBar = "ECM " & ecmID & IIf(result = "OK", " loaded and exported. ", " loaded (EN files already existed, not recreated). ") & _
             IIf(stillWaiting > 0, stillWaiting & " more waiting - press Reset when done to load the next.", "No more alerts waiting.")
     Else
         Application.StatusBar = False
@@ -363,6 +377,13 @@ Private Function ImportRow(ByVal ws As Worksheet, ByVal idx As Long, ByVal csvPa
     End If
 
     caseFolder = MakeCaseFolders(ecmID)
+    copied = FirstExcelIn(caseFolder & "\Transaction Files")
+    If copied <> "" Then
+        note = note & vbCrLf & "Transaction file already in the case folder (not copied again):" & vbCrLf & _
+               "   " & copied & vbCrLf
+        ImportRow = copied
+        Exit Function
+    End If
     copied = CopyTransactionFile(csvPath, Field(rec, mCFile), ecmID, caseFolder & "\Transaction Files")
     If copied <> "" Then
         note = note & vbCrLf & "Transaction file copied to:" & vbCrLf & "   " & copied & vbCrLf
@@ -374,8 +395,18 @@ Private Function ImportRow(ByVal ws As Worksheet, ByVal idx As Long, ByVal csvPa
 End Function
 
 ' Step 4. quiet = no completion message and the export's files are closed
-' (batch mode). Returns "OK" when the export finished, "" otherwise.
-Private Function RunAutoExport(ByVal quiet As Boolean) As String
+' (queue mode). Returns "OK" when the export finished, "OK - <what>" when the
+' EN files already existed and were reused, "" or an error text otherwise.
+Private Function RunAutoExport(ByVal ecmID As String, ByVal quiet As Boolean) As String
+    Dim existing As String
+    If UCase$(AUTO_EXPORT_MODE) = "EN" Then
+        existing = ExistingEnFile(ecmID)
+        If existing <> "" Then
+            RunAutoExport = ReuseEnFile(existing)
+            Exit Function
+        End If
+    End If
+
     gExportLastResult = ""
     gExportQuiet = quiet
     gExportModeOverride = AUTO_EXPORT_MODE
@@ -383,6 +414,56 @@ Private Function RunAutoExport(ByVal quiet As Boolean) As String
     gExportModeOverride = ""
     gExportQuiet = False
     RunAutoExport = gExportLastResult
+End Function
+
+' The case's EN "Combined Alerted & Non Alerted Transactions" file, if one was made before.
+Private Function ExistingEnFile(ByVal ecmID As String) As String
+    Dim folder As String, f As String
+    folder = CaseFolderPath(ecmID)
+    f = Dir$(folder & "\" & ecmID & "_*Combined Alerted & Non Alerted Transactions*.xls*")
+    Do While f <> ""
+        If Left$(f, 2) <> "~$" Then ExistingEnFile = folder & "\" & f: Exit Function
+        f = Dir$()
+    Loop
+End Function
+
+' Instead of rebuilding: fill ConsolidatedData from the existing file's
+' "Alerted Transaction" sheet, exactly as the EN export does, and refresh the
+' rule-name tag. The file itself is opened read-only and left untouched.
+Private Function ReuseEnFile(ByVal path As String) As String
+    Dim wb As Workbook, cd As Worksheet, wasOpen As Boolean, prevUpd As Boolean
+    prevUpd = Application.ScreenUpdating
+    On Error GoTo Fail
+    Application.ScreenUpdating = False
+
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, path, vbTextCompare) = 0 Then wasOpen = True: Exit For
+    Next wb
+    If Not wasOpen Then Set wb = Workbooks.Open(path, ReadOnly:=True, UpdateLinks:=False)
+
+    Set cd = ThisWorkbook.Sheets("ConsolidatedData")
+    ThisWorkbook.Unprotect Password:=PWD
+    cd.Unprotect Password:=PWD
+    cd.Cells.Clear
+    wb.Sheets("Alerted Transaction").UsedRange.Copy Destination:=cd.Range("A1")
+    If Not wasOpen Then wb.Close SaveChanges:=False
+
+    On Error Resume Next
+    RefreshRuleNameTag
+    cd.Protect Password:=PWD
+    ThisWorkbook.Protect Password:=PWD, Structure:=True
+    ThisWorkbook.Sheets("Sheet1").Activate
+    On Error GoTo 0
+    Application.ScreenUpdating = prevUpd
+    ReuseEnFile = "OK - existing EN file reused, not recreated"
+    Exit Function
+
+Fail:
+    ReuseEnFile = "could not reuse existing EN file (" & Err.Description & "): " & path
+    On Error Resume Next
+    If Not wasOpen And Not wb Is Nothing Then wb.Close SaveChanges:=False
+    ThisWorkbook.Protect Password:=PWD, Structure:=True
+    Application.ScreenUpdating = prevUpd
 End Function
 
 ' Closes an open workbook by full path, without saving (it was just saved).
@@ -560,6 +641,16 @@ Private Function MakeCaseFolders(ByVal ecmID As String) As String
     MakeCaseFolders = mainFolder
 End Function
 
+' First Excel file in a folder (ignores Excel's ~$ lock files), or "".
+Private Function FirstExcelIn(ByVal folder As String) As String
+    Dim f As String
+    f = Dir$(folder & "\*.xls*")
+    Do While f <> ""
+        If Left$(f, 2) <> "~$" Then FirstExcelIn = folder & "\" & f: Exit Function
+        f = Dir$()
+    Loop
+End Function
+
 ' Copies the alert's transaction file (named in the CSV, else the newest
 ' "<ECM ID>_*.xls*") into destFolder, looking next to the CSV and in
 ' Downloads. Returns the new path, or "".
@@ -588,7 +679,7 @@ Private Function CopyTransactionFile(ByVal csvPath As String, ByVal trxFile As S
     End If
     If src = "" Then Exit Function
 
-    fso.CopyFile src, destFolder & "\", True
+    fso.CopyFile src, destFolder & "\", False     ' never overwrite
     CopyTransactionFile = destFolder & "\" & fso.GetFileName(src)
 End Function
 
