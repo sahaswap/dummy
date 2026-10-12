@@ -29,8 +29,8 @@ Option Explicit
 '     itself would put there), so the narrative still matches the case.
 '   (The Export Trx File button itself is unchanged and always rebuilds.)
 '
-' When a queued case is ready the tool window is brought to the front
-' (BRING_TO_FRONT), so you can go straight from Edge to working the case.
+' When a queued case is ready an on-top "case ready" message appears above
+' every window (NOTIFY_WHEN_READY); clicking OK leaves you in the tool on Sheet1.
 '
 ' Two ways in:
 '   AUTOMATIC  The workbook watches Downloads (started on open by Auto_Open)
@@ -48,14 +48,10 @@ Option Explicit
 ' ==========================================================================
 
 Private Const PWD As String = "p7ss"
-Private Const BRING_TO_FRONT As Boolean = True    ' show the tool window when a queued case is ready
-
-' Windows calls used to bring the Excel window to the front (64- and 32-bit Office 2010+).
-Private Declare PtrSafe Function SetForegroundWindow Lib "user32" (ByVal hwnd As LongPtr) As Long
-Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal hwnd As LongPtr, ByVal nCmdShow As Long) As Long
-Private Declare PtrSafe Function IsIconic Lib "user32" (ByVal hwnd As LongPtr) As Long
-Private Declare PtrSafe Sub keybd_event Lib "user32" (ByVal bVk As Byte, ByVal bScan As Byte, _
-                                                     ByVal dwFlags As Long, ByVal dwExtraInfo As LongPtr)
+Private Const NOTIFY_WHEN_READY As Boolean = True ' on-top "case ready" message when a queued case loads
+' MsgBox flags: system modal + set foreground + topmost, so the message shows
+' above Edge even though Excel is in the background.
+Private Const ON_TOP As Long = 4096 + 65536 + 262144    ' vbSystemModal + vbMsgBoxSetForeground + topmost
 Private Const MAX_LISTED As Long = 15
 Private Const AUTO_EXPORT_MODE As String = "EN"   ' "EN" / "LEGACY" / "PIVOT" / "" = do not export
 Private Const WATCH_SECONDS As Long = 10          ' how often Downloads is checked
@@ -304,36 +300,32 @@ Failed:
 
 Report:
     WriteLog ecmID, result
-    If BRING_TO_FRONT Then BringToolToFront
+    PrepareToolWindow ws
     If Left$(result, 2) = "OK" Then
         Application.StatusBar = "ECM " & ecmID & IIf(result = "OK", " loaded and exported. ", " loaded (EN files already existed, not recreated). ") & _
             IIf(stillWaiting > 0, stillWaiting & " more waiting - press Reset when done to load the next.", "No more alerts waiting.")
+        If NOTIFY_WHEN_READY Then
+            MsgBox "ECM case " & ecmID & " is ready in the tool." & vbCrLf & _
+                   IIf(stillWaiting > 0, stillWaiting & " more waiting after this one.", "No more alerts waiting.") & vbCrLf & vbCrLf & _
+                   "Click OK to work it.", vbInformation Or ON_TOP, "ECM case ready"
+        End If
     Else
         Application.StatusBar = False
         MsgBox "ECM auto-import - case " & ecmID & ":" & vbCrLf & result & vbCrLf & vbCrLf & note, _
-               vbExclamation, "ECM auto-import"
+               vbExclamation Or ON_TOP, "ECM auto-import"
     End If
 End Sub
 
-' Brings this workbook's window to the front, restoring it if minimised.
-' Windows only lets the program the user is working in (here: Edge) hand over
-' focus, so a background Excel normally just flashes in the taskbar. A brief
-' Alt key press counts as user input and lifts that lock - the usual workaround.
-Private Sub BringToolToFront()
-    Const SW_RESTORE As Long = 9
-    Const VK_MENU As Byte = &H12
-    Const KEYEVENTF_KEYUP As Long = 2
-    Dim h As LongPtr
+' Makes the tool the active workbook on Sheet1 and un-minimises it, so that
+' when the on-top message is closed you land straight in the case.
+Private Sub PrepareToolWindow(ByVal ws As Worksheet)
+    Const WIN_MINIMIZED As Long = -4140, WIN_NORMAL As Long = -4143   ' xlMinimized, xlNormal
     On Error Resume Next
     ThisWorkbook.Activate
     ThisWorkbook.Windows(1).Activate
-    ThisWorkbook.Sheets("Sheet1").Activate
-    h = Application.hwnd
-    If h = 0 Then Exit Sub
-    If IsIconic(h) <> 0 Then ShowWindow h, SW_RESTORE
-    keybd_event VK_MENU, 0, 0, 0
-    keybd_event VK_MENU, 0, KEYEVENTF_KEYUP, 0
-    SetForegroundWindow h
+    If ThisWorkbook.Windows(1).WindowState = WIN_MINIMIZED Then ThisWorkbook.Windows(1).WindowState = WIN_NORMAL
+    If Application.WindowState = WIN_MINIMIZED Then Application.WindowState = WIN_NORMAL
+    ws.Activate
 End Sub
 
 Private Sub WriteLog(ByVal ecmID As String, ByVal result As String)
